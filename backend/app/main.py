@@ -10,9 +10,11 @@ Configures:
 
 from contextlib import asynccontextmanager
 
+from app.api.router import api_v1_router
 from app.config import settings
 from app.core.exceptions import TaloxException
 from app.core.logging import logger, setup_logging
+from app.database.supabase import init_db
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -35,6 +37,11 @@ async def lifespan(app: FastAPI):
         fast_model=settings.ai_default_fast_model,
         reasoning_model=settings.ai_default_reasoning_model,
     )
+    # Initialize database tables
+    try:
+        await init_db()
+    except Exception as exc:
+        logger.error("Failed to initialize database tables", error=str(exc))
     yield
     logger.info("Talox Tech Stream shutting down cleanly")
 
@@ -60,6 +67,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Mount API v1 Endpoints
+app.include_router(api_v1_router)
 
 
 # Standardized Exception Handling
