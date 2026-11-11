@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "talox-tech-stream"
+version = "0.1.0"
+description = "Custom Python Multi-Tenant SaaS Agent Platform"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+    { name = "Talox Architecture Team" }
+]
+
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "pydantic>=2.8.0",
+    "pydantic-settings>=2.4.0",
+    "slowapi>=0.1.9",
+    "supabase>=2.6.0",
+    "sqlalchemy>=2.0.32",
+    "asyncpg>=0.29.0",
+    "httpx>=0.27.0",
+    "structlog>=24.4.0",
+    "tenacity>=8.5.0",
+    "apscheduler>=3.10.4",
+]
+
+[tool.setuptools.packages.find]
+where = ["backend"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["backend/tests"]
+pythonpath = ["backend"]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]

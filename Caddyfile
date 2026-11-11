@@ -1,0 +1,13 @@
+# ==============================================================================
+# Caddy Reverse Proxy Configuration for Talox Tech Stream
+# Provides automatic Let's Encrypt HTTPS with zero maintenance.
+# Replace api.yourdomain.com with your live domain or VPS public IP.
+# ==============================================================================
+
+{
+    email admin@taloxtech.com
+}
+
+:80 {
+    reverse_proxy backend:8000
+}
