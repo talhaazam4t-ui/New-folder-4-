@@ -4,15 +4,85 @@
 import uuid
 from typing import List
 
+from app.database.models.agent import TenantAgent
+from app.database.models.business import BusinessRecord
+from app.database.models.marketing import Lead
 from app.database.models.tenant import Profile
 from app.database.supabase import get_db
-from app.dependencies import get_current_user
+from app.dependencies import get_current_tenant, get_current_user
 from app.schemas.tenant import TenantCreateRequest, TenantPurgeRequest, TenantResponse
 from app.services.tenant_service import tenant_service
 from fastapi import APIRouter, Depends, status
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter(prefix="/tenants", tags=["Tenants"])
+
+
+@router.get("/{tenant_id}/overview")
+async def get_tenant_overview(
+    tenant_id: uuid.UUID,
+    context=Depends(get_current_tenant),
+    session: AsyncSession = Depends(get_db),
+):
+    """Retrieve business summary KPIs for the tenant dashboard."""
+    # 1. Total Income
+    income_res = await session.execute(
+        select(func.sum(BusinessRecord.amount)).where(
+            BusinessRecord.tenant_id == tenant_id,
+            BusinessRecord.record_type.in_(["income", "rent", "payment_received"]),
+        )
+    )
+    total_income = float(income_res.scalar() or 0.0)
+
+    # 2. Total Expenses
+    expense_res = await session.execute(
+        select(func.sum(BusinessRecord.amount)).where(
+            BusinessRecord.tenant_id == tenant_id,
+            BusinessRecord.record_type == "expense",
+        )
+    )
+    total_expenses = float(expense_res.scalar() or 0.0)
+
+    # 3. Total Outstanding
+    outstanding_res = await session.execute(
+        select(func.sum(BusinessRecord.amount)).where(
+            BusinessRecord.tenant_id == tenant_id,
+            BusinessRecord.record_type == "outstanding",
+        )
+    )
+    total_outstanding = float(outstanding_res.scalar() or 0.0)
+
+    # 4. Leads Count
+    leads_res = await session.execute(
+        select(func.count(Lead.id)).where(Lead.tenant_id == tenant_id)
+    )
+    total_leads = leads_res.scalar() or 0
+
+    # 5. Active Agents Count
+    agents_res = await session.execute(
+        select(func.count(TenantAgent.id)).where(
+            TenantAgent.tenant_id == tenant_id,
+            TenantAgent.enabled == True,  # noqa: E712
+        )
+    )
+    active_agents = agents_res.scalar() or 0
+
+    return {
+        "success": True,
+        "data": {
+            "tenant_id": str(tenant_id),
+            "role": context.role,
+            "metrics": {
+                "income": total_income,
+                "expenses": total_expenses,
+                "net_profit": total_income - total_expenses,
+                "outstanding": total_outstanding,
+                "leads": total_leads,
+                "active_agents": active_agents,
+            },
+        },
+    }
 
 
 @router.post("", status_code=status.HTTP_201_CREATED, response_model=TenantResponse)

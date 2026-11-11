@@ -1,6 +1,7 @@
 """Central API Router mounting all Version 1 Domain Endpoints.
 """
 
+from app.api.v1.admin import router as admin_router
 from app.api.v1.auth import router as auth_router
 from app.api.v1.tenants import router as tenants_router
 from fastapi import APIRouter
@@ -10,3 +11,4 @@ api_v1_router = APIRouter(prefix="/api/v1")
 # Mount Version 1 subrouters
 api_v1_router.include_router(auth_router)
 api_v1_router.include_router(tenants_router)
+api_v1_router.include_router(admin_router)

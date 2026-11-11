@@ -1,0 +1,136 @@
+import uuid
+
+import pytest
+from app.database.models.business import BusinessRecord
+from app.database.models.marketing import Lead
+from app.database.supabase import get_session_factory
+from app.main import app
+from httpx import ASGITransport, AsyncClient
+
+
+@pytest.mark.asyncio
+async def test_tenant_overview_metrics_endpoint():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # 1. Register owner and create tenant
+        reg = await client.post("/api/v1/auth/register", json={
+            "email": "dashboard.owner@company.com",
+            "password": "Password123!",
+            "full_name": "Dashboard Owner",
+        })
+        token = reg.json()["access_token"]
+        user_id = uuid.UUID(reg.json()["user_id"])
+        headers = {"Authorization": f"Bearer {token}"}
+
+        tenant_res = await client.post("/api/v1/tenants", json={
+            "name": "Dashboard Enterprise",
+            "slug": "dashboard-enterprise",
+            "industry": "Finance",
+        }, headers=headers)
+        tenant_id = uuid.UUID(tenant_res.json()["id"])
+        tenant_headers = {
+            "Authorization": f"Bearer {token}",
+            "X-Tenant-ID": str(tenant_id),
+        }
+
+        # 2. Add sample financial and lead records
+        factory = get_session_factory()
+        async with factory() as session:
+            session.add(BusinessRecord(
+                tenant_id=tenant_id,
+                record_type="income",
+                title="SaaS Consulting",
+                amount=15000.0,
+                currency="USD",
+                source="manual",
+                recorded_by=user_id,
+            ))
+            session.add(BusinessRecord(
+                tenant_id=tenant_id,
+                record_type="expense",
+                title="Cloud Hosting",
+                amount=4000.0,
+                currency="USD",
+                source="manual",
+                recorded_by=user_id,
+            ))
+            session.add(BusinessRecord(
+                tenant_id=tenant_id,
+                record_type="outstanding",
+                title="Pending Invoice",
+                amount=2500.0,
+                currency="USD",
+                source="manual",
+                recorded_by=user_id,
+            ))
+            session.add(Lead(
+                tenant_id=tenant_id,
+                name="Prospective Client",
+                email="prospect@example.com",
+                source="web",
+            ))
+            await session.commit()
+
+        # 3. Call overview endpoint
+        res = await client.get(f"/api/v1/tenants/{tenant_id}/overview", headers=tenant_headers)
+        assert res.status_code == 200
+        data = res.json()["data"]
+        assert data["role"] == "owner"
+        metrics = data["metrics"]
+        assert metrics["income"] == 15000.0
+        assert metrics["expenses"] == 4000.0
+        assert metrics["net_profit"] == 11000.0
+        assert metrics["outstanding"] == 2500.0
+        assert metrics["leads"] == 1
+
+
+@pytest.mark.asyncio
+async def test_admin_global_overview_and_tenant_suspension():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # 1. Register admin user & create workspace
+        reg = await client.post("/api/v1/auth/register", json={
+            "email": "platform.admin@talox.com",
+            "password": "Password123!",
+            "full_name": "Platform Admin",
+        })
+        token = reg.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        tenant_res = await client.post("/api/v1/tenants", json={
+            "name": "Target Company",
+            "slug": "target-company",
+            "industry": "Retail",
+        }, headers=headers)
+        tenant_id = tenant_res.json()["id"]
+
+        # 2. Get global stats
+        stats_res = await client.get("/api/v1/admin/stats", headers=headers)
+        assert stats_res.status_code == 200
+        stats = stats_res.json()
+        assert stats["total_tenants"] >= 1
+        assert stats["active_tenants"] >= 1
+
+        # 3. List all tenants in admin console
+        tenants_res = await client.get("/api/v1/admin/tenants", headers=headers)
+        assert tenants_res.status_code == 200
+        tenant_list = tenants_res.json()["data"]
+        assert any(t["id"] == tenant_id for t in tenant_list)
+
+        # 4. Suspend tenant account
+        suspend_res = await client.patch(
+            f"/api/v1/admin/tenants/{tenant_id}/status",
+            json={"status": "suspended"},
+            headers=headers,
+        )
+        assert suspend_res.status_code == 200
+        assert suspend_res.json()["success"] is True
+
+        # 5. Reactivate tenant account
+        reactivate_res = await client.patch(
+            f"/api/v1/admin/tenants/{tenant_id}/status",
+            json={"status": "active"},
+            headers=headers,
+        )
+        assert reactivate_res.status_code == 200
+        assert reactivate_res.json()["success"] is True
