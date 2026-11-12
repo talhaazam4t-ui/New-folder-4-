@@ -29,8 +29,13 @@ from app.database.models.billing import Invoice, Payment
 from app.database.models.business import BusinessMetric, BusinessRecord
 from app.database.models.marketing import Lead, MarketingCampaign, MarketingMetric
 from app.database.models.service import ServiceSubscription
-from app.database.models.tenant import Tenant, TenantMember
-from app.schemas.tenant import TenantCreateRequest, TenantResponse
+from app.database.models.tenant import Profile, Tenant, TenantMember
+from app.schemas.tenant import (
+    TenantCreateRequest,
+    TenantMemberInviteRequest,
+    TenantMemberResponse,
+    TenantResponse,
+)
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -172,6 +177,91 @@ class TenantService:
             created_at=tenant.created_at,
             role=role,
         )
+
+    async def add_tenant_member(
+        self,
+        session: AsyncSession,
+        tenant_id: uuid.UUID,
+        actor_id: uuid.UUID,
+        request: TenantMemberInviteRequest,
+    ) -> TenantMemberResponse:
+        """Invite/assign a registered user to a tenant workspace with a specific RBAC role."""
+        p_res = await session.execute(select(Profile).where(Profile.email == request.email))
+        profile = p_res.scalar_one_or_none()
+        if not profile:
+            raise ResourceNotFoundError("User", request.email)
+
+        existing = await session.execute(
+            select(TenantMember).where(
+                TenantMember.tenant_id == tenant_id,
+                TenantMember.user_id == profile.id,
+            )
+        )
+        member = existing.scalar_one_or_none()
+        if member:
+            member.role = request.role
+            member.status = "active"
+        else:
+            member = TenantMember(
+                tenant_id=tenant_id,
+                user_id=profile.id,
+                role=request.role,
+                status="active",
+            )
+            session.add(member)
+
+        await session.flush()
+
+        audit = AuditLog(
+            tenant_id=tenant_id,
+            actor_id=actor_id,
+            actor_type="user",
+            action="tenant.member.added",
+            resource_type="tenant_member",
+            resource_id=member.id,
+            metadata_={"email": request.email, "role": request.role},
+        )
+        session.add(audit)
+        await session.commit()
+        await session.refresh(member)
+
+        return TenantMemberResponse(
+            id=member.id,
+            tenant_id=member.tenant_id,
+            user_id=member.user_id,
+            role=member.role,
+            status=member.status,
+            created_at=member.created_at,
+            email=profile.email,
+            full_name=profile.full_name,
+        )
+
+    async def list_tenant_members(
+        self,
+        session: AsyncSession,
+        tenant_id: uuid.UUID,
+    ) -> List[TenantMemberResponse]:
+        """List all members belonging to a tenant workspace."""
+        query = (
+            select(TenantMember, Profile)
+            .join(Profile, TenantMember.user_id == Profile.id)
+            .where(TenantMember.tenant_id == tenant_id)
+        )
+        res = await session.execute(query)
+        rows = res.all()
+        return [
+            TenantMemberResponse(
+                id=member.id,
+                tenant_id=member.tenant_id,
+                user_id=member.user_id,
+                role=member.role,
+                status=member.status,
+                created_at=member.created_at,
+                email=profile.email,
+                full_name=profile.full_name,
+            )
+            for member, profile in rows
+        ]
 
     async def purge_tenant_data(
         self,

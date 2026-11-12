@@ -9,8 +9,14 @@ from app.database.models.business import BusinessRecord
 from app.database.models.marketing import Lead
 from app.database.models.tenant import Profile
 from app.database.supabase import get_db
-from app.dependencies import get_current_tenant, get_current_user
-from app.schemas.tenant import TenantCreateRequest, TenantPurgeRequest, TenantResponse
+from app.dependencies import get_current_tenant, get_current_user, require_permission
+from app.schemas.tenant import (
+    TenantCreateRequest,
+    TenantMemberInviteRequest,
+    TenantMemberResponse,
+    TenantPurgeRequest,
+    TenantResponse,
+)
 from app.services.tenant_service import tenant_service
 from fastapi import APIRouter, Depends, status
 from sqlalchemy import func, select
@@ -135,3 +141,32 @@ async def purge_tenant(
         "success": True,
         "message": f"Tenant '{tenant_id}' and all associated records have been permanently purged.",
     }
+
+
+@router.post("/{tenant_id}/members", status_code=status.HTTP_201_CREATED, response_model=TenantMemberResponse)
+async def add_tenant_member(
+    tenant_id: uuid.UUID,
+    request: TenantMemberInviteRequest,
+    context=Depends(require_permission("tenant.members.manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """Invite or assign a registered user to a tenant workspace with a specific role."""
+    return await tenant_service.add_tenant_member(
+        session=session,
+        tenant_id=tenant_id,
+        actor_id=context.user_id,
+        request=request,
+    )
+
+
+@router.get("/{tenant_id}/members", response_model=List[TenantMemberResponse])
+async def list_tenant_members(
+    tenant_id: uuid.UUID,
+    context=Depends(get_current_tenant),
+    session: AsyncSession = Depends(get_db),
+):
+    """List all members of a tenant workspace."""
+    return await tenant_service.list_tenant_members(
+        session=session,
+        tenant_id=tenant_id,
+    )
