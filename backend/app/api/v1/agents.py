@@ -4,6 +4,8 @@
 from typing import List
 
 from app.agents.registry import agent_registry
+from app.config import settings
+from app.core.rate_limit import limiter
 from app.core.tenant_context import TenantContext
 from app.database.supabase import get_db
 from app.dependencies import require_permission
@@ -14,7 +16,7 @@ from app.schemas.agent import (
     TenantAgentConfigRequest,
 )
 from app.schemas.task import TaskExecutionResponse
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter(prefix="/agents", tags=["Multi-Agent Orchestration"])
@@ -49,8 +51,10 @@ async def configure_tenant_agent(
 
 
 @router.post("/orchestrate", response_model=AgentOrchestrateResponse)
+@limiter.limit(f"{settings.rate_limit_agent_rpm}/minute")
 async def orchestrate_agent_objective(
-    request: AgentOrchestrateRequest,
+    request: Request,
+    payload: AgentOrchestrateRequest,
     context: TenantContext = Depends(require_permission("agents.execute")),
     session: AsyncSession = Depends(get_db),
 ):
@@ -58,7 +62,7 @@ async def orchestrate_agent_objective(
     return await agent_registry.run_orchestration(
         session=session,
         tenant_id=context.tenant_id,
-        request=request,
+        request=payload,
     )
 
 

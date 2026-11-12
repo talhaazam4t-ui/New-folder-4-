@@ -10,9 +10,19 @@ Verifies all 7 mandatory security guardrails end-to-end:
 7. Prompt PII/financial credential redaction & cascading GDPR account purge.
 """
 
+import uuid
+
 import pytest
 from app.automation.budget_manager import budget_manager
+from app.automation.workers.task_worker import background_task_worker
+from app.core.exceptions import ApprovalRequiredError
 from app.core.security import sanitize_ai_prompt
+from app.database.models.business import BusinessRecord
+from app.database.repositories.tenant_repository import TenantScopedRepository
+from app.database.supabase import get_session_factory
+from app.integrations.calendar.adapter import calendar_adapter
+from app.integrations.email.adapter import email_adapter
+from app.integrations.social.adapter import social_adapter
 from app.main import app
 from httpx import ASGITransport, AsyncClient
 
@@ -146,3 +156,27 @@ async def test_all_seven_mandatory_security_guardrails_and_scripts():
         )
         assert purge_res.status_code == 200
         assert purge_res.json()["success"] is True
+
+        # --- Verify Background Worker, TenantScopedRepository & Integration Adapters ---
+        factory = get_session_factory()
+        async with factory() as session:
+            worker_res = await background_task_worker.process_pending_queue(session)
+            assert "processed_tasks" in worker_res
+            expired = await background_task_worker.expire_stale_approvals(session)
+            assert expired >= 0
+
+            repo = TenantScopedRepository(BusinessRecord)
+            alpha_records = await repo.list_by_tenant(session, uuid.UUID(alpha_id))
+            assert len(alpha_records) == 1
+
+        email_res = await email_adapter.send_email(alpha_id, "client@alpha.com", "Invoice", "Paid")
+        assert email_res["success"] is True
+        assert (await calendar_adapter.health_check())["healthy"] is True
+
+        with pytest.raises(ApprovalRequiredError):
+            await social_adapter.publish_campaign_post(alpha_id, "linkedin", "Unapproved Post", human_approved=False)
+
+        approved_post = await social_adapter.publish_campaign_post(
+            alpha_id, "linkedin", "Approved Post", human_approved=True
+        )
+        assert approved_post["status"] == "published"

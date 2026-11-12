@@ -22,7 +22,7 @@ export function Sidebar({ currentPath = "/dashboard" }: SidebarProps) {
     { label: "Business Tracking", href: "/business", icon: Receipt },
     { label: "WhatsApp Hub", href: "/settings", icon: MessageSquare },
     { label: "Marketing & Growth", href: "/marketing", icon: TrendingUp },
-    { label: "AI Agents", href: "/dashboard", icon: Bot },
+    { label: "AI Agents", href: "/agents", icon: Bot },
     { label: "Billing & Plans", href: "/billing", icon: CreditCard },
     { label: "Settings", href: "/settings", icon: Settings },
   ];

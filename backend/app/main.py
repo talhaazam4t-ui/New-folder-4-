@@ -14,16 +14,13 @@ from app.api.router import api_v1_router
 from app.config import settings
 from app.core.exceptions import TaloxException
 from app.core.logging import logger, setup_logging
+from app.core.rate_limit import limiter
 from app.database.supabase import init_db
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-from slowapi.util import get_remote_address
-
-# Initialize Rate Limiter using client IP / tenant context
-limiter = Limiter(key_func=get_remote_address, default_limits=[f"{settings.rate_limit_default_rpm}/minute"])
 
 
 @asynccontextmanager

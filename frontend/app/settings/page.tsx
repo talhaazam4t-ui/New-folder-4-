@@ -4,7 +4,7 @@ import React, { useEffect, useState } from "react";
 import { Navbar } from "../../components/shared/Navbar";
 import { Sidebar } from "../../components/shared/Sidebar";
 import { apiRequest } from "../../lib/api";
-import { getActiveTenant, getAuthToken } from "../../lib/auth";
+import { clearSession, getActiveTenant, getAuthToken } from "../../lib/auth";
 
 interface IntegrationItem {
   id: string;
@@ -32,6 +32,8 @@ export default function SettingsPage() {
   const [simName, setSimName] = useState("Tenant Unit 4B");
   const [simMessage, setSimMessage] = useState("Paid rent $1800 for Unit 4B");
   const [simResult, setSimResult] = useState<Record<string, unknown> | null>(null);
+  const [confirmationSlug, setConfirmationSlug] = useState("");
+  const [purgeReason, setPurgeReason] = useState("Account termination requested by owner");
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
   const loadSettingsWorkspace = async () => {
@@ -93,6 +95,26 @@ export default function SettingsPage() {
   const handleMarkRead = async (id: string) => {
     await apiRequest(`/api/v1/notifications/${id}/read`, { method: "PATCH" });
     loadSettingsWorkspace();
+  };
+
+  const handlePurgeTenant = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const tenantId = getActiveTenant();
+    if (!tenantId) return;
+    setStatusMessage(null);
+    const res = await apiRequest(`/api/v1/tenants/${tenantId}`, {
+      method: "DELETE",
+      body: JSON.stringify({
+        confirmation_slug: confirmationSlug,
+        reason: purgeReason,
+      }),
+    });
+    if (res.success) {
+      clearSession();
+      window.location.href = "/login";
+    } else {
+      setStatusMessage(res.error?.message || "Account deletion failed: verify company handle.");
+    }
   };
 
   return (
@@ -246,6 +268,41 @@ export default function SettingsPage() {
                 </div>
               ))}
             </div>
+          </div>
+
+          {/* Danger Zone: GDPR Account Termination & Cascading Data Purge */}
+          <div className="bg-rose-950/20 border border-rose-900/60 rounded-xl p-6 space-y-4">
+            <div>
+              <h2 className="text-lg font-semibold text-rose-300">
+                Danger Zone — Account Termination & Cascading Data Purge (GDPR Compliance)
+              </h2>
+              <p className="text-xs text-slate-400 mt-1">
+                Permanently deletes this company workspace and cascades deletion across all financial records, campaigns, leads, tasks, integrations, and usage telemetry.
+              </p>
+            </div>
+            <form onSubmit={handlePurgeTenant} className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <input
+                type="text"
+                required
+                placeholder="Type company slug to confirm"
+                value={confirmationSlug}
+                onChange={(e) => setConfirmationSlug(e.target.value)}
+                className="rounded-lg bg-slate-950 border border-rose-800/60 px-3 py-2 text-sm text-white"
+              />
+              <input
+                type="text"
+                value={purgeReason}
+                onChange={(e) => setPurgeReason(e.target.value)}
+                placeholder="Reason for account termination"
+                className="rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-sm text-white"
+              />
+              <button
+                type="submit"
+                className="py-2 px-4 rounded-lg bg-rose-700 hover:bg-rose-600 text-white text-sm font-semibold"
+              >
+                Permanently Purge Account & All Data
+              </button>
+            </form>
           </div>
         </main>
       </div>
