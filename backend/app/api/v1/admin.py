@@ -6,6 +6,8 @@ and system health for the platform owner.
 
 import uuid
 
+from app.automation.budget_manager import budget_manager
+from app.automation.retry import dead_letter_queue
 from app.database.models.agent import AgentExecution
 from app.database.models.billing import Payment
 from app.database.models.service import ServiceSubscription
@@ -158,4 +160,34 @@ async def update_tenant_status(
     return {
         "success": True,
         "message": f"Tenant '{tenant.name}' status updated to {request.status}",
+    }
+
+
+@router.post("/tenants/{tenant_id}/reset-circuit")
+async def reset_tenant_circuit_breaker(
+    tenant_id: uuid.UUID,
+    admin_user: Profile = Depends(verify_platform_admin),
+):
+    """Admin override to reset a tripped cost-protection circuit breaker for a tenant."""
+    budget_manager.admin_reset_circuit(str(tenant_id))
+    record = budget_manager.get_or_create_record(str(tenant_id))
+    return {
+        "success": True,
+        "data": {
+            "tenant_id": str(tenant_id),
+            "circuit_state": record.circuit_state.value,
+            "consecutive_failures": record.consecutive_failures,
+        },
+        "message": "Circuit breaker reset to CLOSED",
+    }
+
+
+@router.get("/dlq")
+async def list_dead_letter_queue(
+    admin_user: Profile = Depends(verify_platform_admin),
+):
+    """Inspect failed automation tasks in the Dead-Letter Queue across the platform."""
+    return {
+        "success": True,
+        "data": dead_letter_queue.list_entries(),
     }
