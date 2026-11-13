@@ -7,5 +7,8 @@
     "build:frontend": "cd frontend && npm run build",
     "start:frontend": "cd frontend && npm run start",
     "lint:frontend": "cd frontend && npm run lint"
+  },
+  "dependencies": {
+    "@supabase/server": "^1.9.2"
   }
 }
