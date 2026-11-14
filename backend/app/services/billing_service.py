@@ -20,30 +20,124 @@ from app.database.models.service import Service, ServiceSubscription
 from app.schemas.payment import PaymentCreateRequest, PaymentResponse
 from app.schemas.service import (
     ServiceCreateRequest,
+    ServiceUpdateRequest,
     SubscriptionCreateRequest,
     SubscriptionResponse,
 )
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+INDUSTRY_ALIASES = {
+    "financing": "Financing",
+    "finance": "Financing",
+    "professional financial services": "Financing",
+    "clinics / hospitals": "Clinics / Hospitals",
+    "healthcare": "Clinics / Hospitals",
+    "healthcare & medical clinics": "Clinics / Hospitals",
+    "clinics": "Clinics / Hospitals",
+    "hospitals": "Clinics / Hospitals",
+    "real estate / property": "Real Estate / Property",
+    "real estate": "Real Estate / Property",
+    "real estate & property management": "Real Estate / Property",
+    "property": "Real Estate / Property",
+    "e-commerce": "E-Commerce",
+    "ecommerce": "E-Commerce",
+    "retail": "E-Commerce",
+    "retail & e-commerce": "E-Commerce",
+}
+
+
+def normalize_industry(industry: Optional[str]) -> str:
+    if not industry:
+        return "Financing"
+    cleaned = industry.strip()
+    return INDUSTRY_ALIASES.get(cleaned.lower(), cleaned)
 
 
 class BillingService:
     """Manages monetization, subscriptions, and financial invoices."""
 
+    async def ensure_default_catalog(self, session: AsyncSession) -> None:
+        """Populate default industry-aware services if the catalog table is completely empty."""
+        count_res = await session.execute(select(func.count(Service.id)))
+        if (count_res.scalar() or 0) > 0:
+            return
+        from scripts.seed_services import DEFAULT_SERVICES
+
+        for item in DEFAULT_SERVICES:
+            session.add(
+                Service(
+                    name=item["name"],
+                    slug=item["slug"],
+                    category=item["category"],
+                    description=item["description"],
+                    configuration_schema=item["configuration_schema"],
+                    active=True,
+                )
+            )
+        await session.commit()
+
     async def list_services(
         self,
         session: AsyncSession,
         category: Optional[str] = None,
+        industry: Optional[str] = None,
         active_only: bool = True,
+        ensure_seeded: bool = False,
     ) -> List[Service]:
-        """Fetch all services from catalog."""
+        """Fetch services from catalog with optional category and dynamic industry filtering."""
+        if ensure_seeded:
+            await self.ensure_default_catalog(session)
+
         query = select(Service)
         if active_only:
             query = query.where(Service.active == True)  # noqa: E712
         if category:
             query = query.where(Service.category == category)
         res = await session.execute(query.order_by(Service.name))
-        return list(res.scalars().all())
+        services = list(res.scalars().all())
+
+        if industry:
+            norm_ind = normalize_industry(industry)
+            filtered: List[Service] = []
+            for srv in services:
+                schema = srv.configuration_schema or {}
+                industries = schema.get("industries", [])
+                if not industries or "All" in industries or norm_ind in industries or industry in industries:
+                    filtered.append(srv)
+            return filtered
+
+        return services
+
+    async def update_service(
+        self,
+        session: AsyncSession,
+        service_id: uuid.UUID,
+        request: ServiceUpdateRequest,
+    ) -> Service:
+        """Modify an existing service package, pricing, features, or availability (Owner only)."""
+        res = await session.execute(select(Service).where(Service.id == service_id))
+        service = res.scalar_one_or_none()
+        if not service:
+            raise ResourceNotFoundError("Service", str(service_id))
+
+        if request.name is not None:
+            service.name = request.name
+        if request.category is not None:
+            service.category = request.category
+        if request.description is not None:
+            service.description = request.description
+        if request.configuration_schema is not None:
+            merged = dict(service.configuration_schema or {})
+            merged.update(request.configuration_schema)
+            service.configuration_schema = merged
+        if request.active is not None:
+            service.active = request.active
+
+        await session.commit()
+        await session.refresh(service)
+        logger.info("Service updated", service_id=str(service.id), slug=service.slug)
+        return service
 
     async def create_service(
         self,

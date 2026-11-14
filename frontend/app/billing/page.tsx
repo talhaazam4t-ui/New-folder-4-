@@ -24,6 +24,17 @@ interface ServiceItem {
   slug: string;
   category: string;
   description: string;
+  configuration_schema?: {
+    base_price?: number;
+    industries?: string[];
+    packages?: Array<{
+      plan_name: string;
+      display_name: string;
+      price: number;
+      billing_interval: string;
+      features?: string[];
+    }>;
+  };
 }
 
 interface SubscriptionItem {
@@ -59,9 +70,11 @@ export default function BillingPage() {
   const [actionMessage, setActionMessage] = useState<string | null>(null);
 
   const fetchBillingData = async () => {
+    const tenant = getActiveTenant();
+    const indParam = tenant?.industry ? `&industry=${encodeURIComponent(tenant.industry)}` : "";
     try {
       const [servicesRes, subsRes, invoicesRes] = await Promise.all([
-        apiRequest<ServiceItem[]>("/api/v1/services"),
+        apiRequest<ServiceItem[]>(`/api/v1/services?ensure_seeded=true${indParam}`),
         apiRequest<SubscriptionItem[]>("/api/v1/services/subscriptions"),
         apiRequest<InvoiceItem[]>("/api/v1/payments/invoices"),
       ]);
@@ -93,15 +106,15 @@ export default function BillingPage() {
     fetchBillingData();
   }, []);
 
-  const handleSubscribe = async (serviceId: string, serviceName: string) => {
+  const handleSubscribe = async (serviceId: string, serviceName: string, price = 99.0, planName = "starter") => {
     setActionMessage(`Activating subscription for ${serviceName}...`);
     const res = await apiRequest("/api/v1/services/subscribe", {
       method: "POST",
       body: JSON.stringify({
         service_id: serviceId,
-        plan_name: "standard",
+        plan_name: planName,
         billing_interval: "monthly",
-        price: 49.0,
+        price,
       }),
     });
 
@@ -232,7 +245,9 @@ export default function BillingPage() {
 
                     <div className="mt-6 pt-4 border-t border-slate-100 flex items-center justify-between">
                       <div>
-                        <span className="text-xl font-extrabold text-slate-900">$49</span>
+                        <span className="text-xl font-extrabold text-slate-900">
+                          ${srv.configuration_schema?.packages?.[0]?.price ?? srv.configuration_schema?.base_price ?? 99}
+                        </span>
                         <span className="text-xs text-slate-400"> / month</span>
                       </div>
 
@@ -245,7 +260,16 @@ export default function BillingPage() {
                         </button>
                       ) : (
                         <button
-                          onClick={() => handleSubscribe(srv.id, srv.name)}
+                          onClick={() =>
+                            handleSubscribe(
+                              srv.id,
+                              srv.name,
+                              srv.configuration_schema?.packages?.[0]?.price ??
+                                srv.configuration_schema?.base_price ??
+                                99,
+                              srv.configuration_schema?.packages?.[0]?.plan_name ?? "starter"
+                            )
+                          }
                           className="flex items-center gap-1 rounded-lg bg-slate-900 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-slate-800 transition"
                         >
                           <span>Subscribe</span>

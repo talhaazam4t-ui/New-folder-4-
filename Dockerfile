@@ -1,9 +1,9 @@
 # ==============================================================================
-# Multi-Stage Production Dockerfile for Talox Tech Stream Backend
-# Optimized for Google Cloud Free-Tier VPS (1GB RAM e2-micro)
+# Multi-Stage Production Dockerfile for Talox Tech Stream FastAPI Backend
+# Target: Google Cloud Run (me-central1) with Non-Root User & Dynamic $PORT
 # ==============================================================================
 
-# Build Stage
+# Stage 1: Dependency Builder
 FROM python:3.12-slim AS builder
 
 WORKDIR /build
@@ -14,37 +14,39 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir --user -r requirements.txt
+RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
-# Final Runtime Stage
+# Stage 2: Hardened Production Runner
 FROM python:3.12-slim AS runner
 
 WORKDIR /app
 
-# Install runtime PostgreSQL client library
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
     curl \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd -r talox && useradd -r -g talox -d /app -s /sbin/nologin taloxuser
 
-# Copy installed Python packages from builder
-COPY --from=builder /root/.local /root/.local
-ENV PATH=/root/.local/bin:$PATH
+# Copy compiled Python dependencies from builder
+COPY --from=builder /install /usr/local
 
-# Copy backend application source code
+# Copy backend application and operational scripts
 COPY backend/app ./app
-COPY backend/scripts ./scripts
+COPY scripts ./scripts
 
-# Environment configuration
+RUN chown -R taloxuser:talox /app
+
+USER taloxuser
+
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/app \
     PORT=8000
 
 EXPOSE 8000
 
-# Healthcheck for container orchestrators
-HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8000/api/v1/health || exit 1
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:${PORT:-8000}/api/v1/health || exit 1
 
-# Start Uvicorn with single worker and concurrency limit (Memory safe for 1GB VPS)
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--limit-concurrency", "100"]
+# Bind to $PORT injected by Google Cloud Run (defaults to 8000 locally)
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --limit-concurrency 100"]

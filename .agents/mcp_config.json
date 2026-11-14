@@ -1,0 +1,48 @@
+{
+  "mcpServers": {
+    "supabase": {
+      "serverUrl": "https://mcp.supabase.com/mcp",
+      "enabledTools": [
+        "list_tables",
+        "execute_sql",
+        "list_migrations",
+        "apply_migration",
+        "get_advisors",
+        "get_project_url",
+        "get_publishable_keys"
+      ]
+    },
+    "context7": {
+      "serverUrl": "https://mcp.context7.com/mcp"
+    },
+    "stripe": {
+      "serverUrl": "https://mcp.stripe.com/",
+      "enabledTools": [
+        "create_customer",
+        "retrieve_customer",
+        "create_invoice",
+        "create_payment_intent"
+      ]
+    },
+    "vercel": {
+      "serverUrl": "https://mcp.vercel.com",
+      "enabledTools": [
+        "get_runtime_errors",
+        "get_runtime_logs",
+        "get_project",
+        "list_deployments"
+      ]
+    },
+    "github": {
+      "serverUrl": "https://api.githubcopilot.com/mcp/",
+      "enabledTools": [
+        "get_file_contents",
+        "list_commits",
+        "create_pull_request",
+        "search_repositories",
+        "get_issue",
+        "create_issue"
+      ]
+    }
+  }
+}

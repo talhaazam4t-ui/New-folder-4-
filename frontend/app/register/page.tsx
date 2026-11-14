@@ -37,6 +37,7 @@ export default function RegisterPage() {
 
       const token = res.access_token || res.data?.access_token;
       const userId = res.user_id || res.data?.user_id;
+      const isSuperAdmin = Boolean(res.is_super_admin ?? res.data?.is_super_admin);
 
       setAuthToken(token);
       setCurrentUser({
@@ -44,6 +45,7 @@ export default function RegisterPage() {
         email,
         fullName,
         token,
+        isSuperAdmin,
       });
 
       window.location.href = "/onboarding";
@@ -62,10 +64,10 @@ export default function RegisterPage() {
             T
           </div>
           <h2 className="mt-4 text-2xl font-bold tracking-tight text-white">
-            Register Account
+            Create Your Client Account
           </h2>
           <p className="mt-1 text-sm text-slate-400">
-            Start your multi-tenant AI business platform
+            Done-For-You Managed AI Automation Services
           </p>
         </div>
 
@@ -142,7 +144,7 @@ export default function RegisterPage() {
             disabled={loading}
             className="flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-600 py-2.5 text-sm font-semibold text-white shadow-md hover:bg-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 focus:ring-offset-slate-950 disabled:opacity-50 transition"
           >
-            {loading ? "Creating Account..." : "Create Account"}
+            {loading ? "Creating Account..." : "Continue to Industry Selection"}
             <ArrowRight className="h-4 w-4" />
           </button>
         </form>

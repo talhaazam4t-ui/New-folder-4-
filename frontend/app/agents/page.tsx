@@ -4,7 +4,7 @@ import React, { useEffect, useState } from "react";
 import { Navbar } from "../../components/shared/Navbar";
 import { Sidebar } from "../../components/shared/Sidebar";
 import { apiRequest } from "../../lib/api";
-import { getActiveTenant, getAuthToken } from "../../lib/auth";
+import { getActiveTenant, getAuthToken, isSuperAdminUser } from "../../lib/auth";
 
 interface AgentItem {
   name: string;
@@ -80,6 +80,10 @@ export default function AgentsPage() {
     const token = getAuthToken();
     if (!token) {
       window.location.href = "/login";
+      return;
+    }
+    if (!isSuperAdminUser()) {
+      window.location.href = "/dashboard";
       return;
     }
     if (!getActiveTenant()) {

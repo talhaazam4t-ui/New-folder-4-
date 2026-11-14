@@ -91,6 +91,25 @@ class LeadResponse(BaseModel):
     created_at: datetime
 
 
+class LeadGenerationRequest(BaseModel):
+    industry: str = Field(default="Real Estate / Property", min_length=2, max_length=100)
+    location: str = Field(default="Riyadh & Dubai", min_length=2, max_length=120)
+    keywords: Optional[str] = Field(default=None, max_length=200)
+    limit: int = Field(default=3, ge=1, le=20)
+
+
+class LeadOutreachRequest(BaseModel):
+    channel: Literal["whatsapp", "email"] = "whatsapp"
+    custom_context: Optional[str] = Field(default=None, max_length=500)
+    require_approval: bool = False
+
+
+class LeadAppointmentBookingRequest(BaseModel):
+    meeting_title: str = Field(default="Strategy & Service Consultation", min_length=2, max_length=200)
+    scheduled_iso: Optional[str] = None
+
+
+
 class MarketingAnalyticsResponse(BaseModel):
     tenant_id: uuid.UUID
     total_campaigns: int

@@ -4,10 +4,13 @@ Uses Pydantic BaseSettings to parse environment variables with strict type valid
 safe development defaults, and fallback handling for testing and production environments.
 """
 
+from pathlib import Path
 from typing import List, Optional
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+ROOT_ENV_PATH = Path(__file__).resolve().parent.parent.parent / ".env"
 
 
 class Settings(BaseSettings):
@@ -21,6 +24,17 @@ class Settings(BaseSettings):
     debug: bool = Field(default=True, alias="DEBUG")
     port: int = Field(default=8000, alias="PORT")
     host: str = Field(default="0.0.0.0", alias="HOST")
+
+    # Platform Super Admin Emails
+    super_admin_emails: List[str] = Field(
+        default=[
+            "admin@talox.io",
+            "owner@talox.io",
+            "platform.admin@talox.com",
+            "admin@talox.com",
+        ],
+        alias="SUPER_ADMIN_EMAILS",
+    )
 
     # URLs & CORS
     backend_url: str = Field(default="http://localhost:8000", alias="BACKEND_URL")
@@ -87,11 +101,16 @@ class Settings(BaseSettings):
     payment_secret_key: Optional[str] = Field(default=None, alias="PAYMENT_SECRET_KEY")
     payment_webhook_secret: Optional[str] = Field(default=None, alias="PAYMENT_WEBHOOK_SECRET")
 
+    # Google Services (Maps/Places, Gmail, Calendar OAuth)
+    google_client_id: Optional[str] = Field(default=None, alias="GOOGLE_CLIENT_ID")
+    google_client_secret: Optional[str] = Field(default=None, alias="GOOGLE_CLIENT_SECRET")
+    google_places_api_key: Optional[str] = Field(default=None, alias="GOOGLE_PLACES_API_KEY")
+
     # Redis (Optional)
     redis_url: Optional[str] = Field(default=None, alias="REDIS_URL")
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=(str(ROOT_ENV_PATH), ".env"),
         env_file_encoding="utf-8",
         extra="ignore"
     )

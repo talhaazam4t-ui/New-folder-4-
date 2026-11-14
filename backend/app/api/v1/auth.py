@@ -38,11 +38,14 @@ async def login(
 @router.get("/me", response_model=UserProfileResponse)
 async def get_me(
     current_user: Profile = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
 ):
     """Fetch profile of currently authenticated user."""
+    is_super = await auth_service.is_platform_super_admin(session, current_user)
     return UserProfileResponse(
         id=current_user.id,
         email=current_user.email,
         full_name=current_user.full_name,
         phone=current_user.phone,
+        is_super_admin=is_super,
     )

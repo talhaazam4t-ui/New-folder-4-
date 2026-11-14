@@ -6,12 +6,15 @@ Provides:
 3. JWT Token Generation and Decoding.
 """
 
+import base64
+import hashlib
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 import bcrypt
 from app.config import settings
+from cryptography.fernet import Fernet, InvalidToken
 from jose import JWTError, jwt
 
 # JWT Configuration
@@ -133,3 +136,88 @@ def sanitize_ai_prompt(prompt: str) -> str:
     sanitized = NATIONAL_ID_REGEX.sub("[REDACTED_ID]", sanitized)
 
     return sanitized
+
+
+# ==============================================================================
+# CREDENTIAL ENCRYPTION AT REST & SAFE API MASKING
+# ==============================================================================
+
+SENSITIVE_CONFIG_KEYS = {
+    "access_token",
+    "refresh_token",
+    "api_key",
+    "secret_key",
+    "client_secret",
+    "webhook_secret",
+    "password",
+    "oauth_code",
+    "token",
+    "secret",
+    "private_key",
+}
+
+
+def _get_fernet() -> Fernet:
+    """Derive a URL-safe 32-byte key from APP_SECRET_KEY for Fernet AES-128-CBC + HMAC encryption."""
+    digest = hashlib.sha256(settings.app_secret_key.encode("utf-8")).digest()
+    fernet_key = base64.urlsafe_b64encode(digest)
+    return Fernet(fernet_key)
+
+
+def encrypt_secret(plain_value: str) -> str:
+    """Encrypt a sensitive credential string at rest with prefix `enc:v1:`."""
+    if not plain_value:
+        return ""
+    if plain_value.startswith("enc:v1:"):
+        return plain_value
+    token = _get_fernet().encrypt(plain_value.encode("utf-8")).decode("utf-8")
+    return f"enc:v1:{token}"
+
+
+def decrypt_secret(encrypted_value: str) -> str:
+    """Decrypt a `enc:v1:` credential string on the backend when invoking a provider API."""
+    if not encrypted_value:
+        return ""
+    if not encrypted_value.startswith("enc:v1:"):
+        return encrypted_value
+    raw_token = encrypted_value[len("enc:v1:"):]
+    try:
+        return _get_fernet().decrypt(raw_token.encode("utf-8")).decode("utf-8")
+    except InvalidToken:
+        return ""
+
+
+def _is_sensitive_key(key: str) -> bool:
+    key_lower = key.lower()
+    return any(s in key_lower for s in SENSITIVE_CONFIG_KEYS)
+
+
+def encrypt_sensitive_config(config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Encrypt any sensitive keys inside an integration configuration dictionary before DB persistence."""
+    if not config:
+        return {}
+    result: Dict[str, Any] = {}
+    for k, v in config.items():
+        if isinstance(v, dict):
+            result[k] = encrypt_sensitive_config(v)
+        elif isinstance(v, str) and _is_sensitive_key(k):
+            result[k] = encrypt_secret(v)
+        else:
+            result[k] = v
+    return result
+
+
+def mask_sensitive_config(config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Mask encrypted or sensitive values before returning integration configuration to any API client."""
+    if not config:
+        return {}
+    masked: Dict[str, Any] = {}
+    for k, v in config.items():
+        if isinstance(v, dict):
+            masked[k] = mask_sensitive_config(v)
+        elif _is_sensitive_key(k) or (isinstance(v, str) and v.startswith("enc:v1:")):
+            masked[k] = "***ENCRYPTED***"
+        else:
+            masked[k] = v
+    return masked
+

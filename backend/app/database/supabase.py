@@ -95,10 +95,29 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 async def init_db(engine: Optional[AsyncEngine] = None) -> None:
     """Create all schema tables (useful for development and test suites)."""
+    global _engine, _session_factory
     target_engine = engine or get_engine()
-    async with target_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    logger.info("Database tables initialized successfully")
+    try:
+        async with target_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        logger.info("Database tables initialized successfully")
+    except Exception as exc:
+        if engine is None and settings.app_env == "development":
+            logger.warning(
+                "Primary database connection failed in development; falling back to local SQLite",
+                error=str(exc),
+            )
+            _engine = create_async_engine(
+                "sqlite+aiosqlite:///talox_dev.db",
+                connect_args={"check_same_thread": False},
+                echo=False,
+            )
+            _session_factory = None
+            async with _engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            logger.info("Fallback SQLite database tables initialized successfully")
+        else:
+            raise
 
 
 async def reset_db(engine: Optional[AsyncEngine] = None) -> None:
@@ -107,6 +126,12 @@ async def reset_db(engine: Optional[AsyncEngine] = None) -> None:
     async with target_engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
+    try:
+        from app.services.auth_service import auth_service
+        auth_service._explicit_client_ids.clear()
+        auth_service._local_password_hashes.clear()
+    except Exception:
+        pass
     logger.info("Database reset cleanly")
 
 

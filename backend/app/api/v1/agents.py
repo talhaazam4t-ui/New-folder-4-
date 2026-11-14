@@ -5,10 +5,12 @@ from typing import List
 
 from app.agents.registry import agent_registry
 from app.config import settings
+from app.core.exceptions import PermissionDeniedError
 from app.core.rate_limit import limiter
 from app.core.tenant_context import TenantContext
+from app.database.models.tenant import Profile
 from app.database.supabase import get_db
-from app.dependencies import require_permission
+from app.dependencies import get_current_user, require_permission
 from app.schemas.agent import (
     AgentInfoResponse,
     AgentOrchestrateRequest,
@@ -16,6 +18,7 @@ from app.schemas.agent import (
     TenantAgentConfigRequest,
 )
 from app.schemas.task import TaskExecutionResponse
+from app.services.auth_service import auth_service
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -38,10 +41,13 @@ async def list_tenant_agents(
 async def configure_tenant_agent(
     agent_name: str,
     request: TenantAgentConfigRequest,
+    current_user: Profile = Depends(get_current_user),
     context: TenantContext = Depends(require_permission("agents.configure")),
     session: AsyncSession = Depends(get_db),
 ):
-    """Enable/disable an agent or configure its execution and budget caps for the tenant."""
+    """Enable/disable an agent or configure its execution and budget caps for the tenant (Platform Owner only)."""
+    if not await auth_service.is_platform_super_admin(session, current_user):
+        raise PermissionDeniedError("AI agent configuration is managed exclusively by the Platform Owner.")
     return await agent_registry.configure_tenant_agent(
         session=session,
         tenant_id=context.tenant_id,

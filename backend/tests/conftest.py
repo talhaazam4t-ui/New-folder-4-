@@ -1,5 +1,10 @@
-import pytest
-from app.database.supabase import reset_db
+import os
+
+# Ensure testing uses local SQLite in-memory / dev database unless explicit test DB provided
+os.environ["SUPABASE_DATABASE_URL"] = ""
+
+import pytest  # noqa: E402
+from app.database.supabase import reset_db  # noqa: E402
 
 
 @pytest.fixture(autouse=True)

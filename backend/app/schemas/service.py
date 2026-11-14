@@ -17,6 +17,14 @@ class ServiceCreateRequest(BaseModel):
     active: bool = True
 
 
+class ServiceUpdateRequest(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=2, max_length=255)
+    category: Optional[str] = Field(default=None, min_length=2, max_length=100)
+    description: Optional[str] = None
+    configuration_schema: Optional[Dict[str, Any]] = None
+    active: Optional[bool] = None
+
+
 class ServiceResponse(BaseModel):
     id: uuid.UUID
     name: str

@@ -31,6 +31,7 @@ export default function LoginPage() {
       const token = res.access_token || res.data?.access_token;
       const userId = res.user_id || res.data?.user_id;
       const fullName = res.full_name || res.data?.full_name;
+      const isSuperAdmin = Boolean(res.is_super_admin ?? res.data?.is_super_admin);
 
       setAuthToken(token);
       setCurrentUser({
@@ -38,6 +39,7 @@ export default function LoginPage() {
         email,
         fullName,
         token,
+        isSuperAdmin,
       });
 
       // Fetch user's tenants
@@ -45,9 +47,19 @@ export default function LoginPage() {
         headers: { Authorization: `Bearer ${token}` },
       });
 
-      if (tenantsRes.length > 0 || (tenantsRes.data && tenantsRes.data.length > 0)) {
-        const list = Array.isArray(tenantsRes) ? tenantsRes : tenantsRes.data;
+      const list = Array.isArray(tenantsRes)
+        ? tenantsRes
+        : Array.isArray(tenantsRes.data)
+          ? tenantsRes.data
+          : [];
+
+      if (list.length > 0) {
         setActiveTenant(list[0]);
+      }
+
+      if (isSuperAdmin) {
+        window.location.href = "/admin";
+      } else if (list.length > 0) {
         window.location.href = "/dashboard";
       } else {
         window.location.href = "/onboarding";
@@ -67,10 +79,10 @@ export default function LoginPage() {
             T
           </div>
           <h2 className="mt-4 text-2xl font-bold tracking-tight text-white">
-            Sign In to Talox Stream
+            Sign In to Talox Tech Stream
           </h2>
           <p className="mt-1 text-sm text-slate-400">
-            Multi-Tenant Custom Python SaaS Agent Platform
+            Done-For-You Managed AI Automation Platform
           </p>
         </div>
 
@@ -123,9 +135,9 @@ export default function LoginPage() {
         </form>
 
         <div className="text-center text-xs text-slate-400">
-          Don't have an account?{" "}
+          Don&apos;t have an account?{" "}
           <a href="/register" className="font-medium text-emerald-400 hover:text-emerald-300">
-            Create an Account
+            Create a Client Account
           </a>
         </div>
       </div>

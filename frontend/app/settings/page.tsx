@@ -99,7 +99,8 @@ export default function SettingsPage() {
 
   const handlePurgeTenant = async (e: React.FormEvent) => {
     e.preventDefault();
-    const tenantId = getActiveTenant();
+    const tenant = getActiveTenant();
+    const tenantId = tenant?.id;
     if (!tenantId) return;
     setStatusMessage(null);
     const res = await apiRequest(`/api/v1/tenants/${tenantId}`, {

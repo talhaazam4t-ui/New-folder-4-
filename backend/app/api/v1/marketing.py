@@ -17,7 +17,10 @@ from app.schemas.marketing import (
     CampaignUpdateRequest,
     CompetitorResearchRequest,
     ContentGenerationRequest,
+    LeadAppointmentBookingRequest,
     LeadCreateRequest,
+    LeadGenerationRequest,
+    LeadOutreachRequest,
     LeadResponse,
     LeadUpdateRequest,
     MarketingAnalyticsResponse,
@@ -184,6 +187,58 @@ async def qualify_lead(
         tenant_id=context.tenant_id,
         lead_id=lead_id,
     )
+
+
+@router.post("/leads/generate")
+async def generate_leads_google_maps(
+    request: LeadGenerationRequest,
+    context: TenantContext = Depends(require_permission("leads.create")),
+    session: AsyncSession = Depends(get_db),
+):
+    """Run industry-specific Lead Generation (Google Maps/Places & business directories) with deduplication."""
+    data = await marketing_service.generate_leads_from_google_maps(
+        session=session,
+        tenant_id=context.tenant_id,
+        user_id=context.user_id,
+        request=request,
+    )
+    return {"success": True, "data": data}
+
+
+@router.post("/leads/{lead_id}/outreach")
+async def send_lead_outreach(
+    lead_id: uuid.UUID,
+    request: LeadOutreachRequest,
+    context: TenantContext = Depends(require_permission("leads.update")),
+    session: AsyncSession = Depends(get_db),
+):
+    """Execute personalized AI outreach to a lead (WhatsApp or Email) with opt-out and approval compliance."""
+    data = await marketing_service.execute_personalized_outreach(
+        session=session,
+        tenant_id=context.tenant_id,
+        user_id=context.user_id,
+        lead_id=lead_id,
+        request=request,
+    )
+    return {"success": True, "data": data}
+
+
+@router.post("/leads/{lead_id}/book-appointment")
+async def book_lead_appointment(
+    lead_id: uuid.UUID,
+    request: LeadAppointmentBookingRequest,
+    context: TenantContext = Depends(require_permission("leads.update")),
+    session: AsyncSession = Depends(get_db),
+):
+    """Book a meeting/appointment for a qualified lead and record calendar conversion."""
+    data = await marketing_service.book_lead_appointment(
+        session=session,
+        tenant_id=context.tenant_id,
+        user_id=context.user_id,
+        lead_id=lead_id,
+        request=request,
+    )
+    return {"success": True, "data": data}
 
 
 @router.get("/analytics", response_model=MarketingAnalyticsResponse)

@@ -1,0 +1,16 @@
+{
+  "$schema": "https://antigravity.google/schemas/v1/plugin.json",
+  "name": "talox-saas-stack",
+  "version": "1.0.0",
+  "description": "Multi-tenant SaaS stack automation for Next.js, FastAPI, and Supabase with trimmed MCP servers, quality hooks, and browser QA workflows.",
+  "author": {
+    "name": "Talox Architecture Team",
+    "url": "https://github.com/talox"
+  },
+  "homepage": "https://github.com/talox/talox-saas-stack",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/talox/talox-saas-stack.git"
+  },
+  "logo": "assets/logo.svg"
+}
