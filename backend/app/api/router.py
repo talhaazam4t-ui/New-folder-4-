@@ -7,6 +7,7 @@ from app.api.v1.analytics import router as analytics_router
 from app.api.v1.approvals import router as approvals_router
 from app.api.v1.auth import router as auth_router
 from app.api.v1.business import router as business_router
+from app.api.v1.finance import router as finance_router
 from app.api.v1.integrations import router as integrations_router
 from app.api.v1.marketing import router as marketing_router
 from app.api.v1.notifications import router as notifications_router
@@ -28,6 +29,7 @@ api_v1_router.include_router(services_router)
 api_v1_router.include_router(subscriptions_router)
 api_v1_router.include_router(payments_router)
 api_v1_router.include_router(business_router)
+api_v1_router.include_router(finance_router)
 api_v1_router.include_router(marketing_router)
 api_v1_router.include_router(tasks_router)
 api_v1_router.include_router(approvals_router)
