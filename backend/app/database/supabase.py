@@ -53,6 +53,14 @@ def get_engine() -> AsyncEngine:
             echo=settings.debug,
         )
     else:
+        # Strict Production Guardrail: Prohibit silent SQLite fallback in production/staging
+        if settings.app_env in ("production", "staging"):
+            raise RuntimeError(
+                "Production environment error: SUPABASE_DATABASE_URL is not set or invalid. "
+                "Silent fallback to SQLite in production/staging is strictly prohibited. "
+                "Please configure a valid PostgreSQL connection string."
+            )
+
         logger.info("Using local SQLite async engine for development/testing")
         _engine = create_async_engine(
             "sqlite+aiosqlite:///talox_dev.db",

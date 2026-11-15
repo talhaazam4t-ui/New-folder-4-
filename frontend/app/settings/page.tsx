@@ -77,7 +77,7 @@ export default function SettingsPage() {
   const handleSimulateInbound = async (e: React.FormEvent) => {
     e.preventDefault();
     setStatusMessage(null);
-    const res = await apiRequest("/api/v1/integrations/whatsapp/webhook", {
+    const res = await apiRequest("/api/v1/integrations/whatsapp/simulate", {
       method: "POST",
       body: JSON.stringify({
         sender_phone: simPhone,

@@ -1,15 +1,17 @@
-"""Centralized AI Provider Integration & Smart Model Router.
+"""Centralized AI Provider Integration & Smart Model Router (DeepSeek API Only).
 
-Uses OpenRouter API as the unified AI gateway.
+Exclusively uses DeepSeek API (https://api.deepseek.com) as the unified AI provider.
 Implements smart task-based model routing:
-- Fast / Cost-Effective Tier: "google/gemini-flash-1.5" or "openai/gpt-4o-mini" for simple tasks
-  (e.g., whatsapp_reply, simple_support, extraction, classification).
-- Reasoning / Deep Analysis Tier: "anthropic/claude-3.5-sonnet" for complex reasoning
-  (e.g., planning, code_generation, financial_audit, campaign_strategy, deep_research).
+- Fast / Cost-Effective Tier: "deepseek-chat" (DeepSeek-V3) for structured tasks,
+  function calling, JSON mode, and high-frequency workloads (e.g. whatsapp_reply,
+  simple_support, transaction_extraction, classification, quick_summary).
+- Reasoning / Deep Analysis Tier: "deepseek-reasoner" (DeepSeek-R1) for complex reasoning
+  (e.g., complex_planning, financial_audit, marketing_campaign_strategy, code_generation,
+  deep_research, reviewer_validation).
 
 Integrates:
 1. Prompt sanitization (PII and financial credential redaction).
-2. Cost & token estimation.
+2. Exact token counting & cost estimation based on DeepSeek official pricing.
 3. Offline / mock fallback when running without live API keys.
 """
 
@@ -28,6 +30,7 @@ class AIExecutionResult(BaseModel):
     model: str
     task_type: str
     content: str
+    reasoning_content: Optional[str] = None
     tokens_prompt: int = 0
     tokens_completion: int = 0
     total_tokens: int = 0
@@ -36,11 +39,12 @@ class AIExecutionResult(BaseModel):
     raw_response: Optional[Dict[str, Any]] = None
 
 
-# Pricing estimates per 1,000 tokens (USD)
+# Official DeepSeek Pricing per 1,000 tokens (USD)
+# deepseek-chat: $0.14 / 1M input ($0.00014/1k), $0.28 / 1M output ($0.00028/1k)
+# deepseek-reasoner: $0.55 / 1M input ($0.00055/1k), $2.19 / 1M output ($0.00219/1k)
 MODEL_PRICING = {
-    "google/gemini-flash-1.5": {"input": 0.000075, "output": 0.0003},
-    "openai/gpt-4o-mini": {"input": 0.00015, "output": 0.0006},
-    "anthropic/claude-3.5-sonnet": {"input": 0.003, "output": 0.015},
+    "deepseek-chat": {"input": 0.00014, "output": 0.00028},
+    "deepseek-reasoner": {"input": 0.00055, "output": 0.00219},
     "mock": {"input": 0.0, "output": 0.0},
 }
 
@@ -65,12 +69,12 @@ REASONING_TIER_TASKS = {
 
 
 def select_model_for_task(task_type: str) -> str:
-    """Smart model selection based on task complexity."""
+    """Smart model selection based on task complexity using DeepSeek model tiers."""
     if task_type in FAST_TIER_TASKS:
         return settings.ai_default_fast_model
     elif task_type in REASONING_TIER_TASKS:
         return settings.ai_default_reasoning_model
-    # Default to fast model for cost-optimization unless explicitly complex
+    # Default to fast model (deepseek-chat) for cost-optimization unless explicitly complex
     return settings.ai_default_fast_model
 
 
@@ -82,52 +86,58 @@ async def route_and_execute_ai_task(
     temperature: float = 0.2,
     max_tokens: int = 1500,
 ) -> AIExecutionResult:
-    """Sanitize, route, and execute an AI task via OpenRouter (or mock fallback)."""
+    """Sanitize, route, and execute an AI task via DeepSeek API (or mock fallback)."""
     # 1. Sanitize prompt for data privacy & compliance
     clean_prompt = sanitize_ai_prompt(prompt)
     clean_system = sanitize_ai_prompt(system_instruction or "You are an AI assistant in Talox Tech Stream.")
 
     # 2. Select target model
     target_model = select_model_for_task(task_type)
+    resolved_api_key = settings.deepseek_api_key or settings.ai_api_key
+
+    is_live_key_present = bool(
+        resolved_api_key
+        and resolved_api_key not in ("mock", "your-openrouter-api-key", "your-deepseek-api-key")
+    )
 
     logger.info(
-        "Routing AI task",
+        "Routing AI task to DeepSeek",
         task_type=task_type,
         model=target_model,
         tenant_id=tenant_id,
-        is_live_key_present=bool(settings.ai_api_key and settings.ai_api_key != "your-openrouter-api-key")
+        is_live_key_present=is_live_key_present,
     )
 
     # 3. Fallback to mock adapter if no live API key is set or mock mode is requested
-    if (
-        settings.ai_provider == "mock"
-        or not settings.ai_api_key
-        or settings.ai_api_key == "your-openrouter-api-key"
-    ):
+    if settings.ai_provider == "mock" or not is_live_key_present:
         return _execute_mock_ai_task(task_type, target_model, clean_prompt)
 
-    # 4. Live OpenRouter Execution via HTTP/2
+    # 4. Live DeepSeek Execution via HTTP
     headers = {
-        "Authorization": f"Bearer {settings.ai_api_key}",
-        "HTTP-Referer": settings.backend_url,
-        "X-Title": settings.app_name,
+        "Authorization": f"Bearer {resolved_api_key}",
         "Content-Type": "application/json",
     }
 
-    payload = {
+    # For deepseek-reasoner, temperature and system instructions should be carefully passed
+    # deepseek-reasoner supports standard messages, returns reasoning_content in choice.message
+    payload: Dict[str, Any] = {
         "model": target_model,
         "messages": [
             {"role": "system", "content": clean_system},
             {"role": "user", "content": clean_prompt},
         ],
-        "temperature": temperature,
         "max_tokens": max_tokens,
     }
 
+    # deepseek-chat supports temperature customization
+    if target_model == "deepseek-chat":
+        payload["temperature"] = temperature
+
     try:
+        base_url = settings.deepseek_base_url.rstrip("/")
         async with httpx.AsyncClient(timeout=45.0) as client:
             response = await client.post(
-                f"{settings.openrouter_base_url}/chat/completions",
+                f"{base_url}/chat/completions",
                 headers=headers,
                 json=payload,
             )
@@ -135,14 +145,17 @@ async def route_and_execute_ai_task(
             data = response.json()
 
             choice = data.get("choices", [{}])[0]
-            content = choice.get("message", {}).get("content", "")
+            message_obj = choice.get("message", {})
+            content = message_obj.get("content") or ""
+            reasoning_content = message_obj.get("reasoning_content")
+
             usage = data.get("usage", {})
             prompt_tokens = usage.get("prompt_tokens", len(clean_prompt) // 4)
             completion_tokens = usage.get("completion_tokens", len(content) // 4)
             total_tokens = usage.get("total_tokens", prompt_tokens + completion_tokens)
 
-            # Cost estimation
-            pricing = MODEL_PRICING.get(target_model, MODEL_PRICING["google/gemini-flash-1.5"])
+            # Accurate cost estimation from DeepSeek official rates
+            pricing = MODEL_PRICING.get(target_model, MODEL_PRICING["deepseek-chat"])
             cost = (prompt_tokens / 1000 * pricing["input"]) + (completion_tokens / 1000 * pricing["output"])
 
             return AIExecutionResult(
@@ -150,6 +163,7 @@ async def route_and_execute_ai_task(
                 model=target_model,
                 task_type=task_type,
                 content=content,
+                reasoning_content=reasoning_content,
                 tokens_prompt=prompt_tokens,
                 tokens_completion=completion_tokens,
                 total_tokens=total_tokens,
@@ -160,7 +174,7 @@ async def route_and_execute_ai_task(
 
     except Exception as exc:
         logger.error(
-            "OpenRouter call failed, falling back to safe offline response",
+            "DeepSeek API call failed, falling back to safe offline response",
             error=str(exc),
             task_type=task_type,
             model=target_model,
@@ -187,7 +201,7 @@ def _execute_mock_ai_task(task_type: str, model: str, prompt: str) -> AIExecutio
     completion_tokens = max(15, len(mock_content) // 4)
     total_tokens = prompt_tokens + completion_tokens
 
-    pricing = MODEL_PRICING.get(model, {"input": 0.0001, "output": 0.0002})
+    pricing = MODEL_PRICING.get(model, MODEL_PRICING["deepseek-chat"])
     cost = (prompt_tokens / 1000 * pricing["input"]) + (completion_tokens / 1000 * pricing["output"])
 
     return AIExecutionResult(
@@ -195,6 +209,7 @@ def _execute_mock_ai_task(task_type: str, model: str, prompt: str) -> AIExecutio
         model=model,
         task_type=task_type,
         content=mock_content,
+        reasoning_content="Mock reasoning chain verified." if model == "deepseek-reasoner" else None,
         tokens_prompt=prompt_tokens,
         tokens_completion=completion_tokens,
         total_tokens=total_tokens,

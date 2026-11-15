@@ -2,7 +2,7 @@
 """
 
 import uuid
-from typing import List
+from typing import List, Optional
 
 from app.config import settings
 from app.database.supabase import get_db
@@ -53,8 +53,11 @@ async def record_payment(
     request: PaymentCreateRequest,
     context=Depends(get_current_tenant),
     session: AsyncSession = Depends(get_db),
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
 ):
-    """Record and reconcile a payment transaction for the tenant."""
+    """Record and reconcile a payment transaction for the tenant with idempotency protection."""
+    if idempotency_key and not request.provider_reference:
+        request.provider_reference = idempotency_key
     return await billing_service.record_payment(session, context.tenant_id, request)
 
 

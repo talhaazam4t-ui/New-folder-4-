@@ -17,6 +17,7 @@ from app.core.logging import logger
 from app.database.models.automation import AuditLog
 from app.database.models.billing import Invoice, Payment
 from app.database.models.service import Service, ServiceSubscription
+from app.database.models.tenant import Tenant
 from app.schemas.payment import PaymentCreateRequest, PaymentResponse
 from app.schemas.service import (
     ServiceCreateRequest,
@@ -292,8 +293,39 @@ class BillingService:
         tenant_id: uuid.UUID,
         request: PaymentCreateRequest,
     ) -> PaymentResponse:
-        """Record and reconcile a client payment."""
+        """Record and reconcile a client payment with idempotency protection and approval workflows."""
+        # 1. Idempotency Check: Return existing record if provider_reference was already recorded
+        if request.provider_reference:
+            existing_q = select(Payment).where(
+                Payment.tenant_id == tenant_id,
+                Payment.provider_reference == request.provider_reference,
+            )
+            existing_res = await session.execute(existing_q)
+            existing_payment = existing_res.scalar_one_or_none()
+            if existing_payment:
+                logger.info(
+                    "Idempotent payment returned without duplicate record creation",
+                    tenant_id=str(tenant_id),
+                    reference=request.provider_reference,
+                )
+                return PaymentResponse(
+                    id=existing_payment.id,
+                    tenant_id=existing_payment.tenant_id,
+                    subscription_id=existing_payment.subscription_id,
+                    amount=float(existing_payment.amount),
+                    currency=existing_payment.currency,
+                    payment_method=existing_payment.payment_method,
+                    provider_reference=existing_payment.provider_reference,
+                    status=existing_payment.status,
+                    paid_at=existing_payment.paid_at,
+                    created_at=existing_payment.created_at,
+                )
+
         now = datetime.now(timezone.utc)
+        # Manual payments (bank transfer) require Super Admin verification before activation
+        is_manual = request.payment_method.lower() in ("bank_transfer", "manual", "offline")
+        payment_status = "pending_confirmation" if is_manual else "completed"
+        paid_at = None if is_manual else now
 
         payment = Payment(
             tenant_id=tenant_id,
@@ -302,12 +334,12 @@ class BillingService:
             currency=request.currency,
             payment_method=request.payment_method,
             provider_reference=request.provider_reference or f"TXN-{uuid.uuid4().hex[:8].upper()}",
-            status="completed",
-            paid_at=now,
+            status=payment_status,
+            paid_at=paid_at,
         )
         session.add(payment)
 
-        # If paying against an invoice, mark invoice paid
+        # If paying against an invoice, update invoice status
         if request.invoice_id:
             inv_query = select(Invoice).where(
                 Invoice.id == request.invoice_id,
@@ -316,16 +348,84 @@ class BillingService:
             inv_res = await session.execute(inv_query)
             invoice = inv_res.scalar_one_or_none()
             if invoice:
-                invoice.status = "paid"
+                invoice.status = "paid" if payment_status == "completed" else "payment_pending"
 
         await session.commit()
         await session.refresh(payment)
 
         logger.info(
-            "Payment recorded and settled",
+            "Payment recorded",
             tenant_id=str(tenant_id),
             amount=request.amount,
+            status=payment_status,
             reference=payment.provider_reference,
+        )
+
+        return PaymentResponse(
+            id=payment.id,
+            tenant_id=payment.tenant_id,
+            subscription_id=payment.subscription_id,
+            amount=float(payment.amount),
+            currency=payment.currency,
+            payment_method=payment.payment_method,
+            provider_reference=payment.provider_reference,
+            status=payment.status,
+            paid_at=payment.paid_at,
+            created_at=payment.created_at,
+        )
+
+    async def confirm_payment(
+        self,
+        session: AsyncSession,
+        payment_id: uuid.UUID,
+    ) -> PaymentResponse:
+        """Super Admin manual confirmation of payment receipt.
+
+        Transitions payment status to 'completed', settles linked invoices,
+        and activates tenant workspace if currently pending approval.
+        """
+        payment_q = select(Payment).where(Payment.id == payment_id)
+        payment_res = await session.execute(payment_q)
+        payment = payment_res.scalar_one_or_none()
+        if not payment:
+            raise ResourceNotFoundError("Payment", str(payment_id))
+
+        now = datetime.now(timezone.utc)
+        payment.status = "completed"
+        payment.paid_at = now
+
+        # Activate linked subscription if present
+        if payment.subscription_id:
+            sub_q = select(ServiceSubscription).where(ServiceSubscription.id == payment.subscription_id)
+            sub_res = await session.execute(sub_q)
+            sub = sub_res.scalar_one_or_none()
+            if sub:
+                sub.status = "active"
+
+        # Mark any pending invoices for this tenant as paid
+        inv_q = select(Invoice).where(
+            Invoice.tenant_id == payment.tenant_id,
+            Invoice.status.in_(["issued", "payment_pending"]),
+        )
+        inv_res = await session.execute(inv_q)
+        for inv in inv_res.scalars().all():
+            inv.status = "paid"
+
+        # Activate tenant workspace if pending approval / unpaid
+        tenant_q = select(Tenant).where(Tenant.id == payment.tenant_id)
+        tenant_res = await session.execute(tenant_q)
+        tenant = tenant_res.scalar_one_or_none()
+        if tenant and tenant.status in ("pending_approval", "unpaid"):
+            tenant.status = "active"
+
+        await session.commit()
+        await session.refresh(payment)
+
+        logger.info(
+            "Payment manually confirmed by Super Admin",
+            payment_id=str(payment_id),
+            tenant_id=str(payment.tenant_id),
+            amount=float(payment.amount),
         )
 
         return PaymentResponse(

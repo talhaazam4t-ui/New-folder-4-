@@ -7,6 +7,8 @@ Enforces the Section 8.3 & 11.2 safety rule:
   instead of silently writing to the financial ledger.
 """
 
+import hashlib
+import hmac
 import re
 import uuid
 from typing import Any, Dict, Optional
@@ -60,6 +62,25 @@ class WhatsAppCloudClient(BaseIntegrationAdapter):
         if hub_mode == "subscribe" and hub_verify_token == settings.whatsapp_verify_token:
             return hub_challenge or ""
         raise PermissionDeniedError("WhatsApp webhook verify token mismatch")
+
+    def verify_webhook_signature(
+        self,
+        payload_bytes: bytes,
+        signature_header: Optional[str],
+    ) -> bool:
+        """Verify Meta WhatsApp X-Hub-Signature-256 HMAC-SHA256 signature."""
+        app_secret = settings.whatsapp_app_secret or settings.meta_app_secret
+        if not app_secret:
+            if settings.app_env in ("development", "test"):
+                return True
+            return False
+
+        if not signature_header or not signature_header.startswith("sha256="):
+            return False
+
+        expected_hash = signature_header[7:]
+        mac = hmac.new(app_secret.encode("utf-8"), msg=payload_bytes, digestmod=hashlib.sha256)
+        return hmac.compare_digest(mac.hexdigest(), expected_hash)
 
     async def send_text_message(
         self,

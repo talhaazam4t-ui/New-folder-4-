@@ -53,6 +53,32 @@ PERMISSIONS = {
 
 # Role to Permissions Mapping
 ROLE_PERMISSIONS_MAP = {
+    # System Super Administrator (Sole Owner)
+    "super_admin": set(PERMISSIONS.keys()),
+    "operations_admin": {
+        "tenant.read", "tenant.update", "tenant.members.manage",
+        "business.metrics.read",
+        "marketing.research", "marketing.content.generate", "marketing.campaign.create", "marketing.campaign.publish",
+        "leads.read", "leads.create", "leads.update",
+        "notifications.send", "integrations.read", "integrations.manage",
+        "agents.execute", "agents.configure", "approvals.review",
+    },
+    "finance_admin": {
+        "tenant.read",
+        "business.records.read", "business.records.create", "business.records.update",
+        "business.metrics.read",
+        "payments.read", "payments.create", "payments.refund",
+        "subscriptions.read", "subscriptions.update",
+        "approvals.review",
+    },
+    "support_admin": {
+        "tenant.read",
+        "business.metrics.read",
+        "leads.read",
+        "integrations.read",
+        "subscriptions.read",
+    },
+    # Client Workspace Roles
     "owner": {
         "tenant.read", "tenant.update", "tenant.delete", "tenant.members.manage",
         "business.records.read", "business.records.create", "business.records.update", "business.records.delete",
@@ -64,7 +90,28 @@ ROLE_PERMISSIONS_MAP = {
         "notifications.send", "integrations.read", "integrations.manage",
         "agents.execute", "agents.configure", "approvals.review",
     },
+    "client_owner": {
+        "tenant.read", "tenant.update", "tenant.delete", "tenant.members.manage",
+        "business.records.read", "business.records.create", "business.records.update", "business.records.delete",
+        "business.metrics.read",
+        "marketing.research", "marketing.content.generate", "marketing.campaign.create", "marketing.campaign.publish",
+        "leads.read", "leads.create", "leads.update",
+        "payments.read", "payments.create", "payments.refund",
+        "subscriptions.read", "subscriptions.update",
+        "notifications.send", "integrations.read", "integrations.manage",
+        "agents.execute", "agents.configure", "approvals.review",
+    },
     "admin": {
+        "tenant.read", "tenant.update", "tenant.members.manage",
+        "business.records.read", "business.records.create", "business.records.update",
+        "business.metrics.read",
+        "marketing.research", "marketing.content.generate", "marketing.campaign.create",
+        "leads.read", "leads.create", "leads.update",
+        "payments.read", "subscriptions.read",
+        "notifications.send", "integrations.read", "integrations.manage",
+        "agents.execute", "agents.configure", "approvals.review",
+    },
+    "client_admin": {
         "tenant.read", "tenant.update", "tenant.members.manage",
         "business.records.read", "business.records.create", "business.records.update",
         "business.metrics.read",
@@ -90,6 +137,13 @@ ROLE_PERMISSIONS_MAP = {
         "leads.read", "leads.create",
         "agents.execute",
     },
+    "client_member": {
+        "tenant.read",
+        "business.records.read", "business.records.create",
+        "business.metrics.read",
+        "leads.read", "leads.create",
+        "agents.execute",
+    },
     "viewer": {
         "tenant.read",
         "business.records.read",
@@ -99,6 +153,13 @@ ROLE_PERMISSIONS_MAP = {
         "subscriptions.read",
     },
 }
+
+PLATFORM_ROLES = {"super_admin", "operations_admin", "finance_admin", "support_admin"}
+
+
+def is_platform_role(role: str) -> bool:
+    """Check if the provided role is a recognized platform administration role."""
+    return role in PLATFORM_ROLES
 
 
 def get_role_permissions(role: str) -> Set[str]:

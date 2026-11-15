@@ -141,7 +141,7 @@ class MasterOrchestratorAgent(BaseAgent):
 
             usage = UsageRecord(
                 tenant_id=tenant_id,
-                provider="openrouter",
+                provider="deepseek",
                 model=stage_res.model,
                 input_tokens=int(stage_res.tokens_used * 0.6),
                 output_tokens=stage_res.tokens_used - int(stage_res.tokens_used * 0.6),

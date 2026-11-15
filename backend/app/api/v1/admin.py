@@ -286,6 +286,17 @@ async def update_tenant_status(
     }
 
 
+@router.post("/payments/{payment_id}/confirm")
+async def confirm_tenant_payment(
+    payment_id: uuid.UUID,
+    admin_user: Profile = Depends(verify_platform_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    """Super Admin manual confirmation of payment receipt and workspace activation."""
+    res = await billing_service.confirm_payment(session, payment_id)
+    return {"success": True, "data": res, "message": "Payment confirmed and tenant activated"}
+
+
 @router.patch("/tenants/{tenant_id}/assign")
 async def assign_tenant_industry_and_service(
     tenant_id: uuid.UUID,

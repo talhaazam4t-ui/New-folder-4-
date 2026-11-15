@@ -4,12 +4,14 @@
 import uuid
 from typing import Optional
 
+from app.config import settings
 from app.core.exceptions import PermissionDeniedError, TenantIsolationError
 from app.core.permissions import has_role_permission
 from app.core.security import decode_access_token
 from app.core.tenant_context import TenantContext
-from app.database.models.tenant import Profile, TenantMember
+from app.database.models.tenant import Profile, Tenant, TenantMember
 from app.database.supabase import get_db
+from app.services.auth_service import auth_service
 from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
@@ -94,6 +96,23 @@ async def get_current_tenant(
             detail={"code": "INVALID_TENANT_ID", "message": "X-Tenant-ID must be a valid UUID"},
         )
 
+    # 1. Verify tenant workspace existence and operational status
+    tenant_query = select(Tenant).where(Tenant.id == tenant_uuid)
+    tenant_res = await session.execute(tenant_query)
+    tenant = tenant_res.scalar_one_or_none()
+    if not tenant:
+        raise TenantIsolationError(f"Tenant workspace '{x_tenant_id}' does not exist")
+
+    if tenant.status == "suspended":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "TENANT_SUSPENDED",
+                "message": "Tenant workspace is suspended. Please contact platform administration.",
+            },
+        )
+
+    # 2. Verify active membership for authenticated user
     query = select(TenantMember).where(
         TenantMember.tenant_id == tenant_uuid,
         TenantMember.user_id == current_user.id,
@@ -129,3 +148,27 @@ def require_permission(permission_name: str):
         return context
 
     return _permission_checker
+
+
+def require_platform_role(*allowed_roles: str):
+    """Dependency factory checking that the authenticated user possesses an allowed platform admin role."""
+    target_roles = set(allowed_roles) if allowed_roles else {"super_admin"}
+
+    async def _platform_role_checker(
+        current_user: Profile = Depends(get_current_user),
+        session: AsyncSession = Depends(get_db),
+    ) -> Profile:
+        is_sole_super = await auth_service.is_platform_super_admin(session, current_user)
+        if is_sole_super:
+            return current_user
+
+        user_email = (current_user.email or "").strip().lower()
+        sole_admins = {e.strip().lower() for e in settings.super_admin_emails}
+        if "super_admin" in target_roles and user_email in sole_admins:
+            return current_user
+
+        raise PermissionDeniedError(
+            f"Platform administrative privilege required (allowed: {', '.join(sorted(target_roles))})"
+        )
+
+    return _platform_role_checker

@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     # Platform Super Admin Emails (Sole Exclusive Administrator)
     super_admin_emails: List[str] = Field(
         default=[
+            "talazam40@gmail.com",
             "talhazam4@gmail.com",
             "talhaazam4t@gmail.com",
         ],
@@ -49,6 +50,10 @@ class Settings(BaseSettings):
         default="mock-service-role-key",
         alias="SUPABASE_SERVICE_ROLE_KEY"
     )
+    supabase_jwt_secret: Optional[str] = Field(
+        default=None,
+        alias="SUPABASE_JWT_SECRET"
+    )
     supabase_database_url: Optional[str] = Field(
         default=None,
         alias="SUPABASE_DATABASE_URL"
@@ -56,19 +61,20 @@ class Settings(BaseSettings):
     db_pool_size: int = Field(default=5, alias="DB_POOL_SIZE")
     db_max_overflow: int = Field(default=10, alias="DB_MAX_OVERFLOW")
 
-    # AI Provider & Smart Model Routing
-    ai_provider: str = Field(default="openrouter", alias="AI_PROVIDER")  # openrouter | mock
-    ai_api_key: Optional[str] = Field(default=None, alias="AI_API_KEY")
-    openrouter_base_url: str = Field(
-        default="https://openrouter.ai/api/v1",
-        alias="OPENROUTER_BASE_URL"
+    # AI Provider & Smart Model Routing (DeepSeek API Only)
+    ai_provider: str = Field(default="deepseek", alias="AI_PROVIDER")  # deepseek | mock
+    deepseek_api_key: Optional[str] = Field(default=None, alias="DEEPSEEK_API_KEY")
+    deepseek_base_url: str = Field(
+        default="https://api.deepseek.com",
+        alias="DEEPSEEK_BASE_URL"
     )
+    ai_api_key: Optional[str] = Field(default=None, alias="AI_API_KEY")  # backward-compatible alias
     ai_default_fast_model: str = Field(
-        default="google/gemini-flash-1.5",
+        default="deepseek-chat",
         alias="AI_DEFAULT_FAST_MODEL"
     )
     ai_default_reasoning_model: str = Field(
-        default="anthropic/claude-3.5-sonnet",
+        default="deepseek-reasoner",
         alias="AI_DEFAULT_REASONING_MODEL"
     )
 
@@ -93,9 +99,14 @@ class Settings(BaseSettings):
     whatsapp_provider: str = Field(default="mock", alias="WHATSAPP_PROVIDER")  # meta | mock
     whatsapp_access_token: Optional[str] = Field(default=None, alias="WHATSAPP_ACCESS_TOKEN")
     whatsapp_phone_number_id: Optional[str] = Field(default=None, alias="WHATSAPP_PHONE_NUMBER_ID")
+    whatsapp_business_account_id: Optional[str] = Field(
+        default=None,
+        alias="WHATSAPP_BUSINESS_ACCOUNT_ID"
+    )
     whatsapp_verify_token: str = Field(default="talox_verify_token", alias="WHATSAPP_VERIFY_TOKEN")
     whatsapp_app_secret: Optional[str] = Field(default=None, alias="WHATSAPP_APP_SECRET")
     meta_app_id: Optional[str] = Field(default=None, alias="META_APP_ID")
+    meta_app_secret: Optional[str] = Field(default=None, alias="META_APP_SECRET")
     meta_config_id: Optional[str] = Field(default=None, alias="META_CONFIG_ID")
 
     # Payment Rails
@@ -106,6 +117,7 @@ class Settings(BaseSettings):
     # Google Services (Maps/Places, Gmail, Calendar OAuth)
     google_client_id: Optional[str] = Field(default=None, alias="GOOGLE_CLIENT_ID")
     google_client_secret: Optional[str] = Field(default=None, alias="GOOGLE_CLIENT_SECRET")
+    google_redirect_uri: Optional[str] = Field(default=None, alias="GOOGLE_REDIRECT_URI")
     google_places_api_key: Optional[str] = Field(default=None, alias="GOOGLE_PLACES_API_KEY")
 
     # Redis (Optional)

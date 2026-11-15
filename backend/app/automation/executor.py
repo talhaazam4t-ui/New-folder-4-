@@ -149,7 +149,7 @@ class TaskExecutor:
             return {
                 "result": ai_res.content,
                 "model": ai_res.model,
-                "provider": "openrouter",
+                "provider": "deepseek",
                 "tokens_used": ai_res.total_tokens,
                 "input_tokens": ai_res.tokens_prompt,
                 "output_tokens": ai_res.tokens_completion,
@@ -164,8 +164,8 @@ class TaskExecutor:
             input_tokens = int(output_data.get("input_tokens", 100))
             output_tokens = int(output_data.get("output_tokens", 50))
             estimated_cost = float(output_data.get("estimated_cost_usd", 0.0002))
-            model_used = str(output_data.get("model", "google/gemini-flash-1.5"))
-            provider_used = str(output_data.get("provider", "openrouter"))
+            model_used = str(output_data.get("model", "deepseek-chat"))
+            provider_used = str(output_data.get("provider", "deepseek"))
 
             task.status = "completed"
             task.attempts = attempts

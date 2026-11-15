@@ -56,7 +56,30 @@ def create_access_token(
 
 
 def decode_access_token(token: str) -> Optional[Dict[str, Any]]:
-    """Decode and validate a signed JWT token."""
+    """Decode and validate a signed JWT token with dual support for Supabase Auth and internal JWTs."""
+    # 1. Attempt Supabase Auth verification if SUPABASE_JWT_SECRET is configured
+    if settings.supabase_jwt_secret:
+        try:
+            payload = jwt.decode(
+                token,
+                settings.supabase_jwt_secret,
+                algorithms=[ALGORITHM],
+                options={"verify_aud": False},
+            )
+            # Normalize claims from Supabase JWT format
+            if "sub" in payload and "user_id" not in payload:
+                payload["user_id"] = payload["sub"]
+            app_meta = payload.get("app_metadata") or {}
+            if isinstance(app_meta, dict):
+                if "role" in app_meta and "role" not in payload:
+                    payload["role"] = app_meta["role"]
+                if "tenant_id" in app_meta and "tenant_id" not in payload:
+                    payload["tenant_id"] = app_meta["tenant_id"]
+            return payload
+        except JWTError:
+            pass
+
+    # 2. Fallback to application secret key verification
     try:
         payload = jwt.decode(token, settings.app_secret_key, algorithms=[ALGORITHM])
         return payload

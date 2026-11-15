@@ -6,15 +6,15 @@ from app.integrations.ai_providers.router import (
 
 
 def test_model_selection_tiers():
-    # Fast / Cost-Effective Tier
-    assert select_model_for_task("whatsapp_reply") == "google/gemini-flash-1.5"
-    assert select_model_for_task("simple_support") == "google/gemini-flash-1.5"
-    assert select_model_for_task("transaction_extraction") == "google/gemini-flash-1.5"
+    # Fast / Cost-Effective Tier (DeepSeek-V3)
+    assert select_model_for_task("whatsapp_reply") == "deepseek-chat"
+    assert select_model_for_task("simple_support") == "deepseek-chat"
+    assert select_model_for_task("transaction_extraction") == "deepseek-chat"
 
-    # Reasoning / Deep Analysis Tier
-    assert select_model_for_task("complex_planning") == "anthropic/claude-3.5-sonnet"
-    assert select_model_for_task("financial_audit") == "anthropic/claude-3.5-sonnet"
-    assert select_model_for_task("code_generation") == "anthropic/claude-3.5-sonnet"
+    # Reasoning / Deep Analysis Tier (DeepSeek-R1)
+    assert select_model_for_task("complex_planning") == "deepseek-reasoner"
+    assert select_model_for_task("financial_audit") == "deepseek-reasoner"
+    assert select_model_for_task("code_generation") == "deepseek-reasoner"
 
 
 @pytest.mark.asyncio
@@ -26,7 +26,7 @@ async def test_route_and_execute_mock_mode():
     )
     assert result.success is True
     assert result.is_mock is True
-    assert result.model == "google/gemini-flash-1.5"
+    assert result.model == "deepseek-chat"
     assert result.total_tokens > 0
     assert result.estimated_cost >= 0.0
     assert "received" in result.content.lower()
@@ -40,5 +40,5 @@ async def test_route_and_execute_reasoning_task():
         tenant_id="tenant-test-456",
     )
     assert result.success is True
-    assert result.model == "anthropic/claude-3.5-sonnet"
+    assert result.model == "deepseek-reasoner"
     assert "plan" in result.content.lower()
