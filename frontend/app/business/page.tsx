@@ -111,6 +111,7 @@ export default function BusinessPage() {
       return;
     }
     fetchBusinessData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleAddRecord = async (e: React.FormEvent) => {

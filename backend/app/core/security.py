@@ -17,9 +17,9 @@ from app.config import settings
 from cryptography.fernet import Fernet, InvalidToken
 from jose import JWTError, jwt
 
-# JWT Configuration
+# JWT Configuration — 30 Days Persistent Client Session
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 hours
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 30  # 30 days persistent session (client remembered)
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:

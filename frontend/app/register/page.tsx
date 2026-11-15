@@ -2,8 +2,13 @@
 
 import React, { useState } from "react";
 import { apiRequest } from "@/lib/api";
-import { setAuthToken, setCurrentUser } from "@/lib/auth";
-import { Lock, Mail, User, Phone, ArrowRight, AlertCircle } from "lucide-react";
+import {
+  setAuthToken,
+  setCurrentUser,
+  SUPPORT_WHATSAPP_NUMBER,
+  SUPPORT_WHATSAPP_LINK,
+} from "@/lib/auth";
+import { Lock, Mail, User, Phone, ArrowRight, AlertCircle, MessageSquare } from "lucide-react";
 
 export default function RegisterPage() {
   const [fullName, setFullName] = useState("");
@@ -22,10 +27,11 @@ export default function RegisterPage() {
       const res = await apiRequest("/api/v1/auth/register", {
         method: "POST",
         body: JSON.stringify({
-          full_name: fullName,
-          email,
+          full_name: fullName.trim(),
+          email: email.trim().toLowerCase(),
           password,
-          phone: phone || null,
+          phone: phone.trim() || null,
+          account_type: "client",
         }),
       });
 
@@ -37,17 +43,22 @@ export default function RegisterPage() {
 
       const token = res.access_token || res.data?.access_token;
       const userId = res.user_id || res.data?.user_id;
-      const isSuperAdmin = Boolean(res.is_super_admin ?? res.data?.is_super_admin);
 
-      setAuthToken(token);
-      setCurrentUser({
-        userId,
-        email,
-        fullName,
-        token,
-        isSuperAdmin,
-      });
+      // Automatically persist client session so they remain remembered across subsequent visits
+      setAuthToken(token, true);
+      setCurrentUser(
+        {
+          userId,
+          email: email.trim().toLowerCase(),
+          fullName: fullName.trim(),
+          token,
+          isSuperAdmin: false,
+          rememberMe: true,
+        },
+        true
+      );
 
+      // Clients route strictly to client onboarding / client portal
       window.location.href = "/onboarding";
     } catch (err: any) {
       setError(err.message || "Failed to register. Please try again.");
@@ -103,21 +114,7 @@ export default function RegisterPage() {
                 required
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="sarah@example.com"
-                className="w-full rounded-lg border border-slate-800 bg-slate-900 py-2.5 pl-10 pr-3 text-sm text-white placeholder-slate-500 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
-              />
-            </div>
-          </div>
-
-          <div>
-            <label className="block text-xs font-medium text-slate-300">Phone (Optional)</label>
-            <div className="relative mt-1">
-              <Phone className="absolute left-3 top-3 h-4 w-4 text-slate-500" />
-              <input
-                type="tel"
-                value={phone}
-                onChange={(e) => setPhone(e.target.value)}
-                placeholder="+1 555-0199"
+                placeholder="sarah@enterprise.com"
                 className="w-full rounded-lg border border-slate-800 bg-slate-900 py-2.5 pl-10 pr-3 text-sm text-white placeholder-slate-500 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
               />
             </div>
@@ -133,7 +130,22 @@ export default function RegisterPage() {
                 minLength={8}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder="Minimum 8 characters"
+                placeholder="••••••••"
+                className="w-full rounded-lg border border-slate-800 bg-slate-900 py-2.5 pl-10 pr-3 text-sm text-white placeholder-slate-500 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+              />
+            </div>
+            <p className="mt-1 text-[11px] text-slate-500">Minimum 8 characters. Persisted securely.</p>
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-slate-300">Phone / WhatsApp (Optional)</label>
+            <div className="relative mt-1">
+              <Phone className="absolute left-3 top-3 h-4 w-4 text-slate-500" />
+              <input
+                type="tel"
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+                placeholder="+1 555-0199"
                 className="w-full rounded-lg border border-slate-800 bg-slate-900 py-2.5 pl-10 pr-3 text-sm text-white placeholder-slate-500 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
               />
             </div>
@@ -144,16 +156,33 @@ export default function RegisterPage() {
             disabled={loading}
             className="flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-600 py-2.5 text-sm font-semibold text-white shadow-md hover:bg-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 focus:ring-offset-slate-950 disabled:opacity-50 transition"
           >
-            {loading ? "Creating Account..." : "Continue to Industry Selection"}
+            {loading ? "Creating Account..." : "Create Account & Continue"}
             <ArrowRight className="h-4 w-4" />
           </button>
         </form>
 
-        <div className="text-center text-xs text-slate-400">
-          Already registered?{" "}
-          <a href="/login" className="font-medium text-emerald-400 hover:text-emerald-300">
-            Sign In Here
-          </a>
+        <div className="border-t border-slate-800/80 pt-4 space-y-3">
+          <div className="text-center text-xs text-slate-400">
+            Already have an account?{" "}
+            <a href="/login" className="font-medium text-emerald-400 hover:text-emerald-300">
+              Sign In
+            </a>
+          </div>
+
+          <div className="rounded-lg bg-slate-900/80 border border-slate-800 p-3 text-center">
+            <p className="text-xs text-slate-400">
+              Have questions regarding our service packages?
+            </p>
+            <a
+              href={SUPPORT_WHATSAPP_LINK}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="mt-1.5 inline-flex items-center gap-2 text-xs font-semibold text-emerald-400 hover:text-emerald-300"
+            >
+              <MessageSquare className="h-3.5 w-3.5" />
+              <span>Contact Services on WhatsApp: {SUPPORT_WHATSAPP_NUMBER}</span>
+            </a>
+          </div>
         </div>
       </div>
     </div>

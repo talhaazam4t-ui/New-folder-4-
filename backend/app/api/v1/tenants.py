@@ -78,7 +78,7 @@ async def get_tenant_overview(
     leads_rows = list(leads_rows_res.scalars().all())
     total_leads = len(leads_rows)
     qualified_leads = sum(
-        1 for l in leads_rows if l.status in ("qualified", "converted") or float(l.qualification_score or 0) >= 70.0
+        1 for lead_item in leads_rows if lead_item.status in ("qualified", "converted") or float(lead_item.qualification_score or 0) >= 70.0
     )
 
     messages_sent = 0
@@ -86,33 +86,33 @@ async def get_tenant_overview(
     lead_performance: List[Dict[str, Any]] = []
     appointment_performance: List[Dict[str, Any]] = []
 
-    for l in leads_rows:
-        meta = l.metadata_ or {}
+    for lead_item in leads_rows:
+        meta = lead_item.metadata_ or {}
         msg_cnt = int(meta.get("messages_sent_count", 0))
-        if msg_cnt == 0 and l.status in ("contacted", "qualified", "converted"):
+        if msg_cnt == 0 and lead_item.status in ("contacted", "qualified", "converted"):
             msg_cnt = 1
         messages_sent += msg_cnt
 
-        is_booked = bool(meta.get("meeting_booked")) or l.status == "converted"
+        is_booked = bool(meta.get("meeting_booked")) or lead_item.status == "converted"
         if is_booked:
             meetings_booked += 1
             appointment_performance.append({
-                "lead_id": str(l.id),
-                "client_name": l.name,
+                "lead_id": str(lead_item.id),
+                "client_name": lead_item.name,
                 "meeting_title": meta.get("meeting_title", "Consultation & Service Discovery"),
-                "scheduled_at": meta.get("meeting_scheduled_at", l.created_at.isoformat()),
+                "scheduled_at": meta.get("meeting_scheduled_at", lead_item.created_at.isoformat()),
                 "status": "Confirmed",
             })
 
         lead_performance.append({
-            "id": str(l.id),
-            "name": l.name,
-            "source": l.source,
-            "status": l.status,
-            "qualification_score": float(l.qualification_score or 0.0),
+            "id": str(lead_item.id),
+            "name": lead_item.name,
+            "source": lead_item.source,
+            "status": lead_item.status,
+            "qualification_score": float(lead_item.qualification_score or 0.0),
             "messages_sent": msg_cnt,
             "meeting_booked": is_booked,
-            "created_at": l.created_at.isoformat(),
+            "created_at": lead_item.created_at.isoformat(),
         })
 
     conversion_rate = round((meetings_booked / total_leads * 100.0), 1) if total_leads > 0 else 0.0

@@ -1,9 +1,10 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { ClientChatbotMount } from "@/components/shared/ClientChatbotMount";
 
 export const metadata: Metadata = {
-  title: "Talox Tech Stream | Multi-Tenant AI Platform",
-  description: "Custom Python Multi-Tenant SaaS Agent Platform",
+  title: "Teloxtech SaaS | Autonomous Multi-Tenant AI Platform",
+  description: "Enterprise Multi-Tenant SaaS with Independent Client & Admin Portals",
 };
 
 export default function RootLayout({
@@ -15,6 +16,7 @@ export default function RootLayout({
     <html lang="en">
       <body className="antialiased min-h-screen bg-slate-50 text-slate-900">
         {children}
+        <ClientChatbotMount />
       </body>
     </html>
   );

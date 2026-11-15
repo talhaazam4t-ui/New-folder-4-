@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { Navbar } from "@/components/shared/Navbar";
+import { AdminNavbar } from "@/components/admin/AdminNavbar";
 import { AdminSidebar } from "@/components/admin/AdminSidebar";
 import { StatCard } from "@/components/dashboard/StatCard";
 import { apiRequest } from "@/lib/api";
@@ -62,6 +62,7 @@ export default function AdminDashboardPage() {
       return;
     }
     fetchOperationsData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleToggleTenantStatus = async (tenantId: string, currentStatus: string) => {
@@ -170,7 +171,7 @@ export default function AdminDashboardPage() {
 
   return (
     <div className="min-h-screen bg-slate-900 text-slate-100 flex flex-col">
-      <Navbar />
+      <AdminNavbar />
 
       <div className="flex flex-1">
         <AdminSidebar currentPath="/admin" />

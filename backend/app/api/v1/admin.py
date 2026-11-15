@@ -27,7 +27,7 @@ from app.database.models.agent import AgentExecution, AgentRegistry, AgentTask
 from app.database.models.automation import Approval, AuditLog, Integration, UsageRecord
 from app.database.models.billing import Payment
 from app.database.models.marketing import Lead, MarketingCampaign
-from app.database.models.service import Service, ServiceSubscription
+from app.database.models.service import ServiceSubscription
 from app.database.models.tenant import Profile, Tenant, TenantMember
 from app.database.supabase import get_db
 from app.dependencies import get_current_user
@@ -36,7 +36,7 @@ from app.schemas.service import SubscriptionCreateRequest
 from app.services.auth_service import auth_service
 from app.services.billing_service import billing_service, normalize_industry
 from app.services.marketing_service import marketing_service
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -401,15 +401,15 @@ async def get_owner_operations_control_center(
     # Compute Lead Gen & Outreach summary
     total_messages_sent = 0
     total_meetings_booked = 0
-    for l in leads_rows:
-        meta = l.metadata_ or {}
-        total_messages_sent += int(meta.get("messages_sent_count", 1 if l.status != "new" else 0))
-        if meta.get("meeting_booked") or l.status == "converted":
+    for lead_item in leads_rows:
+        meta = lead_item.metadata_ or {}
+        total_messages_sent += int(meta.get("messages_sent_count", 1 if lead_item.status != "new" else 0))
+        if meta.get("meeting_booked") or lead_item.status == "converted":
             total_meetings_booked += 1
 
     total_leads_cnt = len(leads_rows)
     qualified_leads_cnt = sum(
-        1 for l in leads_rows if l.status in ("qualified", "converted") or float(l.qualification_score or 0) >= 70.0
+        1 for lead_item in leads_rows if lead_item.status in ("qualified", "converted") or float(lead_item.qualification_score or 0) >= 70.0
     )
 
     return {
@@ -498,18 +498,18 @@ async def get_owner_operations_control_center(
                 },
                 "leads": [
                     {
-                        "id": str(l.id),
-                        "tenant_id": str(l.tenant_id),
-                        "name": l.name,
-                        "email": l.email,
-                        "phone": l.phone,
-                        "source": l.source,
-                        "status": l.status,
-                        "qualification_score": float(l.qualification_score or 0.0),
-                        "metadata": l.metadata_ or {},
-                        "created_at": l.created_at.isoformat() if l.created_at else None,
+                        "id": str(lead_row.id),
+                        "tenant_id": str(lead_row.tenant_id),
+                        "name": lead_row.name,
+                        "email": lead_row.email,
+                        "phone": lead_row.phone,
+                        "source": lead_row.source,
+                        "status": lead_row.status,
+                        "qualification_score": float(lead_row.qualification_score or 0.0),
+                        "metadata": lead_row.metadata_ or {},
+                        "created_at": lead_row.created_at.isoformat() if lead_row.created_at else None,
                     }
-                    for l in leads_rows
+                    for lead_row in leads_rows
                 ],
                 "campaigns": [
                     {
