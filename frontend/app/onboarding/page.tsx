@@ -85,8 +85,30 @@ export default function OnboardingPage() {
   const [error, setError] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [preselectedService, setPreselectedService] = useState<string | null>(null);
 
   const loadCatalogAndExistingState = async () => {
+    // Read pre-selected service from URL or chatbot consultation
+    if (typeof window !== "undefined") {
+      const urlParams = new URLSearchParams(window.location.search);
+      const svcParam = urlParams.get("service");
+      const savedPreselected = localStorage.getItem("teloxtech_preselected_service");
+      const chosenService = svcParam || savedPreselected;
+      if (chosenService) {
+        setPreselectedService(chosenService);
+        const lower = chosenService.toLowerCase();
+        if (lower.includes("clinic") || lower.includes("patient") || lower.includes("hospital") || lower.includes("doctor")) {
+          setIndustry("Clinics / Hospitals");
+        } else if (lower.includes("rent") || lower.includes("property") || lower.includes("real estate") || lower.includes("landlord")) {
+          setIndustry("Real Estate / Property");
+        } else if (lower.includes("ecommerce") || lower.includes("e-commerce") || lower.includes("shop")) {
+          setIndustry("E-Commerce");
+        } else if (lower.includes("financ") || lower.includes("ledger") || lower.includes("cash") || lower.includes("bank")) {
+          setIndustry("Financing");
+        }
+      }
+    }
+
     const indRes = await apiRequest("/api/v1/services/industries");
     if (indRes.industries && Array.isArray(indRes.industries)) {
       setIndustries(indRes.industries);
@@ -357,6 +379,15 @@ export default function OnboardingPage() {
           </div>
         </div>
 
+        {preselectedService && (
+          <div className="flex items-center gap-2 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-xs text-emerald-300">
+            <Sparkles className="h-4 w-4 shrink-0 text-emerald-400" />
+            <span>
+              Pre-selected service from your Teloxtech Assistant consultation: <strong>{preselectedService}</strong>
+            </span>
+          </div>
+        )}
+
         {error && (
           <div className="flex items-center gap-2 rounded-lg border border-red-500/20 bg-red-500/10 p-3 text-xs text-red-400">
             <AlertCircle className="h-4 w-4 shrink-0" />
@@ -487,6 +518,10 @@ export default function OnboardingPage() {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {currentIndustryServices.map((srv) => {
                 const isSelected = subscribedServiceIds.includes(srv.id);
+                const isPreselectedMatch =
+                  Boolean(preselectedService) &&
+                  (srv.name.toLowerCase().includes(preselectedService!.toLowerCase()) ||
+                    preselectedService!.toLowerCase().includes(srv.name.toLowerCase()));
                 const chosenPlan =
                   selectedPackages[srv.id] || srv.packages?.[0]?.plan_name || "starter";
                 const activePkg =
@@ -498,14 +533,23 @@ export default function OnboardingPage() {
                     className={`flex flex-col justify-between rounded-xl border p-5 transition ${
                       isSelected
                         ? "border-emerald-500/60 bg-emerald-950/20"
+                        : isPreselectedMatch
+                        ? "border-emerald-500/80 bg-slate-900 ring-2 ring-emerald-500/30"
                         : "border-slate-800 bg-slate-900"
                     }`}
                   >
                     <div className="space-y-3">
                       <div className="flex items-center justify-between">
-                        <span className="rounded bg-slate-800 px-2 py-0.5 text-[10px] font-semibold uppercase text-slate-300">
-                          {srv.category}
-                        </span>
+                        <div className="flex items-center gap-2">
+                          <span className="rounded bg-slate-800 px-2 py-0.5 text-[10px] font-semibold uppercase text-slate-300">
+                            {srv.category}
+                          </span>
+                          {isPreselectedMatch && !isSelected && (
+                            <span className="rounded bg-emerald-500/20 text-emerald-400 px-2 py-0.5 text-[10px] font-bold flex items-center gap-1">
+                              <Sparkles className="h-3 w-3" /> Recommended
+                            </span>
+                          )}
+                        </div>
                         {isSelected && (
                           <span className="flex items-center gap-1 text-xs font-bold text-emerald-400">
                             <CheckCircle2 className="h-3.5 w-3.5" /> Selected
