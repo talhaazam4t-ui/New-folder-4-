@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: talox-tech-stream
+    runtime: docker
+    plan: free
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    autoDeploy: true
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: DEBUG
+        value: "false"
+      - key: PORT
+        value: 10000
+      - key: HOST
+        value: 0.0.0.0

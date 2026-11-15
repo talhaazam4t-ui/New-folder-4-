@@ -5,7 +5,12 @@
 
 import { getActiveTenant, getAuthToken } from "./auth";
 
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
+const BACKEND_URL =
+  process.env.NEXT_PUBLIC_BACKEND_URL !== undefined
+    ? process.env.NEXT_PUBLIC_BACKEND_URL
+    : process.env.NODE_ENV === "development"
+    ? "http://localhost:8000"
+    : "";
 
 export interface ApiResponse<T = any> {
   success?: boolean;
