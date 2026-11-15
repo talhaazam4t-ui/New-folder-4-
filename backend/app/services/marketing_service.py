@@ -438,34 +438,43 @@ class MarketingService:
         from app.services.billing_service import normalize_industry
 
         norm_ind = normalize_industry(request.industry)
-        industry_templates = {
-            "Financing": [
-                {"name": "Gulf Capital Advisory LLC", "email": "inquiries@gulfcapital-adv.com", "phone": "+971501122331", "rating": 4.8},
-                {"name": "Horizon SME Trade Finance", "email": "desk@horizontradefin.com", "phone": "+966502233442", "rating": 4.7},
-                {"name": "Crescent Wealth Partners", "email": "contact@crescentwealth.io", "phone": "+971503344553", "rating": 4.9},
-                {"name": "Vertex Commercial Lending", "email": "loans@vertexlending.com", "phone": "+966504455664", "rating": 4.6},
-            ],
-            "Clinics / Hospitals": [
-                {"name": "Al Noor Specialized Medical Center", "email": "appointments@alnoorclinic.med", "phone": "+971521112233", "rating": 4.9},
-                {"name": "PrimeCare Dental & Aesthetics", "email": "care@primecaredental.org", "phone": "+966552223344", "rating": 4.8},
-                {"name": "Oasis Diagnostics & Polyclinic", "email": "booking@oasispolyclinic.com", "phone": "+971523334455", "rating": 4.7},
-                {"name": "Royal Emirates Orthopedic Clinic", "email": "info@royalortho.med", "phone": "+971524445566", "rating": 4.9},
-            ],
-            "Real Estate / Property": [
-                {"name": "Marina Bay Luxury Properties", "email": "sales@marinabayprop.ae", "phone": "+971581012021", "rating": 4.8},
-                {"name": "Riyadh Boulevard Commercial Estates", "email": "leasing@riyadhboulevard.sa", "phone": "+966542023032", "rating": 4.7},
-                {"name": "Skyline Crest Developments", "email": "investors@skylinecrest.com", "phone": "+971583034043", "rating": 4.9},
-                {"name": "Palm Estates Asset Management", "email": "portfolio@palmestates.ae", "phone": "+971584045054", "rating": 4.6},
-            ],
-            "E-Commerce": [
-                {"name": "ModaSouq Direct Retail", "email": "vip@modasouq.store", "phone": "+971561192281", "rating": 4.8},
-                {"name": "DesertTech Consumer Electronics", "email": "b2b@deserttech.shop", "phone": "+966532293382", "rating": 4.7},
-                {"name": "PureOrganics MENA Marketplace", "email": "orders@pureorganics.me", "phone": "+971563394483", "rating": 4.9},
-                {"name": "LuxeHome Furnishings Online", "email": "concierge@luxehome.store", "phone": "+966534495584", "rating": 4.8},
-            ],
-        }
+        target_loc = (request.location or "Dubai & Riyadh").strip()
+        loc_tag = target_loc.replace("&", "").replace("/", "").split(",")[0].strip().title()
 
-        candidates = industry_templates.get(norm_ind, industry_templates["Real Estate / Property"])[: request.limit]
+        loc_slug = "".join(c for c in loc_tag.lower() if c.isalnum())
+        if not loc_slug:
+            loc_slug = "global"
+
+        if norm_ind == "Financing":
+            candidates = [
+                {"name": f"{loc_tag} Capital & Investment Advisory LLC", "email": f"advisory@{loc_slug}capital.com", "phone": "+971501122331", "rating": 4.9},
+                {"name": f"Apex Commercial Lending ({loc_tag})", "email": f"loans@{loc_slug}apexlending.io", "phone": "+966502233442", "rating": 4.8},
+                {"name": f"{loc_tag} SME Asset & Trade Finance", "email": f"desk@{loc_slug}smetrade.org", "phone": "+971503344553", "rating": 4.7},
+                {"name": f"Crescent Wealth Partners - {loc_tag}", "email": f"inquiries@crescentwealth-{loc_slug}.com", "phone": "+966504455664", "rating": 4.9},
+            ]
+        elif norm_ind == "Clinics / Hospitals":
+            candidates = [
+                {"name": f"{loc_tag} Specialized Medical & Surgical Center", "email": f"appointments@{loc_slug}medcenter.med", "phone": "+971521112233", "rating": 4.9},
+                {"name": f"PrimeCare Aesthetics & Dental - {loc_tag}", "email": f"care@{loc_slug}primecare.org", "phone": "+966552223344", "rating": 4.8},
+                {"name": f"{loc_tag} Polyclinic & Wellness Group", "email": f"booking@{loc_slug}wellnessclinic.com", "phone": "+971523334455", "rating": 4.7},
+                {"name": f"Royal Diagnostics & Healthcare ({loc_tag})", "email": f"info@{loc_slug}royaldiag.med", "phone": "+971524445566", "rating": 4.9},
+            ]
+        elif norm_ind == "Real Estate / Property":
+            candidates = [
+                {"name": f"{loc_tag} Prime Luxury Estates & Developments", "email": f"sales@{loc_slug}primeestates.ae", "phone": "+971581012021", "rating": 4.9},
+                {"name": f"Skyline Commercial & Residential ({loc_tag})", "email": f"leasing@{loc_slug}skylineproperties.com", "phone": "+966542023032", "rating": 4.8},
+                {"name": f"{loc_tag} Boulevard Assets & Property Management", "email": f"portfolio@{loc_slug}boulevard.io", "phone": "+971583034043", "rating": 4.7},
+                {"name": f"Crestline Investment Properties - {loc_tag}", "email": f"investors@{loc_slug}crestline.ae", "phone": "+971584045054", "rating": 4.9},
+            ]
+        else:  # E-Commerce
+            candidates = [
+                {"name": f"{loc_tag} Direct Retail & Wholesale Hub", "email": f"vip@{loc_slug}retaildirect.store", "phone": "+971561192281", "rating": 4.8},
+                {"name": f"PureCommerce Goods - {loc_tag}", "email": f"orders@{loc_slug}purecommerce.me", "phone": "+966532293382", "rating": 4.7},
+                {"name": f"{loc_tag} Consumer Goods & Lifestyle Brands", "email": f"concierge@{loc_slug}goods.shop", "phone": "+971563394483", "rating": 4.9},
+                {"name": f"DesertLuxe Logistics & Retail ({loc_tag})", "email": f"b2b@{loc_slug}desertluxe.store", "phone": "+966534495584", "rating": 4.8},
+            ]
+
+        candidates = candidates[: request.limit]
 
         # Fetch existing leads for deduplication
         existing_res = await session.execute(select(Lead).where(Lead.tenant_id == tenant_id))
@@ -567,6 +576,26 @@ class MarketingService:
             raise TaloxException(
                 message="Outreach blocked: recipient has opted out of communications.",
                 code="OPT_OUT_COMPLIANCE_BLOCK",
+                status_code=400,
+            )
+
+        # Enforce Integration Dependency (Gmail or WhatsApp must be connected and approved)
+        from app.database.models.automation import Integration
+        req_provider = "whatsapp" if request.channel == "whatsapp" else "gmail"
+        int_query = select(Integration).where(
+            Integration.tenant_id == tenant_id,
+            Integration.provider.in_([req_provider, "email"] if req_provider == "gmail" else [req_provider]),
+            Integration.status == "connected",
+        )
+        int_res = await session.execute(int_query)
+        integ_connected = int_res.scalar_one_or_none()
+        if not integ_connected:
+            raise TaloxException(
+                message=(
+                    f"Outreach blocked: Required integration '{req_provider.upper()}' is not connected "
+                    f"and approved for this workspace. Please connect and approve the integration first."
+                ),
+                code="INTEGRATION_REQUIRED",
                 status_code=400,
             )
 

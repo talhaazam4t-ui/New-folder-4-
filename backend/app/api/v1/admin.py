@@ -56,7 +56,7 @@ _PLATFORM_RUNTIME_SETTINGS: Dict[str, Any] = {
 
 
 class TenantStatusUpdateRequest(BaseModel):
-    status: str  # active, suspended
+    status: str  # active, suspended, pending_approval
 
 
 class TenantAssignmentRequest(BaseModel):
@@ -85,7 +85,16 @@ class AdminAgentUpdateRequest(BaseModel):
 
 
 class AdminIntegrationActionRequest(BaseModel):
-    action: str  # revoke, reconnect, test
+    action: str  # revoke, reconnect, test, approve
+
+
+class AdminConnectIntegrationRequest(BaseModel):
+    provider: str
+    account_identifier: Optional[str] = None
+    api_key: Optional[str] = None
+    oauth_code: Optional[str] = None
+    status: str = "connected"
+    configuration: Optional[Dict[str, Any]] = None
 
 
 class AdminApprovalReviewRequest(BaseModel):
@@ -191,6 +200,10 @@ async def list_all_tenants(
         )
         integrations = int_res.scalars().all()
 
+        cfg_settings = t.settings or {}
+        onboarding_plan = cfg_settings.get("plan_name") or cfg_settings.get("package_tier")
+        onboarding_service = cfg_settings.get("service_name")
+
         tenant_list.append({
             "id": str(t.id),
             "name": t.name,
@@ -208,11 +221,25 @@ async def list_all_tenants(
                 }
                 for s in active_subs
             ],
+            "all_subscriptions": [
+                {
+                    "id": str(s.id),
+                    "service_name": s.service_name,
+                    "plan_name": s.plan_name,
+                    "price": s.price,
+                    "status": s.status,
+                }
+                for s in subs
+            ],
+            "selected_package_tier": onboarding_plan or (active_subs[0].plan_name if active_subs else None),
+            "selected_service_name": onboarding_service or (active_subs[0].service_name if active_subs else None),
             "monthly_spend": sum(float(s.price) for s in active_subs),
             "leads_count": leads_cnt,
             "integrations_connected": sum(1 for i in integrations if i.status == "connected"),
+            "integrations_pending": sum(1 for i in integrations if i.status == "pending_approval"),
             "integrations_failed": sum(1 for i in integrations if i.status == "error"),
-            "settings": t.settings or {},
+            "integrations_disconnected": sum(1 for i in integrations if i.status == "disconnected"),
+            "settings": cfg_settings,
             "created_at": t.created_at.isoformat() if t.created_at else None,
         })
 
@@ -226,23 +253,29 @@ async def update_tenant_status(
     admin_user: Profile = Depends(verify_platform_admin),
     session: AsyncSession = Depends(get_db),
 ):
-    """Suspend or reactivate a tenant account."""
+    """Suspend, activate, or review a tenant account."""
     query = select(Tenant).where(Tenant.id == tenant_id)
     res = await session.execute(query)
     tenant = res.scalar_one_or_none()
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
 
+    old_status = tenant.status
     tenant.status = request.status
+    action_tag = (
+        "admin.tenant.activated_and_payment_confirmed"
+        if request.status == "active"
+        else f"admin.tenant.status.{request.status}"
+    )
     session.add(
         AuditLog(
             tenant_id=tenant_id,
             actor_id=admin_user.id,
             actor_type="admin",
-            action=f"admin.tenant.status.{request.status}",
+            action=action_tag,
             resource_type="tenant",
             resource_id=tenant.id,
-            metadata_={"status": request.status},
+            metadata_={"old_status": old_status, "status": request.status, "tenant_name": tenant.name},
         )
     )
     await session.commit()
@@ -288,6 +321,22 @@ async def assign_tenant_industry_and_service(
             ),
         )
 
+    session.add(
+        AuditLog(
+            tenant_id=tenant.id,
+            actor_id=admin_user.id,
+            actor_type="admin",
+            action="admin.tenant.workspace_assigned",
+            resource_type="tenant",
+            resource_id=tenant.id,
+            metadata_={
+                "industry": tenant.industry,
+                "status": tenant.status,
+                "tenant_name": tenant.name,
+                "plan_name": request.plan_name,
+            },
+        )
+    )
     await session.commit()
     return {
         "success": True,
@@ -383,6 +432,48 @@ async def get_owner_operations_control_center(
         .order_by(Integration.created_at.desc())
     )
     integrations_rows = integrations_res.all()
+
+    # Build complete integration matrix so admin can configure standard integrations for every client
+    integrations_payload = []
+    seen_tenant_providers = set()
+    for integ, t_name in integrations_rows:
+        seen_tenant_providers.add((str(integ.tenant_id), integ.provider.lower()))
+        integrations_payload.append({
+            "id": str(integ.id),
+            "tenant_id": str(integ.tenant_id),
+            "tenant_name": t_name,
+            "provider": integ.provider,
+            "integration_type": integ.integration_type,
+            "status": integ.status,
+            "external_account_id": integ.external_account_id,
+            "configuration": mask_sensitive_config(integ.configuration or {}),
+            "created_at": integ.created_at.isoformat() if integ.created_at else None,
+        })
+
+    CORE_INTEGRATION_TEMPLATES = [
+        {"provider": "gmail", "type": "oauth"},
+        {"provider": "google_calendar", "type": "oauth"},
+        {"provider": "whatsapp", "type": "oauth"},
+        {"provider": "google_business", "type": "api_key"},
+        {"provider": "booking", "type": "api_key"},
+    ]
+
+    for t_item in tenants_resp["data"]:
+        t_id = t_item["id"]
+        t_name = t_item["name"]
+        for p in CORE_INTEGRATION_TEMPLATES:
+            if (t_id, p["provider"]) not in seen_tenant_providers:
+                integrations_payload.append({
+                    "id": f"unlinked_{t_id}_{p['provider']}",
+                    "tenant_id": t_id,
+                    "tenant_name": t_name,
+                    "provider": p["provider"],
+                    "integration_type": p["type"],
+                    "status": "disconnected",
+                    "external_account_id": None,
+                    "configuration": {"unlinked": True},
+                    "created_at": None,
+                })
 
     # AI Model Usage & Cost Telemetry
     usage_res = await session.execute(
@@ -524,20 +615,7 @@ async def get_owner_operations_control_center(
                     for c in campaigns_rows
                 ],
             },
-            "integrations": [
-                {
-                    "id": str(integ.id),
-                    "tenant_id": str(integ.tenant_id),
-                    "tenant_name": t_name,
-                    "provider": integ.provider,
-                    "integration_type": integ.integration_type,
-                    "status": integ.status,
-                    "external_account_id": integ.external_account_id,
-                    "configuration": mask_sensitive_config(integ.configuration or {}),
-                    "created_at": integ.created_at.isoformat() if integ.created_at else None,
-                }
-                for integ, t_name in integrations_rows
-            ],
+            "integrations": integrations_payload,
             "monitoring": {
                 "usage_records": [
                     {
@@ -683,7 +761,7 @@ async def admin_manage_integration(
     admin_user: Profile = Depends(verify_platform_admin),
     session: AsyncSession = Depends(get_db),
 ):
-    """Owner control to revoke, reconnect, or test a client integration without exposing secrets."""
+    """Owner control to revoke, reconnect, test, or approve a client integration without exposing secrets."""
     res = await session.execute(select(Integration).where(Integration.id == integration_id))
     integ = res.scalar_one_or_none()
     if not integ:
@@ -691,12 +769,19 @@ async def admin_manage_integration(
 
     if request.action == "revoke":
         integ.status = "disconnected"
-        integ.configuration = {"revoked_by_owner": True}
+        integ.configuration = {"revoked_by_owner": True, "admin_approved": False}
+    elif request.action == "approve":
+        integ.status = "connected"
+        cfg = dict(integ.configuration or {})
+        cfg["admin_approved"] = True
+        cfg["approved_by"] = str(admin_user.id)
+        integ.configuration = cfg
     elif request.action in ("reconnect", "test"):
         integ.status = "connected"
         cfg = dict(integ.configuration or {})
         cfg["connection_tested"] = True
         cfg["last_test_result"] = "verified_by_owner"
+        cfg["admin_approved"] = True
         integ.configuration = cfg
 
     session.add(
@@ -719,4 +804,78 @@ async def admin_manage_integration(
             "status": integ.status,
             "configuration": mask_sensitive_config(integ.configuration or {}),
         },
+    }
+
+
+@router.get("/tenants/{tenant_id}/integrations/oauth-url")
+async def get_tenant_oauth_url(
+    tenant_id: uuid.UUID,
+    provider: str,
+    admin_user: Profile = Depends(verify_platform_admin),
+):
+    """Retrieve official OAuth authorization URL for a specific client integration."""
+    from app.services.integration_service import integration_service
+    info = integration_service.get_oauth_authorization_info(provider, tenant_id)
+    return {"success": True, "data": info}
+
+
+@router.post("/tenants/{tenant_id}/integrations/connect")
+async def admin_connect_tenant_integration(
+    tenant_id: uuid.UUID,
+    request: AdminConnectIntegrationRequest,
+    admin_user: Profile = Depends(verify_platform_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    """Admin link or approve an integration for a client workspace."""
+    provider_clean = request.provider.lower()
+    query = select(Integration).where(
+        Integration.tenant_id == tenant_id,
+        Integration.provider == provider_clean,
+    )
+    res = await session.execute(query)
+    integ = res.scalar_one_or_none()
+
+    if integ:
+        integ.status = request.status
+        if request.account_identifier:
+            integ.external_account_id = request.account_identifier
+        cfg = dict(integ.configuration or {})
+        if request.configuration:
+            cfg.update(request.configuration)
+        cfg["admin_approved"] = True
+        cfg["linked_by"] = str(admin_user.id)
+        integ.configuration = cfg
+    else:
+        integ = Integration(
+            tenant_id=tenant_id,
+            provider=provider_clean,
+            integration_type="oauth" if provider_clean in ("gmail", "google_calendar", "whatsapp") else "api_key",
+            status=request.status,
+            external_account_id=request.account_identifier or f"{provider_clean}_managed",
+            configuration={"admin_approved": True, "linked_by": str(admin_user.id), **(request.configuration or {})},
+        )
+        session.add(integ)
+
+    session.add(
+        AuditLog(
+            tenant_id=tenant_id,
+            actor_id=admin_user.id,
+            actor_type="admin",
+            action=f"admin.integration.{provider_clean}.connected",
+            resource_type="integration",
+            resource_id=integ.id,
+            metadata_={"provider": provider_clean, "status": integ.status, "account": request.account_identifier},
+        )
+    )
+    await session.commit()
+    return {
+        "success": True,
+        "data": {
+            "id": str(integ.id),
+            "tenant_id": str(tenant_id),
+            "provider": integ.provider,
+            "status": integ.status,
+            "external_account_id": integ.external_account_id,
+        },
+        "message": f"Integration '{provider_clean}' successfully connected and approved.",
     }
