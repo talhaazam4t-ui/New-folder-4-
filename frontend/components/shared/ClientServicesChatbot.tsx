@@ -9,6 +9,7 @@ import {
   ExternalLink,
   Bot,
   ArrowRight,
+  Key,
 } from "lucide-react";
 import { SUPPORT_WHATSAPP_NUMBER, SUPPORT_WHATSAPP_LINK } from "@/lib/auth";
 import { apiRequest } from "@/lib/api";
@@ -28,6 +29,8 @@ export function ClientServicesChatbot() {
   const [isOpen, setIsOpen] = useState(false);
   const [input, setInput] = useState("");
   const [isTyping, setIsTyping] = useState(false);
+  const [apiKey, setApiKey] = useState("");
+  const [showApiKeySetting, setShowApiKeySetting] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const [messages, setMessages] = useState<ChatMessage[]>([
@@ -38,6 +41,23 @@ export function ClientServicesChatbot() {
       timestamp: "Just now",
     },
   ]);
+
+  // Load custom Gemini API key from localStorage if saved
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const savedKey = localStorage.getItem("teloxtech_gemini_api_key");
+      if (savedKey) {
+        setApiKey(savedKey);
+      }
+    }
+  }, []);
+
+  const handleSaveApiKey = (newKey: string) => {
+    setApiKey(newKey);
+    if (typeof window !== "undefined") {
+      localStorage.setItem("teloxtech_gemini_api_key", newKey);
+    }
+  };
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -75,7 +95,7 @@ export function ClientServicesChatbot() {
     setIsTyping(true);
 
     try {
-      // Prepare message history for conversational assistant endpoint
+      // Prepare message history for Gemini Flash-Lite endpoint
       const payloadMessages = nextMessages.map((m) => ({
         role: m.sender === "user" ? "user" : "assistant",
         content: m.text,
@@ -85,6 +105,8 @@ export function ClientServicesChatbot() {
         method: "POST",
         body: JSON.stringify({
           messages: payloadMessages,
+          api_key: apiKey.trim() || undefined,
+          model: "gemini-2.5-flash-lite",
         }),
       });
 
@@ -173,13 +195,22 @@ export function ClientServicesChatbot() {
                 <div className="flex items-center gap-1.5 mt-0.5">
                   <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
                   <span className="text-[10px] text-slate-400 font-medium">
-                    AI Sales Concierge • 24/7 Managed
+                    AI Sales Concierge • Gemini Flash-Lite
                   </span>
                 </div>
               </div>
             </div>
 
             <div className="flex items-center gap-1">
+              <button
+                onClick={() => setShowApiKeySetting(!showApiKeySetting)}
+                className={`p-1 rounded transition ${
+                  apiKey ? "text-emerald-400 hover:text-emerald-300" : "text-slate-400 hover:text-slate-200"
+                } hover:bg-slate-800`}
+                title="Configure Gemini Flash-Lite API Key"
+              >
+                <Key className="h-3.5 w-3.5" />
+              </button>
               <button
                 onClick={() => setIsOpen(false)}
                 className="p-1 rounded text-slate-400 hover:text-white hover:bg-slate-800 transition"
@@ -189,6 +220,23 @@ export function ClientServicesChatbot() {
               </button>
             </div>
           </div>
+
+          {/* Optional Gemini Flash-Lite API Key Drawer */}
+          {showApiKeySetting && (
+            <div className="p-2.5 bg-slate-950/95 border-b border-slate-800 text-[11px] space-y-1.5 animate-in fade-in duration-150 shrink-0">
+              <div className="flex items-center justify-between">
+                <span className="font-semibold text-slate-300">Gemini Flash-Lite API Key</span>
+                <span className="text-[9px] text-emerald-400 font-mono">gemini-2.5-flash-lite</span>
+              </div>
+              <input
+                type="password"
+                value={apiKey}
+                onChange={(e) => handleSaveApiKey(e.target.value)}
+                placeholder="Paste your Gemini API key (optional)..."
+                className="w-full rounded bg-slate-900 border border-slate-700 px-2 py-1 text-[11px] text-white focus:outline-none focus:border-emerald-500 font-mono placeholder-slate-600"
+              />
+            </div>
+          )}
 
           {/* Messages Container */}
           <div className="flex-1 overflow-y-auto p-3 space-y-3 bg-slate-900/60 text-xs">

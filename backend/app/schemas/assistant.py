@@ -17,11 +17,11 @@ class AssistantChatRequest(BaseModel):
     contact_info: Optional[str] = None
     api_key: Optional[str] = Field(
         default=None,
-        description="Optional override API Key"
+        description="Optional client-provided API Key (Gemini or DeepSeek)"
     )
     model: Optional[str] = Field(
-        default="deepseek-chat",
-        description="Target model (e.g. deepseek-chat)"
+        default="gemini-2.5-flash-lite",
+        description="Target model (e.g. gemini-2.5-flash-lite, deepseek-chat)"
     )
 
 

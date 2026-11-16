@@ -1,12 +1,13 @@
-"""Teloxtech Services Assistant — Conversational Sales Concierge Service (DeepSeek AI).
+"""Teloxtech Services Assistant — Conversational Sales Concierge Service.
 
 Integrates with:
-1. DeepSeek API (`deepseek-chat`) for high-speed, intelligent sales conversations.
+1. Google Gemini Flash-Lite API (`gemini-2.5-flash-lite` / `gemini-2.0-flash-lite` / `gemini-1.5-flash`).
 2. Smart lead qualification and conversational detail capture.
 3. Managed AI service recommendations with smooth Client Service Dashboard redirect signals.
 4. Intelligent fallback concierge engine for offline / unkeyed environments.
 """
 
+import os
 import re
 from typing import Any, Dict, List, Optional
 
@@ -54,39 +55,56 @@ Example:
 
 
 class AssistantService:
-    """Manages conversational AI sales interactions, DeepSeek API calling, and lead capture."""
+    """Manages conversational AI sales interactions, Gemini Flash-Lite calling, and lead capture."""
+
+    def __init__(self):
+        self.default_gemini_models = [
+            "gemini-2.5-flash-lite",
+            "gemini-2.0-flash-lite",
+            "gemini-1.5-flash",
+        ]
 
     async def chat(self, request: AssistantChatRequest) -> AssistantChatResponse:
-        """Process conversational turn using DeepSeek API or smart fallback concierge."""
+        """Process conversational turn using Gemini Flash-Lite or smart fallback concierge."""
         # 1. Resolve API Key priority: Client payload -> Environment -> Config
         api_key = (
             request.api_key
-            or settings.deepseek_api_key
+            or os.environ.get("GEMINI_API_KEY")
+            or os.environ.get("GOOGLE_API_KEY")
+            or settings.gemini_api_key
             or settings.ai_api_key
         )
 
-        target_model = request.model or settings.ai_default_fast_model or "deepseek-chat"
+        target_model = request.model or settings.gemini_model or "gemini-2.5-flash-lite"
 
         # 2. Extract any lead qualification details from conversation
         captured_lead = self._extract_lead_profile(request.messages, request)
 
-        # 3. Attempt DeepSeek API execution if a live API key is present
-        if api_key and api_key not in ("mock", "your-openrouter-api-key", "your-deepseek-api-key"):
+        # 3. Attempt Gemini API execution if an API key is present
+        if api_key and api_key != "your-openrouter-api-key" and api_key != "mock":
             try:
-                deepseek_result = await self._call_deepseek_api(
-                    api_key=api_key,
-                    messages=request.messages,
-                    model=target_model,
-                )
+                # Check whether key is a Google Gemini key or OpenRouter key
+                if api_key.startswith("sk-or-") or "openrouter" in settings.ai_provider:
+                    gemini_result = await self._call_openrouter_gemini(
+                        api_key=api_key,
+                        messages=request.messages,
+                        model=target_model,
+                    )
+                else:
+                    gemini_result = await self._call_google_gemini_flash_lite(
+                        api_key=api_key,
+                        messages=request.messages,
+                        model=target_model,
+                    )
 
-                if deepseek_result:
+                if gemini_result:
                     reply_text, action_url, action_label, service_slug, service_name = (
-                        self._parse_recommendation(deepseek_result)
+                        self._parse_recommendation(gemini_result)
                     )
                     return AssistantChatResponse(
                         success=True,
                         reply=reply_text,
-                        model_used=f"{target_model} (Live DeepSeek API)",
+                        model_used=f"{target_model} (Live API)",
                         action_url=action_url,
                         action_label=action_label,
                         service_slug=service_slug,
@@ -94,7 +112,7 @@ class AssistantService:
                         captured_lead=captured_lead,
                     )
             except Exception as exc:
-                logger.warning("DeepSeek API call failed, falling back to local concierge", error=str(exc))
+                logger.warning("Gemini Flash-Lite API call failed, falling back to local concierge", error=str(exc))
 
         # 4. Smart Local Sales Concierge Fallback (Guaranteed fast, intelligent response)
         fallback_reply, action_url, action_label, service_slug, service_name = (
@@ -112,33 +130,87 @@ class AssistantService:
             captured_lead=captured_lead,
         )
 
-    async def _call_deepseek_api(
+    async def _call_google_gemini_flash_lite(
         self,
         api_key: str,
         messages: List[ChatMessagePayload],
-        model: str = "deepseek-chat",
+        model: str = "gemini-2.5-flash-lite",
     ) -> Optional[str]:
-        """Call DeepSeek API for fast sales concierge conversation."""
-        api_messages = [{"role": "system", "content": TELOXTECH_SYSTEM_PROMPT}]
-        for m in messages:
-            r = "assistant" if m.role in ("bot", "model") else m.role
-            api_messages.append({"role": r, "content": m.content})
+        """Call Google Generative Language REST API for Gemini Flash-Lite."""
+        # Convert messages to Gemini contents structure
+        contents = []
+        for msg in messages:
+            role = "model" if msg.role in ("assistant", "model", "bot") else "user"
+            contents.append({"role": role, "parts": [{"text": msg.content}]})
 
         payload = {
-            "model": "deepseek-chat",
-            "messages": api_messages,
+            "system_instruction": {
+                "parts": [{"text": TELOXTECH_SYSTEM_PROMPT}]
+            },
+            "contents": contents,
+            "generationConfig": {
+                "temperature": 0.3,
+                "maxOutputTokens": 600,
+            },
+        }
+
+        # Try specified model, with automatic fallback across Flash-Lite versions
+        models_to_try = [model] + [m for m in self.default_gemini_models if m != model]
+        headers = {"Content-Type": "application/json"}
+
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            for m in models_to_try:
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent?key={api_key}"
+                try:
+                    res = await client.post(url, headers=headers, json=payload)
+                    if res.status_code == 200:
+                        data = res.json()
+                        candidates = data.get("candidates", [])
+                        if candidates:
+                            parts = candidates[0].get("content", {}).get("parts", [])
+                            if parts:
+                                return parts[0].get("text", "").strip()
+                    elif res.status_code in (404, 400):
+                        logger.info("Model not available, trying next Gemini variant", model=m, status=res.status_code)
+                        continue
+                    else:
+                        logger.warning("Gemini request returned non-200", status=res.status_code, text=res.text[:200])
+                except Exception as exc:
+                    logger.debug("Attempt failed for Gemini model", model=m, error=str(exc))
+                    continue
+
+        return None
+
+    async def _call_openrouter_gemini(
+        self,
+        api_key: str,
+        messages: List[ChatMessagePayload],
+        model: str,
+    ) -> Optional[str]:
+        """Call OpenRouter gateway using Gemini Flash-Lite."""
+        openrouter_messages = [{"role": "system", "content": TELOXTECH_SYSTEM_PROMPT}]
+        for m in messages:
+            r = "assistant" if m.role in ("bot", "model") else m.role
+            openrouter_messages.append({"role": r, "content": m.content})
+
+        # Map to OpenRouter model identifier
+        or_model = "google/gemini-2.0-flash-lite:free" if "lite" in model else "google/gemini-flash-1.5"
+        payload = {
+            "model": or_model,
+            "messages": openrouter_messages,
             "temperature": 0.3,
-            "max_tokens": 800,
+            "max_tokens": 600,
         }
         headers = {
             "Authorization": f"Bearer {api_key}",
+            "HTTP-Referer": settings.backend_url,
+            "X-Title": "Teloxtech Assistant",
             "Content-Type": "application/json",
         }
-        base_url = settings.deepseek_base_url.rstrip("/")
 
         async with httpx.AsyncClient(timeout=25.0) as client:
             res = await client.post(
-                f"{base_url}/chat/completions",
+                f"{settings.openrouter_base_url}/chat/completions",
                 headers=headers,
                 json=payload,
             )
@@ -146,9 +218,6 @@ class AssistantService:
                 data = res.json()
                 choice = data.get("choices", [{}])[0]
                 return choice.get("message", {}).get("content", "").strip()
-            else:
-                logger.warning("DeepSeek assistant call returned non-200", status=res.status_code, body=res.text[:200])
-                return None
 
         return None
 
