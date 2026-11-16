@@ -113,7 +113,7 @@ class MetaEmbeddedSignupAdapter:
                     display_phone_number=display_phone,
                     status="connected",
                     is_mock=False,
-                    details={"token_type": "bearer", "subscribed": True},
+                    details={"token_type": "bearer", "subscribed": True, "access_token": access_token},
                 )
 
         except Exception as exc:
@@ -139,6 +139,7 @@ class MetaEmbeddedSignupAdapter:
             details={
                 "provider": "mock_meta_embedded_signup",
                 "simulated_code": code[:10] + "...",
+                "access_token": f"meta_mock_token_{tenant_id[:8]}",
                 "webhook_verified": True,
             },
         )

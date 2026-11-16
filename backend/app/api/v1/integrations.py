@@ -10,9 +10,11 @@ Supports:
 """
 
 import json
+import urllib.parse
 import uuid
 from typing import Any, Dict, Optional
 
+from app.config import settings
 from app.core.tenant_context import TenantContext
 from app.database.supabase import get_db
 from app.dependencies import require_permission
@@ -20,9 +22,10 @@ from app.integrations.whatsapp.client import whatsapp_client
 from app.services.integration_service import (
     SUPPORTED_INTEGRATION_PROVIDERS,
     integration_service,
+    verify_oauth_state,
 )
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -39,6 +42,12 @@ class ProviderConnectRequest(BaseModel):
     api_key: Optional[str] = Field(default=None, description="API Key for providers without OAuth")
     account_identifier: Optional[str] = Field(default=None, description="External account email, phone, or ID")
     configuration: Optional[Dict[str, Any]] = None
+
+
+class OAuthCallbackRequest(BaseModel):
+    code: str = Field(min_length=3, max_length=1500, description="OAuth authorization callback code")
+    state: str = Field(min_length=3, max_length=2500, description="OAuth state parameter")
+    redirect_uri: Optional[str] = Field(default=None, description="Optional custom redirect URI")
 
 
 class WhatsAppOutboundRequest(BaseModel):
@@ -80,11 +89,125 @@ async def get_onboarding_integration_requirements(
 @router.get("/oauth/{provider}/authorize")
 async def get_provider_oauth_url(
     provider: str,
+    return_to: str = Query("/onboarding", description="Target route after OAuth completion"),
+    redirect_uri: Optional[str] = Query(None, description="Custom redirect URI"),
     context: TenantContext = Depends(require_permission("integrations.manage")),
 ):
-    """Generate OAuth authorization URL and scopes for a supported integration provider."""
-    info = integration_service.get_oauth_authorization_info(provider, context.tenant_id)
+    """Generate OAuth authorization URL, signed state, and scopes for a supported integration provider."""
+    info = integration_service.get_oauth_authorization_info(
+        provider=provider,
+        tenant_id=context.tenant_id,
+        user_id=context.user_id,
+        return_to=return_to,
+        custom_redirect_uri=redirect_uri,
+    )
     return {"success": True, "data": info}
+
+
+@router.post("/oauth/callback", status_code=status.HTTP_200_OK)
+async def handle_oauth_callback(
+    request: OAuthCallbackRequest,
+    context: TenantContext = Depends(require_permission("integrations.manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """Handle OAuth authorization callback, validate state, securely exchange code for tokens, and vault credentials."""
+    data = await integration_service.handle_oauth_callback(
+        session=session,
+        tenant_id=context.tenant_id,
+        user_id=context.user_id,
+        code=request.code,
+        state=request.state,
+        redirect_uri=request.redirect_uri,
+    )
+    return {
+        "success": data["status"] == "connected",
+        "data": data,
+        "message": f"{data.get('display_name', 'Service')} connected and verified via OAuth 2.0.",
+    }
+
+
+@router.post("/oauth/{provider}/callback", status_code=status.HTTP_200_OK)
+async def handle_provider_oauth_callback(
+    provider: str,
+    request: OAuthCallbackRequest,
+    context: TenantContext = Depends(require_permission("integrations.manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """Provider-specific alias endpoint for OAuth callback token exchange."""
+    data = await integration_service.handle_oauth_callback(
+        session=session,
+        tenant_id=context.tenant_id,
+        user_id=context.user_id,
+        code=request.code,
+        state=request.state,
+        redirect_uri=request.redirect_uri,
+    )
+    return {
+        "success": data["status"] == "connected",
+        "data": data,
+        "message": f"{data.get('display_name', 'Service')} connected and verified via OAuth 2.0.",
+    }
+
+
+@router.get("/oauth/{provider}/callback")
+async def oauth_browser_redirect_callback(
+    provider: str,
+    code: Optional[str] = Query(None),
+    state: Optional[str] = Query(None),
+    error: Optional[str] = Query(None),
+    error_description: Optional[str] = Query(None),
+    session: AsyncSession = Depends(get_db),
+):
+    """Direct browser redirect target for third-party OAuth providers (Google / Meta)."""
+    frontend_base = settings.frontend_url.rstrip("/")
+
+    if error:
+        err_param = urllib.parse.quote(error_description or error or "access_denied")
+        return RedirectResponse(
+            f"{frontend_base}/onboarding?error={err_param}&provider={provider}",
+            status_code=302,
+        )
+
+    if not code or not state:
+        return RedirectResponse(
+            f"{frontend_base}/onboarding?error=missing_code_or_state&provider={provider}",
+            status_code=302,
+        )
+
+    try:
+        state_data = verify_oauth_state(state)
+        tenant_id_str = state_data.get("tenant_id")
+        user_id_str = state_data.get("user_id")
+        return_to = state_data.get("return_to") or "/onboarding"
+
+        if not tenant_id_str:
+            return RedirectResponse(
+                f"{frontend_base}/onboarding?error=invalid_state_tenant&provider={provider}",
+                status_code=302,
+            )
+
+        tenant_id = uuid.UUID(tenant_id_str)
+        user_id = uuid.UUID(user_id_str) if user_id_str else tenant_id
+
+        await integration_service.handle_oauth_callback(
+            session=session,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            code=code,
+            state=state,
+        )
+
+        sep = "&" if "?" in return_to else "?"
+        return RedirectResponse(
+            f"{frontend_base}{return_to}{sep}connected={provider}&status=success",
+            status_code=302,
+        )
+    except Exception as exc:
+        err_msg = urllib.parse.quote(str(exc))
+        return RedirectResponse(
+            f"{frontend_base}/onboarding?error={err_msg}&provider={provider}",
+            status_code=302,
+        )
 
 
 @router.post("/whatsapp/connect", status_code=status.HTTP_201_CREATED)
@@ -260,9 +383,21 @@ async def process_whatsapp_meta_webhook(
 
     # Support simple JSON fallback (e.g., test suites)
     if not entries and "sender_phone" in payload and "message_text" in payload:
-        from app.database.models.tenant import Tenant
-        res = await session.execute(select(Tenant.id).where(Tenant.status == "active").limit(1))
-        tenant_id = res.scalar_one_or_none()
+        tenant_id = None
+        header_tenant = raw_request.headers.get("x-tenant-id")
+        if header_tenant:
+            try:
+                tenant_id = uuid.UUID(header_tenant)
+            except ValueError:
+                tenant_id = None
+
+        if not tenant_id:
+            from app.database.models.tenant import Tenant
+            res = await session.execute(
+                select(Tenant.id).where(Tenant.status.in_(["active", "pending_approval"])).limit(1)
+            )
+            tenant_id = res.scalar_one_or_none()
+
         if tenant_id:
             res = await integration_service.process_inbound_whatsapp_message(
                 session=session,
@@ -275,7 +410,12 @@ async def process_whatsapp_meta_webhook(
             results.append(res)
             processed_count += 1
 
-    return {"success": True, "processed": processed_count, "results": results}
+    return {
+        "success": True,
+        "processed": processed_count,
+        "results": results,
+        "data": results[0] if results else None,
+    }
 
 
 @router.post("/whatsapp/send")

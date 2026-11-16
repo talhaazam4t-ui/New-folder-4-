@@ -15,6 +15,8 @@ import {
   ShieldCheck,
   Layers,
   Lock,
+  RefreshCw,
+  ExternalLink,
 } from "lucide-react";
 
 interface PackageTier {
@@ -81,6 +83,7 @@ export default function OnboardingPage() {
   const [automationActive, setAutomationActive] = useState(false);
   const [apiKeysInput, setApiKeysInput] = useState<Record<string, string>>({});
   const [accountIdsInput, setAccountIdsInput] = useState<Record<string, string>>({});
+  const [verifyingProvider, setVerifyingProvider] = useState<string | null>(null);
 
   const [error, setError] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
@@ -153,7 +156,59 @@ export default function OnboardingPage() {
       window.location.href = "/login";
       return;
     }
-    loadCatalogAndExistingState();
+
+    const checkOAuthCallback = async () => {
+      if (typeof window === "undefined") return;
+      const urlParams = new URLSearchParams(window.location.search);
+      const oauthCode = urlParams.get("code");
+      const oauthState = urlParams.get("state");
+      const oauthError = urlParams.get("error");
+      const errorDesc = urlParams.get("error_description");
+      const connectedProvider = urlParams.get("connected");
+      const statusParam = urlParams.get("status");
+
+      if (oauthError) {
+        setError(`OAuth authorization was denied or failed: ${errorDesc || oauthError}`);
+        window.history.replaceState({}, document.title, window.location.pathname);
+      } else if (connectedProvider && statusParam === "success") {
+        setStatusMessage(
+          `${connectedProvider.replace("_", " ").toUpperCase()} successfully connected and verified via OAuth 2.0!`
+        );
+        window.history.replaceState({}, document.title, window.location.pathname);
+      } else if (oauthCode && oauthState) {
+        setLoading(true);
+        setStatusMessage("Completing OAuth 2.0 token exchange and security verification...");
+        try {
+          const cbRes = await apiRequest("/api/v1/integrations/oauth/callback", {
+            method: "POST",
+            body: JSON.stringify({
+              code: oauthCode,
+              state: oauthState,
+            }),
+          });
+          if (cbRes.success && cbRes.data) {
+            setStatusMessage(
+              `${cbRes.data.display_name || "Integration"} securely connected and verified via OAuth 2.0!`
+            );
+          } else {
+            setError(
+              cbRes.error?.message ||
+                cbRes.message ||
+                "Failed to complete OAuth 2.0 token exchange."
+            );
+          }
+        } catch (err: any) {
+          setError(err.message || "OAuth 2.0 callback processing error.");
+        } finally {
+          setLoading(false);
+          window.history.replaceState({}, document.title, window.location.pathname);
+        }
+      }
+
+      await loadCatalogAndExistingState();
+    };
+
+    checkOAuthCallback();
   }, []);
 
   const handleNameChange = (val: string) => {
@@ -270,26 +325,32 @@ export default function OnboardingPage() {
 
     try {
       if (reqItem.auth_method === "oauth") {
-        // 1. Request OAuth authorization metadata from backend
+        // 1. Request real OAuth authorization URL from backend
+        setStatusMessage(`Initiating secure OAuth 2.0 authorization for ${reqItem.display_name}...`);
         const oauthInfo = await apiRequest(
-          `/api/v1/integrations/oauth/${reqItem.provider}/authorize`
+          `/api/v1/integrations/oauth/${reqItem.provider}/authorize?return_to=/onboarding`
         );
-        const stateToken = oauthInfo.data?.state || `oauth_state_${Date.now()}`;
 
-        // 2. Complete OAuth callback validation & encrypted token storage on backend
-        const connRes = await apiRequest(`/api/v1/integrations/${reqItem.provider}/connect`, {
-          method: "POST",
-          body: JSON.stringify({
-            oauth_code: `oauth_verified_${reqItem.provider}_${stateToken}`,
-            account_identifier:
-              accountIdsInput[reqItem.provider] || `${slug || "workspace"}@${reqItem.provider}`,
-          }),
-        });
+        if (!oauthInfo.success || !oauthInfo.data?.authorization_url) {
+          setError(
+            oauthInfo.error?.message ||
+              `Failed to generate authorization URL for ${reqItem.display_name}.`
+          );
+          return;
+        }
 
-        if (connRes.success) {
-          setStatusMessage(`${reqItem.display_name} connected and verified via OAuth 2.0.`);
-        } else {
-          setError(connRes.message || `Connection failed for ${reqItem.display_name}.`);
+        // 2. Persist state for verification
+        if (typeof window !== "undefined") {
+          sessionStorage.setItem(
+            "teloxtech_pending_oauth",
+            JSON.stringify({
+              provider: reqItem.provider,
+              state: oauthInfo.data.state,
+              timestamp: Date.now(),
+            })
+          );
+          // 3. Trigger full external OAuth 2.0 redirect flow to provider login/consent page
+          window.location.href = oauthInfo.data.authorization_url;
         }
       } else {
         const apiKey = apiKeysInput[reqItem.provider] || `key_${reqItem.provider}_verified`;
@@ -307,6 +368,39 @@ export default function OnboardingPage() {
         } else {
           setError(connRes.message || `Connection failed for ${reqItem.display_name}.`);
         }
+
+        const reqRes = await apiRequest("/api/v1/integrations/onboarding-requirements");
+        if (reqRes.data) {
+          setRequiredIntegrations(reqRes.data.required_integrations || []);
+          setAutomationActive(Boolean(reqRes.data.automation_active));
+        }
+      }
+    } catch (err: any) {
+      setError(err.message || `Failed to initiate connection for ${reqItem.display_name}.`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleVerifyConnection = async (reqItem: RequiredIntegrationItem) => {
+    if (!reqItem.integration_id) return;
+    setError(null);
+    setStatusMessage(null);
+    setVerifyingProvider(reqItem.provider);
+
+    try {
+      const res = await apiRequest(`/api/v1/integrations/${reqItem.integration_id}/test`, {
+        method: "POST",
+      });
+
+      if (res.success && res.data?.status === "connected") {
+        setStatusMessage(`${reqItem.display_name} live connection is active and verified.`);
+      } else {
+        setError(
+          `${reqItem.display_name} live verification failed: ${
+            res.data?.configuration?.last_test_result || "Token invalid or expired. Reconnection needed."
+          }`
+        );
       }
 
       const reqRes = await apiRequest("/api/v1/integrations/onboarding-requirements");
@@ -314,8 +408,10 @@ export default function OnboardingPage() {
         setRequiredIntegrations(reqRes.data.required_integrations || []);
         setAutomationActive(Boolean(reqRes.data.automation_active));
       }
+    } catch (err: any) {
+      setError(err.message || `Failed to verify connection for ${reqItem.display_name}.`);
     } finally {
-      setLoading(false);
+      setVerifyingProvider(null);
     }
   };
 
@@ -733,23 +829,56 @@ export default function OnboardingPage() {
                         />
                       )}
 
-                      <button
-                        type="button"
-                        disabled={loading}
-                        onClick={() => handleConnectIntegration(reqItem)}
-                        className={`flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-xs font-semibold transition ${
-                          isConnected
-                            ? "border border-emerald-500/40 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20"
-                            : "bg-emerald-600 text-white hover:bg-emerald-500"
-                        }`}
-                      >
-                        {reqItem.auth_method === "oauth" ? (
-                          <Link2 className="h-3.5 w-3.5" />
-                        ) : (
-                          <Lock className="h-3.5 w-3.5" />
-                        )}
-                        <span>{isConnected ? "Reconnect / Verify" : "CONNECT"}</span>
-                      </button>
+                      {isConnected ? (
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            disabled={loading || verifyingProvider === reqItem.provider}
+                            onClick={() => handleVerifyConnection(reqItem)}
+                            className="flex items-center justify-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-700 disabled:opacity-50 transition"
+                            title="Test live connection and token freshness"
+                          >
+                            <RefreshCw
+                              className={`h-3.5 w-3.5 ${
+                                verifyingProvider === reqItem.provider ? "animate-spin text-emerald-400" : ""
+                              }`}
+                            />
+                            <span>
+                              {verifyingProvider === reqItem.provider
+                                ? "Verifying..."
+                                : "Verify Live"}
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            disabled={loading}
+                            onClick={() => handleConnectIntegration(reqItem)}
+                            className="flex items-center justify-center gap-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-xs font-semibold text-emerald-300 hover:bg-emerald-500/20 disabled:opacity-50 transition"
+                            title="Re-authenticate with OAuth provider"
+                          >
+                            <Link2 className="h-3.5 w-3.5" />
+                            <span>Reconnect</span>
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          disabled={loading}
+                          onClick={() => handleConnectIntegration(reqItem)}
+                          className="flex items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 py-2.5 text-xs font-semibold text-white hover:bg-emerald-500 disabled:opacity-50 transition"
+                        >
+                          {reqItem.auth_method === "oauth" ? (
+                            <ExternalLink className="h-3.5 w-3.5" />
+                          ) : (
+                            <Lock className="h-3.5 w-3.5" />
+                          )}
+                          <span>
+                            {reqItem.auth_method === "oauth"
+                              ? `Authorize ${reqItem.display_name}`
+                              : "Save & Connect"}
+                          </span>
+                        </button>
+                      )}
                     </div>
                   </div>
                 );
