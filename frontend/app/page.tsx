@@ -1,5 +1,6 @@
 import React from "react";
 import { SalesChatbot } from "@/components/chatbot/SalesChatbot";
+import { Users, ShieldAlert, MessageSquare } from "lucide-react";
 
 export default function Home() {
   const supportWhatsapp = "03238300330";
