@@ -65,7 +65,7 @@ class TenantService:
             name=request.name,
             slug=request.slug,
             industry=request.industry,
-            status="active",
+            status="pending_approval",
             settings=request.settings or {},
         )
         session.add(tenant)

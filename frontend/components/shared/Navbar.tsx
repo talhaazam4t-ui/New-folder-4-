@@ -5,21 +5,20 @@ import {
   getCurrentUser,
   getActiveTenant,
   clearSession,
-  isSuperAdminUser,
   UserSession,
   ActiveTenant,
+  SUPPORT_WHATSAPP_NUMBER,
+  SUPPORT_WHATSAPP_LINK,
 } from "@/lib/auth";
-import { LogOut, Building2, User, ShieldCheck, ShieldAlert } from "lucide-react";
+import { LogOut, Building2, User, ShieldCheck, MessageSquare } from "lucide-react";
 
 export function Navbar() {
   const [user, setUser] = useState<UserSession | null>(null);
   const [tenant, setTenant] = useState<ActiveTenant | null>(null);
-  const [isSuperAdmin, setIsSuperAdmin] = useState(false);
 
   useEffect(() => {
     setUser(getCurrentUser());
     setTenant(getActiveTenant());
-    setIsSuperAdmin(isSuperAdminUser());
   }, []);
 
   const handleLogout = () => {
@@ -29,15 +28,16 @@ export function Navbar() {
 
   return (
     <header className="sticky top-0 z-30 flex h-16 w-full items-center justify-between border-b border-slate-200 bg-white px-6 shadow-sm">
+      {/* Brand & Active Workspace */}
       <div className="flex items-center gap-4">
-        <a href={isSuperAdmin ? "/admin" : "/dashboard"} className="flex items-center gap-2">
+        <a href="/dashboard" className="flex items-center gap-2">
           <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-600 text-white font-bold text-lg shadow-sm">
             T
           </div>
           <div>
-            <span className="text-lg font-bold tracking-tight text-slate-900">Talox</span>
+            <span className="text-lg font-bold tracking-tight text-slate-900">Teloxtech</span>
             <span className="ml-1 rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-emerald-700 border border-emerald-200">
-              Managed AI
+              Client Portal
             </span>
           </div>
         </a>
@@ -55,26 +55,29 @@ export function Navbar() {
         )}
       </div>
 
-      <div className="flex items-center gap-4">
-        {isSuperAdmin ? (
-          <a
-            href="/admin"
-            className="hidden md:flex items-center gap-1.5 rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-800 border border-amber-200 hover:bg-amber-100 transition"
-          >
-            <ShieldAlert className="h-3.5 w-3.5 text-amber-600" />
-            <span>Platform Owner Mode</span>
-          </a>
-        ) : (
-          <div className="hidden md:flex items-center gap-1.5 rounded-full bg-slate-50 px-3 py-1 text-xs text-slate-600 border border-slate-200">
-            <ShieldCheck className="h-3.5 w-3.5 text-emerald-600" />
-            <span>Tenant Isolated</span>
-          </div>
-        )}
+      {/* Right Controls: WhatsApp Quick Contact & Session Profile */}
+      <div className="flex items-center gap-3">
+        {/* Direct WhatsApp Services Contact */}
+        <a
+          href={SUPPORT_WHATSAPP_LINK}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="hidden md:flex items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-800 border border-emerald-200 hover:bg-emerald-100 transition"
+          title="Direct WhatsApp Client Support"
+        >
+          <MessageSquare className="h-3.5 w-3.5 text-emerald-600" />
+          <span>Services WhatsApp: {SUPPORT_WHATSAPP_NUMBER}</span>
+        </a>
+
+        <div className="hidden sm:flex items-center gap-1.5 rounded-full bg-slate-50 px-2.5 py-1 text-xs text-slate-600 border border-slate-200">
+          <ShieldCheck className="h-3.5 w-3.5 text-emerald-600" />
+          <span>Secure Session</span>
+        </div>
 
         {user && (
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 pl-2 border-l border-slate-200">
             <div className="flex items-center gap-2 text-right">
-              <div className="hidden sm:block">
+              <div className="hidden lg:block">
                 <p className="text-xs font-semibold text-slate-800">{user.fullName}</p>
                 <p className="text-[11px] text-slate-500">{user.email}</p>
               </div>

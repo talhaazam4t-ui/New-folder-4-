@@ -1,6 +1,7 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  output: 'standalone',
+  output: 'export',
+  trailingSlash: true,
   reactStrictMode: true,
   eslint: {
     ignoreDuringBuilds: true,
@@ -12,15 +13,11 @@ const nextConfig = {
     NEXT_PUBLIC_APP_NAME: 'Talox Tech Stream',
     NEXT_PUBLIC_BACKEND_URL: process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000',
   },
-  async rewrites() {
-    const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
-    return [
-      {
-        source: '/api/:path*',
-        destination: `${backendUrl}/api/:path*`,
-      },
-    ];
+  experimental: {
+    cpus: 1,
+    workerThreads: false,
   },
 };
 
 export default nextConfig;
+

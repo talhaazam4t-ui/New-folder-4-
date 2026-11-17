@@ -96,6 +96,7 @@ export default function OnboardingPage() {
   const [error, setError] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [preselectedService, setPreselectedService] = useState<string | null>(null);
 
   const loadCatalogAndExistingState = async () => {
     try {
@@ -164,8 +165,8 @@ export default function OnboardingPage() {
         const inferredProvider = stateParam.includes("whatsapp")
           ? "whatsapp"
           : stateParam.includes("gmail")
-          ? "gmail"
-          : "google_calendar";
+            ? "gmail"
+            : "google_calendar";
         handleOAuthCallback(inferredProvider, code);
       }
     }
@@ -463,11 +464,10 @@ export default function OnboardingPage() {
             <button
               type="button"
               onClick={() => setStep(1)}
-              className={`rounded-lg px-3 py-1.5 transition ${
-                step === 1
-                  ? "bg-emerald-600 text-white"
-                  : "bg-slate-900 text-slate-400 hover:text-white"
-              }`}
+              className={`rounded-lg px-3 py-1.5 transition ${step === 1
+                ? "bg-emerald-600 text-white"
+                : "bg-slate-900 text-slate-400 hover:text-white"
+                }`}
             >
               1. Industry
             </button>
@@ -475,11 +475,10 @@ export default function OnboardingPage() {
               type="button"
               disabled={!getActiveTenant()?.id}
               onClick={() => setStep(2)}
-              className={`rounded-lg px-3 py-1.5 transition ${
-                step === 2
-                  ? "bg-emerald-600 text-white"
-                  : "bg-slate-900 text-slate-400 hover:text-white disabled:opacity-40"
-              }`}
+              className={`rounded-lg px-3 py-1.5 transition ${step === 2
+                ? "bg-emerald-600 text-white"
+                : "bg-slate-900 text-slate-400 hover:text-white disabled:opacity-40"
+                }`}
             >
               2. Services & Tiers
             </button>
@@ -487,11 +486,10 @@ export default function OnboardingPage() {
               type="button"
               disabled={subscribedServiceIds.length === 0}
               onClick={() => setStep(3)}
-              className={`rounded-lg px-3 py-1.5 transition ${
-                step === 3
+              className={`rounded-lg px-3 py-1.5 transition ${step === 3
                   ? "bg-emerald-600 text-white"
                   : "bg-slate-900 text-slate-400 hover:text-white disabled:opacity-40"
-              }`}
+                }`}
             >
               3. Connect Apps ({requiredIntegrations.length})
             </button>
@@ -599,11 +597,10 @@ export default function OnboardingPage() {
                         setIndustrySearch("");
                         setIsDropdownOpen(false);
                       }}
-                      className={`flex flex-col items-start rounded-xl border p-3 text-left transition ${
-                        isCurrent
+                      className={`flex flex-col items-start rounded-xl border p-3 text-left transition ${isCurrent
                           ? "border-emerald-500 bg-emerald-500/15 text-white shadow-sm"
                           : "border-slate-800 bg-slate-900/80 text-slate-300 hover:border-slate-700 hover:bg-slate-900"
-                      }`}
+                        }`}
                     >
                       <div className="flex items-center justify-between w-full mb-1">
                         <Briefcase
@@ -638,11 +635,10 @@ export default function OnboardingPage() {
                           setIndustry(ind);
                           setIsDropdownOpen(false);
                         }}
-                        className={`flex items-center justify-between w-full px-3 py-2 rounded-lg text-left text-xs transition ${
-                          industry === ind
+                        className={`flex items-center justify-between w-full px-3 py-2 rounded-lg text-left text-xs transition ${industry === ind
                             ? "bg-emerald-600/20 text-emerald-300 font-semibold border border-emerald-500/30"
                             : "text-slate-300 hover:bg-slate-900 hover:text-white"
-                        }`}
+                          }`}
                       >
                         <div className="flex items-center gap-2">
                           <Briefcase className="h-3.5 w-3.5 text-slate-400" />
@@ -707,11 +703,10 @@ export default function OnboardingPage() {
                 return (
                   <div
                     key={srv.id}
-                    className={`flex flex-col justify-between rounded-xl border p-5 transition ${
-                      isSelected
+                    className={`flex flex-col justify-between rounded-xl border p-5 transition ${isSelected
                         ? "border-emerald-500/60 bg-emerald-950/20 shadow-md shadow-emerald-500/5"
                         : "border-slate-800 bg-slate-900"
-                    }`}
+                      }`}
                   >
                     <div className="space-y-3">
                       <div className="flex items-center justify-between">
@@ -746,11 +741,10 @@ export default function OnboardingPage() {
                                     [srv.id]: pkg.plan_name,
                                   }))
                                 }
-                                className={`rounded-lg border px-2 py-1.5 text-center text-xs transition ${
-                                  chosenPlan === pkg.plan_name
+                                className={`rounded-lg border px-2 py-1.5 text-center text-xs transition ${chosenPlan === pkg.plan_name
                                     ? "border-emerald-500 bg-emerald-500/20 text-white font-bold"
                                     : "border-slate-800 bg-slate-950 text-slate-400 hover:text-white"
-                                }`}
+                                  }`}
                               >
                                 <div className="capitalize">{pkg.plan_name}</div>
                                 <div className="text-emerald-400 font-mono">${pkg.price}/mo</div>
@@ -787,10 +781,10 @@ export default function OnboardingPage() {
                             {reqProv === "google_calendar"
                               ? "Google Calendar"
                               : reqProv === "gmail"
-                              ? "Gmail"
-                              : reqProv === "whatsapp"
-                              ? "WhatsApp API"
-                              : reqProv}
+                                ? "Gmail"
+                                : reqProv === "whatsapp"
+                                  ? "WhatsApp API"
+                                  : reqProv}
                           </span>
                         ))}
                       </div>
@@ -808,11 +802,10 @@ export default function OnboardingPage() {
                         type="button"
                         disabled={loading}
                         onClick={() => handleSubscribeService(srv)}
-                        className={`flex items-center gap-1.5 rounded-lg px-4 py-2 text-xs font-semibold transition ${
-                          isSelected
+                        className={`flex items-center gap-1.5 rounded-lg px-4 py-2 text-xs font-semibold transition ${isSelected
                             ? "bg-slate-800 text-emerald-400 hover:bg-slate-700 border border-emerald-500/30"
                             : "bg-emerald-600 text-white hover:bg-emerald-500 shadow-md shadow-emerald-600/20"
-                        }`}
+                          }`}
                       >
                         <Layers className="h-3.5 w-3.5" />
                         <span>{isSelected ? "Update Plan" : "Choose Service"}</span>
@@ -839,11 +832,10 @@ export default function OnboardingPage() {
               </div>
               <div className="flex items-center gap-2">
                 <span
-                  className={`rounded-full px-3 py-1 text-xs font-bold ${
-                    automationActive
+                  className={`rounded-full px-3 py-1 text-xs font-bold ${automationActive
                       ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
                       : "bg-amber-500/20 text-amber-300 border border-amber-500/30"
-                  }`}
+                    }`}
                 >
                   {automationActive
                     ? "✓ Services Active & Connected"
@@ -876,11 +868,10 @@ export default function OnboardingPage() {
                   return (
                     <div
                       key={reqItem.provider}
-                      className={`flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 rounded-xl border p-5 transition ${
-                        isConnected
+                      className={`flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 rounded-xl border p-5 transition ${isConnected
                           ? "border-emerald-500/40 bg-emerald-950/10"
                           : "border-slate-800 bg-slate-900/90"
-                      }`}
+                        }`}
                     >
                       <div className="space-y-1.5 max-w-xl">
                         <div className="flex items-center gap-2">
@@ -904,19 +895,18 @@ export default function OnboardingPage() {
 
                           {/* Real-time Status Badge */}
                           <span
-                            className={`rounded-full px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider ${
-                              isConnected
+                            className={`rounded-full px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider ${isConnected
                                 ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
                                 : reqItem.status === "error"
-                                ? "bg-red-500/20 text-red-400 border border-red-500/30"
-                                : "bg-slate-800 text-slate-400 border border-slate-700"
-                            }`}
+                                  ? "bg-red-500/20 text-red-400 border border-red-500/30"
+                                  : "bg-slate-800 text-slate-400 border border-slate-700"
+                              }`}
                           >
                             {isConnected
                               ? "✓ Connected"
                               : reqItem.status === "error"
-                              ? "Connection Error"
-                              : "Disconnected"}
+                                ? "Connection Error"
+                                : "Disconnected"}
                           </span>
                         </div>
 
@@ -956,11 +946,10 @@ export default function OnboardingPage() {
                           type="button"
                           disabled={loading || isConnecting}
                           onClick={() => handleConnectIntegration(reqItem)}
-                          className={`flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-xs font-semibold shadow-md transition ${
-                            isConnected
+                          className={`flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-xs font-semibold shadow-md transition ${isConnected
                               ? "border border-emerald-500/40 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20"
                               : "bg-emerald-600 text-white hover:bg-emerald-500 shadow-emerald-600/20"
-                          }`}
+                            }`}
                         >
                           {reqItem.auth_method === "oauth" ? (
                             <ExternalLink className="h-3.5 w-3.5" />
@@ -971,8 +960,8 @@ export default function OnboardingPage() {
                             {isConnecting
                               ? "Connecting..."
                               : isConnected
-                              ? "Reconnect / Verify"
-                              : `Connect ${reqItem.display_name.split(" ")[0]}`}
+                                ? "Reconnect / Verify"
+                                : `Connect ${reqItem.display_name.split(" ")[0]}`}
                           </span>
                         </button>
                       </div>

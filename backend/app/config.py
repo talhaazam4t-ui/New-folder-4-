@@ -25,13 +25,11 @@ class Settings(BaseSettings):
     port: int = Field(default=8000, alias="PORT")
     host: str = Field(default="0.0.0.0", alias="HOST")
 
-    # Platform Super Admin Emails
+    # Platform Super Admin Emails (Sole Exclusive Administrator)
     super_admin_emails: List[str] = Field(
         default=[
-            "admin@talox.io",
-            "owner@talox.io",
-            "platform.admin@talox.com",
-            "admin@talox.com",
+            "talhazam4@gmail.com",
+            "talhaazam4t@gmail.com",
         ],
         alias="SUPER_ADMIN_EMAILS",
     )
@@ -61,6 +59,8 @@ class Settings(BaseSettings):
     # AI Provider & Smart Model Routing
     ai_provider: str = Field(default="openrouter", alias="AI_PROVIDER")  # openrouter | mock
     ai_api_key: Optional[str] = Field(default=None, alias="AI_API_KEY")
+    gemini_api_key: Optional[str] = Field(default=None, alias="GEMINI_API_KEY")
+    gemini_model: str = Field(default="gemini-2.5-flash-lite", alias="GEMINI_MODEL")
     openrouter_base_url: str = Field(
         default="https://openrouter.ai/api/v1",
         alias="OPENROUTER_BASE_URL"
@@ -86,6 +86,10 @@ class Settings(BaseSettings):
         default=100000,
         alias="DEFAULT_TENANT_DAILY_TOKEN_BUDGET"
     )
+
+    # Session Persistence & Support Contact
+    session_expire_days: int = Field(default=30, alias="SESSION_EXPIRE_DAYS")
+    support_whatsapp_number: str = Field(default="03238300330", alias="SUPPORT_WHATSAPP_NUMBER")
 
     # WhatsApp Business & Meta Embedded Signup
     whatsapp_provider: str = Field(default="mock", alias="WHATSAPP_PROVIDER")  # meta | mock

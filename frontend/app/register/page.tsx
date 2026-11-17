@@ -29,10 +29,11 @@ function RegisterForm() {
       const res = await apiRequest("/api/v1/auth/register", {
         method: "POST",
         body: JSON.stringify({
-          full_name: fullName,
-          email,
+          full_name: fullName.trim(),
+          email: email.trim().toLowerCase(),
           password,
-          phone: phone || null,
+          phone: phone.trim() || null,
+          account_type: "client",
         }),
       });
 
@@ -85,8 +86,8 @@ function RegisterForm() {
             const servicesList = Array.isArray(catRes.data)
               ? catRes.data
               : Array.isArray((catRes as any).services)
-              ? (catRes as any).services
-              : [];
+                ? (catRes as any).services
+                : [];
 
             if (servicesList.length > 0) {
               const targetService =

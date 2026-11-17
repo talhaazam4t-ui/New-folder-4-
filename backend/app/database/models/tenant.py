@@ -55,7 +55,7 @@ class Tenant(Base, TimestampMixin):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     slug: Mapped[str] = mapped_column(String(100), unique=True, nullable=False, index=True)
     industry: Mapped[str] = mapped_column(String(100), nullable=False)
-    status: Mapped[str] = mapped_column(String(50), default="active", nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(50), default="pending_approval", nullable=False, index=True)
     settings: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
 
     members = relationship("TenantMember", back_populates="tenant", cascade="all, delete-orphan")
@@ -72,6 +72,7 @@ class Profile(Base, TimestampMixin):
     full_name: Mapped[str] = mapped_column(String(255), nullable=False)
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
     phone: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    password_hash: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
     memberships = relationship("TenantMember", back_populates="user", cascade="all, delete-orphan")
 

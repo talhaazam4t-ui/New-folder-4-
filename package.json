@@ -6,7 +6,11 @@
     "dev:frontend": "cd frontend && npm run dev",
     "build:frontend": "cd frontend && npm run build",
     "start:frontend": "cd frontend && npm run start",
-    "lint:frontend": "cd frontend && npm run lint"
+    "lint:frontend": "cd frontend && npm run lint",
+    "launch:chrome": "node scripts/launch_chrome.mjs",
+    "dev:chrome": "launch-dev.bat",
+    "docker:chrome": "launch-docker.bat",
+    "db:reset": "python scripts/wipe_and_reset_db.py"
   },
   "dependencies": {
     "@supabase/server": "^1.9.2"

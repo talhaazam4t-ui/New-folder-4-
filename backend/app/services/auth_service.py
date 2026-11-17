@@ -28,36 +28,29 @@ class AuthService:
         session: AsyncSession,
         profile: Profile,
     ) -> bool:
-        """Determine whether a user is the Platform Owner / Super Admin vs a regular Client.
+        """Determine whether a user is the Platform Owner / Super Admin.
 
-        Rules:
-        1. Explicit client accounts (`account_type="client"`) are never Super Admins.
-        2. Any email listed in `settings.super_admin_emails` or ending with `@talox.com` / `@talox.io` is a Super Admin.
-        3. The initial bootstrap account (first registered profile in the platform DB) is treated as Platform Owner
-           unless explicitly registered as a client. All subsequent tenant owners are strictly Clients.
+        STRICT ENFORCEMENT:
+        Only talhazam4@gmail.com (and talhaazam4t@gmail.com) is the exclusive
+        and sole Platform Super Admin. No other administrative accounts can exist.
         """
-        if str(profile.id) in self._explicit_client_ids:
+        if not profile or not profile.email:
             return False
 
-        email_lower = (profile.email or "").lower()
-        configured_admins = {e.lower() for e in settings.super_admin_emails}
-        if email_lower in configured_admins or email_lower.endswith("@talox.com") or email_lower.endswith("@talox.io"):
-            return True
-
-        first_profile_res = await session.execute(
-            select(Profile.id).order_by(Profile.created_at.asc(), Profile.id.asc()).limit(1)
-        )
-        first_profile_id = first_profile_res.scalar_one_or_none()
-        return first_profile_id == profile.id
+        email_clean = profile.email.strip().lower()
+        sole_admins = {e.strip().lower() for e in settings.super_admin_emails}
+        return email_clean in sole_admins
 
     async def register_user(
         self,
         session: AsyncSession,
         request: UserRegisterRequest,
     ) -> TokenResponse:
-        """Register a new user profile and issue JWT token."""
+        """Register a new user profile, persist credentials to DB, and issue JWT token."""
+        email_clean = request.email.strip().lower()
+
         # 1. Check if profile already exists
-        query = select(Profile).where(Profile.email == request.email.lower())
+        query = select(Profile).where(Profile.email == email_clean)
         existing = await session.execute(query)
         if existing.scalar_one_or_none():
             raise TaloxException(
@@ -66,27 +59,29 @@ class AuthService:
                 status_code=409,
             )
 
-        # 2. Create profile
+        # 2. Hash password and persist profile
+        hashed_password = get_password_hash(request.password)
         user_id = uuid.uuid4()
         profile = Profile(
             id=user_id,
             full_name=request.full_name,
-            email=request.email.lower(),
+            email=email_clean,
             phone=request.phone,
+            password_hash=hashed_password,
         )
         session.add(profile)
         await session.commit()
         await session.refresh(profile)
 
-        # 3. Store password hash for verification
-        self._local_password_hashes[str(user_id)] = get_password_hash(request.password)
+        # 3. Store in local cache for speed
+        self._local_password_hashes[str(user_id)] = hashed_password
         if request.account_type == "client":
             self._explicit_client_ids.add(str(user_id))
 
         is_super = await self.is_platform_super_admin(session, profile)
-        logger.info("New user registered", user_id=str(user_id), email=profile.email, is_super_admin=is_super)
+        logger.info("New user registered and persisted", user_id=str(user_id), email=profile.email, is_super_admin=is_super)
 
-        # 4. Generate JWT token
+        # 4. Generate persistent JWT token
         token = create_access_token(
             data={
                 "sub": str(user_id),
@@ -110,26 +105,53 @@ class AuthService:
         session: AsyncSession,
         request: UserLoginRequest,
     ) -> TokenResponse:
-        """Verify user credentials and issue signed JWT access token."""
-        query = select(Profile).where(Profile.email == request.email.lower())
+        """Verify user credentials with DB persistence and issue signed JWT access token."""
+        email_clean = request.email.strip().lower()
+        sole_admins = {e.strip().lower() for e in settings.super_admin_emails}
+        is_admin_attempt = email_clean in sole_admins
+
+        query = select(Profile).where(Profile.email == email_clean)
         result = await session.execute(query)
         profile = result.scalar_one_or_none()
 
         if not profile:
-            raise TaloxException(
-                message="Invalid email or password",
-                code="INVALID_CREDENTIALS",
-                status_code=401,
-            )
-
-        # Verify password hash
-        stored_hash = self._local_password_hashes.get(str(profile.id))
-        if stored_hash and not verify_password(request.password, stored_hash):
-            raise TaloxException(
-                message="Invalid email or password",
-                code="INVALID_CREDENTIALS",
-                status_code=401,
-            )
+            # If the user is the configured sole admin, auto-bootstrap the admin profile in DB
+            if is_admin_attempt:
+                user_id = uuid.uuid4()
+                hashed = get_password_hash(request.password)
+                profile = Profile(
+                    id=user_id,
+                    full_name="Talha Azam (Platform Owner)",
+                    email=email_clean,
+                    phone=settings.support_whatsapp_number,
+                    password_hash=hashed,
+                )
+                session.add(profile)
+                await session.commit()
+                await session.refresh(profile)
+                self._local_password_hashes[str(user_id)] = hashed
+            else:
+                raise TaloxException(
+                    message="Invalid email or password",
+                    code="INVALID_CREDENTIALS",
+                    status_code=401,
+                )
+        else:
+            # Profile exists: verify password hash
+            stored_hash = profile.password_hash or self._local_password_hashes.get(str(profile.id))
+            if stored_hash:
+                if not verify_password(request.password, stored_hash):
+                    raise TaloxException(
+                        message="Invalid email or password",
+                        code="INVALID_CREDENTIALS",
+                        status_code=401,
+                    )
+            else:
+                # First-time password set for bootstrapped admin profile
+                new_hash = get_password_hash(request.password)
+                profile.password_hash = new_hash
+                self._local_password_hashes[str(profile.id)] = new_hash
+                await session.commit()
 
         is_super = await self.is_platform_super_admin(session, profile)
         token = create_access_token(
@@ -141,7 +163,7 @@ class AuthService:
             }
         )
 
-        logger.info("User logged in successfully", user_id=str(profile.id), is_super_admin=is_super)
+        logger.info("User logged in successfully", user_id=str(profile.id), email=profile.email, is_super_admin=is_super)
 
         return TokenResponse(
             access_token=token,

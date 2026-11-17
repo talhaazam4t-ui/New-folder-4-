@@ -16,7 +16,7 @@ from app.schemas.service import (
     SubscriptionResponse,
 )
 from app.services.auth_service import auth_service
-from app.services.billing_service import billing_service, normalize_industry
+from app.services.billing_service import billing_service
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 

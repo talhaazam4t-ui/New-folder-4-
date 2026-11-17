@@ -85,9 +85,8 @@ if (existsSync(backendDir)) {
     isWindows ? join(mainRepoRoot, '.venv', 'Scripts', 'ruff.exe') : join(mainRepoRoot, '.venv', 'bin', 'ruff'),
   ];
 
-  const foundRuff = venvCandidates.find((candidate) => existsSync(candidate));
-  if (foundRuff) {
-    ruffExecutable = `"${foundRuff}"`;
+  if (existsSync(venvRuff)) {
+    ruffExecutable = `"${venvRuff}"`;
   }
 
   const ruffResult = spawnSync(ruffExecutable, ['check', 'backend'], {
@@ -96,14 +95,13 @@ if (existsSync(backendDir)) {
     shell: true,
   });
 
-  if (ruffResult.error) {
-    console.log('ℹ Ruff not available in environment; skipping backend ruff check.');
-  } else if (ruffResult.status !== 0) {
+  if (ruffResult.status !== 0) {
     console.error('❌ Backend ruff check failed.');
     hasErrors = true;
   } else {
     console.log('✔ Backend ruff check passed.');
   }
+}
 }
 
 console.log('\n========================================');
