@@ -17,6 +17,17 @@ class PaymentCreateRequest(BaseModel):
     invoice_id: Optional[uuid.UUID] = None
 
 
+class BankTransferNotifyRequest(BaseModel):
+    transaction_reference: str = Field(min_length=3, max_length=120)
+    amount: Optional[float] = Field(default=None, gt=0.0)
+    invoice_id: Optional[uuid.UUID] = None
+    notes: Optional[str] = Field(default=None, max_length=500)
+
+
+class BankTransferApproveRequest(BaseModel):
+    notes: Optional[str] = Field(default=None, max_length=500)
+
+
 class PaymentResponse(BaseModel):
     id: uuid.UUID
     tenant_id: uuid.UUID

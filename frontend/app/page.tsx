@@ -1,8 +1,9 @@
 import React from "react";
+import { SalesChatbot } from "@/components/chatbot/SalesChatbot";
 
 export default function Home() {
   return (
-    <main className="flex min-h-screen flex-col items-center justify-center p-8 bg-gradient-to-b from-slate-900 to-slate-950 text-white">
+    <main className="flex min-h-screen flex-col items-center justify-center p-8 bg-gradient-to-b from-slate-900 to-slate-950 text-white relative">
       <div className="max-w-3xl text-center space-y-6">
         <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
           <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
@@ -52,6 +53,8 @@ export default function Home() {
           </div>
         </div>
       </div>
+
+      <SalesChatbot />
     </main>
   );
 }

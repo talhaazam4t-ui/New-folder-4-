@@ -125,3 +125,24 @@ class MarketingAnalyticsResponse(BaseModel):
     total_spend: float
     total_revenue: float
     roi_percentage: float
+
+
+class SalesChatbotMessageRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=2000)
+    session_id: Optional[str] = Field(default=None, max_length=120)
+    visitor_name: Optional[str] = Field(default=None, max_length=120)
+    visitor_phone: Optional[str] = Field(default=None, max_length=50)
+    current_industry: Optional[str] = Field(default=None, max_length=100)
+    current_package: Optional[str] = Field(default=None, max_length=100)
+
+
+class SalesChatbotMessageResponse(BaseModel):
+    reply: str
+    detected_industry: Optional[str] = None
+    detected_service_slug: Optional[str] = None
+    detected_plan_name: Optional[str] = None
+    detected_price: Optional[float] = None
+    hot_lead: bool = False
+    alert_message: Optional[str] = None
+    whatsapp_url: str = "https://wa.me/923398701000"
+    onboarding_transition_url: Optional[str] = None

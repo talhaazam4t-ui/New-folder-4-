@@ -10,14 +10,19 @@ Implements:
 
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from app.core.exceptions import ResourceNotFoundError, TaloxException
 from app.core.logging import logger
 from app.database.models.automation import AuditLog
 from app.database.models.billing import Invoice, Payment
 from app.database.models.service import Service, ServiceSubscription
-from app.schemas.payment import PaymentCreateRequest, PaymentResponse
+from app.database.models.tenant import Tenant
+from app.schemas.payment import (
+    BankTransferNotifyRequest,
+    PaymentCreateRequest,
+    PaymentResponse,
+)
 from app.schemas.service import (
     ServiceCreateRequest,
     ServiceUpdateRequest,
@@ -28,22 +33,90 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 INDUSTRY_ALIASES = {
+    # Core verticals
     "financing": "Financing",
     "finance": "Financing",
     "professional financial services": "Financing",
+    "banking": "Financing",
+    "accounting & cpa": "Financing",
+    "insurance": "Financing",
+    "wealth management": "Financing",
     "clinics / hospitals": "Clinics / Hospitals",
-    "healthcare": "Clinics / Hospitals",
-    "healthcare & medical clinics": "Clinics / Hospitals",
     "clinics": "Clinics / Hospitals",
     "hospitals": "Clinics / Hospitals",
+    "healthcare": "Clinics / Hospitals",
+    "healthcare & medical clinics": "Clinics / Hospitals",
+    "dental clinics": "Clinics / Hospitals",
+    "cosmetic & aesthetic surgery": "Clinics / Hospitals",
+    "pharmacy & lab diagnostics": "Clinics / Hospitals",
+    "physiotherapy & rehabilitation": "Clinics / Hospitals",
+    "mental health & therapy": "Clinics / Hospitals",
+    "veterinary clinics": "Clinics / Hospitals",
     "real estate / property": "Real Estate / Property",
     "real estate": "Real Estate / Property",
     "real estate & property management": "Real Estate / Property",
     "property": "Real Estate / Property",
+    "commercial real estate": "Real Estate / Property",
+    "residential property brokerage": "Real Estate / Property",
+    "property management & leasing": "Real Estate / Property",
+    "architecture & construction": "Real Estate / Property",
+    "interior design": "Real Estate / Property",
     "e-commerce": "E-Commerce",
     "ecommerce": "E-Commerce",
     "retail": "E-Commerce",
     "retail & e-commerce": "E-Commerce",
+    "fashion & apparel": "E-Commerce",
+    "electronics & gadgets": "E-Commerce",
+    "beauty & skincare": "E-Commerce",
+    "food & beverage / d2c": "E-Commerce",
+    "wholesale & distribution": "E-Commerce",
+    # Additional expanded service industries
+    "legal services & law firms": "Financing",
+    "automotive dealerships & repair": "Real Estate / Property",
+    "hospitality & hotels": "Real Estate / Property",
+    "fitness & gym centers": "Clinics / Hospitals",
+    "education & online academies": "Financing",
+    "logistics & freight forwarding": "E-Commerce",
+}
+
+EXPANDED_INDUSTRIES = [
+    # Core verticals
+    "Clinics / Hospitals",
+    "Financing",
+    "Real Estate / Property",
+    "E-Commerce",
+    # Sub-specialties and extended industries
+    "Dental Clinics",
+    "Cosmetic & Aesthetic Surgery",
+    "Pharmacy & Lab Diagnostics",
+    "Physiotherapy & Rehabilitation",
+    "Mental Health & Therapy",
+    "Veterinary Clinics",
+    "Accounting & CPA",
+    "Insurance",
+    "Wealth Management",
+    "Legal Services & Law Firms",
+    "Commercial Real Estate",
+    "Residential Property Brokerage",
+    "Property Management & Leasing",
+    "Architecture & Construction",
+    "Fashion & Apparel",
+    "Electronics & Gadgets",
+    "Beauty & Skincare",
+    "Food & Beverage / D2C",
+    "Automotive Dealerships & Repair",
+    "Hospitality & Hotels",
+    "Fitness & Gym Centers",
+    "Education & Online Academies",
+    "Logistics & Freight Forwarding",
+]
+
+
+COMPANY_BANK_DETAILS = {
+    "bank_name": "Faysal Bank",
+    "account_name": "Talha Azam",
+    "account_number": "3398701000005292",
+    "iban": "PK97FAYS3398701000005292",
 }
 
 
@@ -403,7 +476,165 @@ class BillingService:
             )
         )
         res = await session.execute(query)
-        return res.scalar_one_or_none() is not None
+        subscription = res.scalar_one_or_none()
+        if not subscription:
+            return False
+        if subscription.expires_at is not None:
+            expires_at = subscription.expires_at
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            if expires_at < datetime.now(timezone.utc):
+                return False
+        return True
+
+
+    async def record_bank_transfer_notification(
+        self,
+        session: AsyncSession,
+        tenant_id: uuid.UUID,
+        request: BankTransferNotifyRequest,
+    ) -> Dict[str, Any]:
+        """Record a client-submitted bank transfer receipt / reference for admin verification."""
+        t_res = await session.execute(select(Tenant).where(Tenant.id == tenant_id))
+        tenant = t_res.scalar_one_or_none()
+        if not tenant:
+            raise ResourceNotFoundError("Tenant", str(tenant_id))
+
+        now = datetime.now(timezone.utc)
+        curr_settings = dict(tenant.settings or {})
+        curr_settings["payment_notified"] = True
+        curr_settings["payment_reference"] = request.transaction_reference
+        curr_settings["payment_notes"] = request.notes
+        curr_settings["payment_notified_at"] = now.isoformat()
+        tenant.settings = curr_settings
+
+        # Determine payment amount from outstanding invoice if not explicitly passed
+        amount = request.amount
+        if not amount:
+            inv_res = await session.execute(
+                select(Invoice)
+                .where(Invoice.tenant_id == tenant_id, Invoice.status != "paid")
+                .order_by(Invoice.created_at.desc())
+            )
+            inv = inv_res.scalar_one_or_none()
+            amount = float(inv.total) if inv else 249.0
+
+        payment = Payment(
+            tenant_id=tenant_id,
+            amount=amount,
+            currency="USD",
+            payment_method="bank_transfer",
+            provider_reference=request.transaction_reference,
+            status="pending_verification",
+            paid_at=None,
+        )
+        session.add(payment)
+
+        audit = AuditLog(
+            tenant_id=tenant_id,
+            actor_type="user",
+            action="payment.bank_transfer_submitted",
+            resource_type="payment",
+            resource_id=payment.id,
+            metadata_={
+                "transaction_reference": request.transaction_reference,
+                "amount": amount,
+                "bank": COMPANY_BANK_DETAILS["bank_name"],
+                "account_name": COMPANY_BANK_DETAILS["account_name"],
+                "notes": request.notes,
+            },
+        )
+        session.add(audit)
+        await session.commit()
+        await session.refresh(payment)
+
+        return {
+            "success": True,
+            "payment_id": str(payment.id),
+            "status": "pending_verification",
+            "transaction_reference": request.transaction_reference,
+            "amount": float(payment.amount),
+            "bank_details": COMPANY_BANK_DETAILS,
+            "message": "Bank transfer reference recorded. Platform Admin has been notified for manual verification.",
+        }
+
+    async def approve_tenant_payment(
+        self,
+        session: AsyncSession,
+        tenant_id: uuid.UUID,
+        admin_user_id: Optional[uuid.UUID] = None,
+        notes: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Admin approves verified bank transfer, unlocks managed AI services, and marks subscriptions active."""
+        t_res = await session.execute(select(Tenant).where(Tenant.id == tenant_id))
+        tenant = t_res.scalar_one_or_none()
+        if not tenant:
+            raise ResourceNotFoundError("Tenant", str(tenant_id))
+
+        now = datetime.now(timezone.utc)
+        curr_settings = dict(tenant.settings or {})
+        curr_settings["payment_approved"] = True
+        curr_settings["automation_approved_by_owner"] = True
+        curr_settings["payment_approved_at"] = now.isoformat()
+        if notes:
+            curr_settings["payment_approval_notes"] = notes
+        tenant.settings = curr_settings
+
+        # Reconcile all pending payments
+        pay_res = await session.execute(
+            select(Payment).where(
+                Payment.tenant_id == tenant_id,
+                Payment.status.in_(["pending_verification", "pending"]),
+            )
+        )
+        for payment in pay_res.scalars().all():
+            payment.status = "completed"
+            payment.paid_at = now
+
+        # Reconcile all outstanding invoices
+        inv_res = await session.execute(
+            select(Invoice).where(
+                Invoice.tenant_id == tenant_id,
+                Invoice.status != "paid",
+            )
+        )
+        for invoice in inv_res.scalars().all():
+            invoice.status = "paid"
+
+        # Activate all service subscriptions
+        sub_res = await session.execute(
+            select(ServiceSubscription).where(
+                ServiceSubscription.tenant_id == tenant_id,
+            )
+        )
+        for sub in sub_res.scalars().all():
+            sub.status = "active"
+
+        audit = AuditLog(
+            tenant_id=tenant_id,
+            actor_id=admin_user_id,
+            actor_type="admin",
+            action="admin.payment.approved",
+            resource_type="tenant",
+            resource_id=tenant_id,
+            metadata_={"approved_at": now.isoformat(), "notes": notes},
+        )
+        session.add(audit)
+        await session.commit()
+
+        logger.info(
+            "Tenant payment approved and services activated",
+            tenant_id=str(tenant_id),
+            admin_id=str(admin_user_id),
+        )
+
+        return {
+            "success": True,
+            "tenant_id": str(tenant_id),
+            "payment_approved": True,
+            "automation_active": True,
+            "message": "Payment verified and approved. Client AI services are now activated.",
+        }
 
 
 billing_service = BillingService()

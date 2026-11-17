@@ -62,6 +62,7 @@ export default function AdminDashboardPage() {
       return;
     }
     fetchOperationsData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleToggleTenantStatus = async (tenantId: string, currentStatus: string) => {
@@ -107,6 +108,18 @@ export default function AdminDashboardPage() {
     });
     if (res.success) {
       setActionMessage(`Agent ${agentName} status updated.`);
+      fetchOperationsData();
+    }
+  };
+
+  const handleApprovePayment = async (tenantId: string) => {
+    setActionMessage("Verifying bank transfer and activating client AI services...");
+    const res = await apiRequest(`/api/v1/admin/tenants/${tenantId}/approve-payment`, {
+      method: "POST",
+      body: JSON.stringify({ notes: "Verified and approved by Platform Owner" }),
+    });
+    if (res.success) {
+      setActionMessage("Bank transfer approved! Client AI services are now activated.");
       fetchOperationsData();
     }
   };
@@ -273,6 +286,69 @@ export default function AdminDashboardPage() {
           {/* TAB 1: PLATFORM & CLIENTS MANAGEMENT */}
           {activeTab === "platform" && (
             <div className="space-y-6">
+              {/* Bank Transfer Payment Approvals Queue */}
+              <div className="rounded-xl border border-emerald-500/30 bg-slate-950 p-6 space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-500/20 text-emerald-400">
+                      <CircleDollarSign className="h-5 w-5" />
+                    </div>
+                    <div>
+                      <h2 className="text-base font-bold text-white">
+                        Bank Transfer Payment Approvals & Service Activation
+                      </h2>
+                      <p className="text-xs text-slate-400">
+                        Verify incoming bank transfers (Faysal Bank) and 1-click activate client managed AI services.
+                      </p>
+                    </div>
+                  </div>
+                  <span className="rounded-full bg-emerald-500/20 px-3 py-1 text-xs font-bold text-emerald-300 border border-emerald-500/30">
+                    {ops?.pending_payments?.length || 0} Pending Approvals
+                  </span>
+                </div>
+
+                {!ops?.pending_payments || ops.pending_payments.length === 0 ? (
+                  <p className="text-xs text-slate-500 py-3 text-center border border-dashed border-slate-800 rounded-lg">
+                    No pending bank transfer notifications awaiting verification. All client payments are up to date.
+                  </p>
+                ) : (
+                  <div className="divide-y divide-slate-800 border border-slate-800 rounded-lg overflow-hidden">
+                    {ops.pending_payments.map((p: any) => (
+                      <div
+                        key={p.id}
+                        className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 p-3.5 bg-slate-900/40 text-xs"
+                      >
+                        <div>
+                          <p className="font-bold text-white text-sm">{p.tenant_name}</p>
+                          <p className="text-slate-400 text-[11px] font-mono mt-0.5">
+                            Reference: <strong className="text-emerald-400">{p.provider_reference}</strong> •{" "}
+                            Method: {p.payment_method}
+                          </p>
+                          {p.created_at && (
+                            <p className="text-[10px] text-slate-500 mt-0.5">
+                              Submitted: {new Date(p.created_at).toLocaleString()}
+                            </p>
+                          )}
+                        </div>
+
+                        <div className="flex items-center gap-4">
+                          <span className="font-mono text-sm font-extrabold text-white">
+                            ${p.amount.toFixed(2)} {p.currency}
+                          </span>
+                          <button
+                            onClick={() => handleApprovePayment(p.tenant_id)}
+                            className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-emerald-500 shadow-md shadow-emerald-600/20 transition"
+                          >
+                            <CheckCheck className="h-3.5 w-3.5" />
+                            <span>Verify & Activate Services</span>
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
               {/* Registered Clients Table */}
               <div className="rounded-xl border border-slate-800 bg-slate-950 p-6 space-y-4">
                 <div className="flex items-center justify-between">

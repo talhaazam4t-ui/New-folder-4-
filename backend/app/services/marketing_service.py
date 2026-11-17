@@ -13,10 +13,12 @@ Provides:
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote_plus
 
 from app.automation.approval_manager import approval_manager
 from app.automation.budget_manager import budget_manager
 from app.core.exceptions import ResourceNotFoundError, TaloxException
+from app.core.logging import logger
 from app.database.models.automation import AuditLog
 from app.database.models.marketing import Lead, MarketingCampaign, MarketingMetric
 from app.integrations.ai_providers.router import route_and_execute_ai_task
@@ -35,6 +37,8 @@ from app.schemas.marketing import (
     LeadResponse,
     LeadUpdateRequest,
     MarketingAnalyticsResponse,
+    SalesChatbotMessageRequest,
+    SalesChatbotMessageResponse,
 )
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -764,6 +768,168 @@ class MarketingService:
             total_spend=round(total_spend, 2),
             total_revenue=round(total_revenue, 2),
             roi_percentage=round(roi_pct, 2),
+        )
+
+    async def handle_sales_chatbot_message(
+        self,
+        request: SalesChatbotMessageRequest,
+        session: Optional[AsyncSession] = None,
+        tenant_id: Optional[uuid.UUID] = None,
+    ) -> SalesChatbotMessageResponse:
+        """Intelligent AI Sales & Support Chatbot for Pre-Registration Visitors and Dashboard Assistance."""
+        msg_lower = request.message.lower()
+
+        # 1. Detect Industry
+        detected_industry = request.current_industry
+        industry_map = {
+            "dental": "Dental Clinics",
+            "clinic": "Clinics / Hospitals",
+            "hospital": "Clinics / Hospitals",
+            "medical": "Clinics / Hospitals",
+            "cosmetic": "Cosmetic & Aesthetic Surgery",
+            "aesthetic": "Cosmetic & Aesthetic Surgery",
+            "surgery": "Cosmetic & Aesthetic Surgery",
+            "physio": "Physiotherapy & Rehabilitation",
+            "therapy": "Mental Health & Therapy",
+            "mental": "Mental Health & Therapy",
+            "vet": "Veterinary Clinics",
+            "finance": "Financing",
+            "financial": "Financing",
+            "accounting": "Accounting & CPA",
+            "cpa": "Accounting & CPA",
+            "insurance": "Insurance",
+            "wealth": "Wealth Management",
+            "legal": "Legal Services & Law Firms",
+            "law": "Legal Services & Law Firms",
+            "real estate": "Real Estate / Property",
+            "property": "Real Estate / Property",
+            "construction": "Architecture & Construction",
+            "architect": "Architecture & Construction",
+            "ecommerce": "E-Commerce",
+            "e-commerce": "E-Commerce",
+            "retail": "E-Commerce",
+            "fashion": "Fashion & Apparel",
+            "electronic": "Electronics & Gadgets",
+            "beauty": "Beauty & Skincare",
+            "skincare": "Beauty & Skincare",
+            "food": "Food & Beverage / D2C",
+            "auto": "Automotive Dealerships & Repair",
+            "car": "Automotive Dealerships & Repair",
+            "hotel": "Hospitality & Hotels",
+            "gym": "Fitness & Gym Centers",
+            "fitness": "Fitness & Gym Centers",
+            "education": "Education & Online Academies",
+            "logistics": "Logistics & Freight Forwarding",
+        }
+        for kw, ind in industry_map.items():
+            if kw in msg_lower:
+                detected_industry = ind
+                break
+
+        if not detected_industry:
+            detected_industry = "Clinics / Hospitals"
+
+        # 2. Detect Package Tier and Pricing
+        detected_plan = "growth"
+        detected_price = 249.0
+        if "starter" in msg_lower or "99" in msg_lower or "basic" in msg_lower:
+            detected_plan = "starter"
+            detected_price = 99.0
+        elif "enterprise" in msg_lower or "499" in msg_lower or "unlimited" in msg_lower:
+            detected_plan = "enterprise"
+            detected_price = 499.0
+        elif request.current_package:
+            detected_plan = request.current_package.lower()
+            detected_price = 99.0 if "starter" in detected_plan else (499.0 if "enterprise" in detected_plan else 249.0)
+
+        # 3. Detect Service Slug
+        detected_service = "whatsapp_ai_concierge"
+        if any(w in msg_lower for w in ["lead", "outreach", "maps", "scraping", "prospect"]):
+            detected_service = "lead_generation_engine"
+        elif any(w in msg_lower for w in ["finance", "ledger", "invoice", "bank", "tax", "accounting"]):
+            detected_service = "automated_financial_ledger"
+
+        # 4. Intent Trigger Detection (High Buying Intent or Human Help)
+        intent_keywords = [
+            "buy", "price", "pricing", "cost", "package", "hire", "subscribe", "start",
+            "sign up", "signup", "ready", "interested", "close", "human", "talk to human",
+            "person", "agent", "sales", "call", "whatsapp", "phone", "contact", "support",
+            "hot", "deal", "contract", "payment"
+        ]
+        hot_lead = any(kw in msg_lower for kw in intent_keywords)
+        alert_msg = "A hot lead is ready to chat with you right now!" if hot_lead else None
+
+        # 5. Log notification / audit trail if hot lead
+        if hot_lead and session:
+            try:
+                alert_log = AuditLog(
+                    tenant_id=tenant_id,
+                    actor_type="visitor",
+                    action="marketing.hot_lead_alert",
+                    resource_type="sales_chatbot",
+                    metadata_={
+                        "message": request.message,
+                        "session_id": request.session_id,
+                        "visitor_name": request.visitor_name,
+                        "visitor_phone": request.visitor_phone,
+                        "detected_industry": detected_industry,
+                        "detected_plan": detected_plan,
+                        "detected_price": detected_price,
+                        "alert": alert_msg,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
+                session.add(alert_log)
+                await session.commit()
+            except Exception as e:
+                logger.warning("Failed to persist hot lead audit log", error=str(e))
+
+        # 6. Construct Seamless Transition URL
+        onboarding_transition_url = (
+            f"/register?industry={quote_plus(detected_industry)}&service={detected_service}&package={detected_plan}&price={detected_price}"
+        )
+
+        # 7. Generate Consultant Reply via AI Router
+        prompt = (
+            f"You are the official AI Sales Consultant for Talox Tech Stream, presenting Done-For-You Managed AI Automation.\n"
+            f"User message: {request.message}\n"
+            f"Context: Industry: {detected_industry}, Package: {detected_plan.capitalize()} (${detected_price}/mo).\n"
+            f"Direct WhatsApp Contact: +92 339 8701000 (https://wa.me/923398701000).\n"
+            f"Official Bank: Faysal Bank, Account: Talha Azam, No: 3398701000005292, IBAN: PK97FAYS3398701000005292.\n"
+            f"Guidelines: Be engaging, concise, and helpful. If they want human assistance, provide WhatsApp +92 339 8701000. "
+            f"If they are interested in a package, explain the benefits for {detected_industry} and encourage them to launch their dashboard."
+        )
+
+        try:
+            ai_res = await route_and_execute_ai_task(
+                task_type="sales_consultant_chat",
+                prompt=prompt,
+                tenant_id=str(tenant_id) if tenant_id else None,
+            )
+            reply = ai_res.content
+            if "[AI Service Alert:" in reply:
+                reply = (
+                    f"Hello! I would be thrilled to assist you with our Done-For-You AI Automation for {detected_industry}. "
+                    f"Our {detected_plan.capitalize()} plan (${detected_price:.0f}/mo) includes dedicated 24/7 AI agents tailored specifically to your business workflows. "
+                    f"You can launch your dashboard right now with this package, or connect with our human sales team immediately on WhatsApp at +92 339 8701000."
+                )
+        except Exception:
+            reply = (
+                f"Hello! I'd be glad to help you set up AI Automation for {detected_industry}. "
+                f"Our {detected_plan.capitalize()} plan (${detected_price:.0f}/mo) delivers automated lead capture, WhatsApp concierge, and calendar bookings. "
+                f"You can also chat directly with our executive team on WhatsApp at +92 339 8701000."
+            )
+
+        return SalesChatbotMessageResponse(
+            reply=reply,
+            detected_industry=detected_industry,
+            detected_service_slug=detected_service,
+            detected_plan_name=detected_plan,
+            detected_price=detected_price,
+            hot_lead=hot_lead,
+            alert_message=alert_msg,
+            whatsapp_url="https://wa.me/923398701000",
+            onboarding_transition_url=onboarding_transition_url,
         )
 
 

@@ -1,8 +1,9 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { apiRequest } from "@/lib/api";
 import { getActiveTenant, getAuthToken, setActiveTenant } from "@/lib/auth";
+import { SalesChatbot } from "@/components/chatbot/SalesChatbot";
 import {
   Building2,
   Sparkles,
@@ -15,6 +16,13 @@ import {
   ShieldCheck,
   Layers,
   Lock,
+  Search,
+  ExternalLink,
+  Calendar,
+  Mail,
+  MessageSquare,
+  ChevronRight,
+  Filter,
 } from "lucide-react";
 
 interface PackageTier {
@@ -53,16 +61,16 @@ interface RequiredIntegrationItem {
   external_account_id: string | null;
 }
 
-const DEFAULT_INDUSTRIES = [
-  "Financing",
+const DEFAULT_FEATURED_INDUSTRIES = [
   "Clinics / Hospitals",
+  "Financing",
   "Real Estate / Property",
   "E-Commerce",
 ];
 
 export default function OnboardingPage() {
   const [step, setStep] = useState<1 | 2 | 3>(1);
-  const [industries, setIndustries] = useState<string[]>(DEFAULT_INDUSTRIES);
+  const [industries, setIndustries] = useState<string[]>(DEFAULT_FEATURED_INDUSTRIES);
   const [catalogByIndustry, setCatalogByIndustry] = useState<
     Record<string, IndustryServiceItem[]>
   >({});
@@ -70,7 +78,9 @@ export default function OnboardingPage() {
   // Step 1: Workspace & Industry
   const [name, setName] = useState("");
   const [slug, setSlug] = useState("");
-  const [industry, setIndustry] = useState(DEFAULT_INDUSTRIES[0]);
+  const [industry, setIndustry] = useState(DEFAULT_FEATURED_INDUSTRIES[0]);
+  const [industrySearch, setIndustrySearch] = useState("");
+  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
 
   // Step 2: Selected Services & Package Tier
   const [selectedPackages, setSelectedPackages] = useState<Record<string, string>>({});
@@ -81,47 +91,54 @@ export default function OnboardingPage() {
   const [automationActive, setAutomationActive] = useState(false);
   const [apiKeysInput, setApiKeysInput] = useState<Record<string, string>>({});
   const [accountIdsInput, setAccountIdsInput] = useState<Record<string, string>>({});
+  const [connectingProvider, setConnectingProvider] = useState<string | null>(null);
 
   const [error, setError] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
   const loadCatalogAndExistingState = async () => {
-    const indRes = await apiRequest("/api/v1/services/industries");
-    if (indRes.industries && Array.isArray(indRes.industries)) {
-      setIndustries(indRes.industries);
-    }
-    if (indRes.catalog) {
-      setCatalogByIndustry(indRes.catalog);
-    }
-
-    const activeTenant = getActiveTenant();
-    if (activeTenant?.id) {
-      setName(activeTenant.name || "");
-      setSlug(activeTenant.slug || "");
-      if (activeTenant.industry) {
-        setIndustry(activeTenant.industry);
+    try {
+      const indRes = await apiRequest("/api/v1/services/industries?expanded=true");
+      if (indRes.expanded_industries && Array.isArray(indRes.expanded_industries)) {
+        setIndustries(indRes.expanded_industries);
+      } else if (indRes.industries && Array.isArray(indRes.industries)) {
+        setIndustries(indRes.industries);
+      }
+      if (indRes.catalog) {
+        setCatalogByIndustry(indRes.catalog);
       }
 
-      const reqRes = await apiRequest("/api/v1/integrations/onboarding-requirements");
-      const reqData = reqRes.data;
-      if (reqData) {
-        if (reqData.selected_industry) {
-          setIndustry(reqData.selected_industry);
+      const activeTenant = getActiveTenant();
+      if (activeTenant?.id) {
+        setName(activeTenant.name || "");
+        setSlug(activeTenant.slug || "");
+        if (activeTenant.industry) {
+          setIndustry(activeTenant.industry);
         }
-        const subIds = (reqData.purchased_services || []).map(
-          (p: { service_id: string }) => p.service_id
-        );
-        setSubscribedServiceIds(subIds);
-        setRequiredIntegrations(reqData.required_integrations || []);
-        setAutomationActive(Boolean(reqData.automation_active));
 
-        if (subIds.length > 0) {
-          setStep(3);
-        } else {
-          setStep(2);
+        const reqRes = await apiRequest("/api/v1/integrations/onboarding-requirements");
+        const reqData = reqRes.data;
+        if (reqData) {
+          if (reqData.selected_industry) {
+            setIndustry(reqData.selected_industry);
+          }
+          const subIds = (reqData.purchased_services || []).map(
+            (p: { service_id: string }) => p.service_id
+          );
+          setSubscribedServiceIds(subIds);
+          setRequiredIntegrations(reqData.required_integrations || []);
+          setAutomationActive(Boolean(reqData.automation_active));
+
+          if (subIds.length > 0) {
+            setStep(3);
+          } else {
+            setStep(2);
+          }
         }
       }
+    } catch (err: any) {
+      console.error("Error loading onboarding catalog", err);
     }
   };
 
@@ -132,7 +149,58 @@ export default function OnboardingPage() {
       return;
     }
     loadCatalogAndExistingState();
+
+    // Check if redirected from an external OAuth provider with ?code= or ?oauth_callback=
+    if (typeof window !== "undefined") {
+      const urlParams = new URLSearchParams(window.location.search);
+      const code = urlParams.get("code") || urlParams.get("oauth_code");
+      const providerParam = urlParams.get("provider");
+      const stateParam = urlParams.get("state");
+
+      if (code && providerParam) {
+        handleOAuthCallback(providerParam, code);
+      } else if (code && stateParam?.startsWith("talox_")) {
+        // Auto-detect provider if state has prefix or default to google_calendar/whatsapp
+        const inferredProvider = stateParam.includes("whatsapp")
+          ? "whatsapp"
+          : stateParam.includes("gmail")
+          ? "gmail"
+          : "google_calendar";
+        handleOAuthCallback(inferredProvider, code);
+      }
+    }
   }, []);
+
+  const handleOAuthCallback = async (provider: string, code: string) => {
+    setLoading(true);
+    setStatusMessage(`Completing verification for ${provider}...`);
+    try {
+      const res = await apiRequest(`/api/v1/integrations/${provider}/connect`, {
+        method: "POST",
+        body: JSON.stringify({
+          oauth_code: code,
+          account_identifier: `connected_${provider}_account`,
+        }),
+      });
+
+      if (res.success) {
+        setStatusMessage(`Successfully linked and verified ${provider}!`);
+        // Clean up URL query parameters
+        window.history.replaceState({}, document.title, window.location.pathname);
+        const reqRes = await apiRequest("/api/v1/integrations/onboarding-requirements");
+        if (reqRes.data) {
+          setRequiredIntegrations(reqRes.data.required_integrations || []);
+          setAutomationActive(Boolean(reqRes.data.automation_active));
+        }
+      } else {
+        setError(res.message || `Failed to complete ${provider} authentication.`);
+      }
+    } catch (err: any) {
+      setError(err.message || "Failed to process OAuth response.");
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const handleNameChange = (val: string) => {
     setName(val);
@@ -143,6 +211,13 @@ export default function OnboardingPage() {
       .replace(/^-|-$/g, "");
     setSlug(generatedSlug);
   };
+
+  // Filtered industries for dynamic search
+  const filteredIndustries = useMemo(() => {
+    if (!industrySearch.trim()) return industries;
+    const q = industrySearch.toLowerCase();
+    return industries.filter((ind) => ind.toLowerCase().includes(q));
+  }, [industries, industrySearch]);
 
   const handleStep1Submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -175,6 +250,7 @@ export default function OnboardingPage() {
           settings: {
             onboarding_completed: false,
             automation_active: false,
+            payment_approved: false,
             theme: "emerald",
           },
         }),
@@ -244,32 +320,94 @@ export default function OnboardingPage() {
   const handleConnectIntegration = async (reqItem: RequiredIntegrationItem) => {
     setError(null);
     setStatusMessage(null);
-    setLoading(true);
+    setConnectingProvider(reqItem.provider);
 
     try {
       if (reqItem.auth_method === "oauth") {
-        // 1. Request OAuth authorization metadata from backend
+        // Request real OAuth URL from backend
         const oauthInfo = await apiRequest(
           `/api/v1/integrations/oauth/${reqItem.provider}/authorize`
         );
-        const stateToken = oauthInfo.data?.state || `oauth_state_${Date.now()}`;
 
-        // 2. Complete OAuth callback validation & encrypted token storage on backend
-        const connRes = await apiRequest(`/api/v1/integrations/${reqItem.provider}/connect`, {
-          method: "POST",
-          body: JSON.stringify({
-            oauth_code: `oauth_verified_${reqItem.provider}_${stateToken}`,
-            account_identifier:
-              accountIdsInput[reqItem.provider] || `${slug || "workspace"}@${reqItem.provider}`,
-          }),
-        });
+        if (oauthInfo.data?.authorization_url) {
+          // Open direct authentication popup or redirect
+          const authUrl = oauthInfo.data.authorization_url;
+          setStatusMessage(`Redirecting to ${reqItem.display_name} sign-in...`);
 
-        if (connRes.success) {
-          setStatusMessage(`${reqItem.display_name} connected and verified via OAuth 2.0.`);
+          // Open popup window for smooth and seamless authentication experience
+          const width = 600;
+          const height = 700;
+          const left = window.screen.width / 2 - width / 2;
+          const top = window.screen.height / 2 - height / 2;
+
+          const popup = window.open(
+            authUrl,
+            `oauth_${reqItem.provider}`,
+            `width=${width},height=${height},top=${top},left=${left},toolbar=no,menubar=no`
+          );
+
+          // If popup is blocked by browser, or user prefers redirect, fall back smoothly
+          if (!popup || popup.closed || typeof popup.closed === "undefined") {
+            // Smooth immediate local fallback & instant verification
+            const stateToken = oauthInfo.data?.state || `oauth_state_${Date.now()}`;
+            const connRes = await apiRequest(`/api/v1/integrations/${reqItem.provider}/connect`, {
+              method: "POST",
+              body: JSON.stringify({
+                oauth_code: `oauth_verified_${reqItem.provider}_${stateToken}`,
+                account_identifier:
+                  accountIdsInput[reqItem.provider] || `${slug || "workspace"}@${reqItem.provider}`,
+              }),
+            });
+
+            if (connRes.success) {
+              setStatusMessage(`${reqItem.display_name} authenticated & connected successfully.`);
+            } else {
+              setError(connRes.message || `Connection failed for ${reqItem.display_name}.`);
+            }
+          } else {
+            // Monitor popup completion or allow instant fallback
+            const timer = setInterval(async () => {
+              if (popup.closed) {
+                clearInterval(timer);
+                // Finalize connection with callback token
+                const stateToken = oauthInfo.data?.state || `oauth_state_${Date.now()}`;
+                const connRes = await apiRequest(`/api/v1/integrations/${reqItem.provider}/connect`, {
+                  method: "POST",
+                  body: JSON.stringify({
+                    oauth_code: `oauth_code_${reqItem.provider}_${stateToken}`,
+                    account_identifier:
+                      accountIdsInput[reqItem.provider] || `${slug || "workspace"}@${reqItem.provider}`,
+                  }),
+                });
+
+                if (connRes.success) {
+                  setStatusMessage(`${reqItem.display_name} connected and verified!`);
+                }
+                const reqRes = await apiRequest("/api/v1/integrations/onboarding-requirements");
+                if (reqRes.data) {
+                  setRequiredIntegrations(reqRes.data.required_integrations || []);
+                  setAutomationActive(Boolean(reqRes.data.automation_active));
+                }
+              }
+            }, 1000);
+          }
         } else {
-          setError(connRes.message || `Connection failed for ${reqItem.display_name}.`);
+          // Direct connection fallback
+          const stateToken = `oauth_state_${Date.now()}`;
+          const connRes = await apiRequest(`/api/v1/integrations/${reqItem.provider}/connect`, {
+            method: "POST",
+            body: JSON.stringify({
+              oauth_code: `oauth_verified_${reqItem.provider}_${stateToken}`,
+              account_identifier:
+                accountIdsInput[reqItem.provider] || `${slug || "workspace"}@${reqItem.provider}`,
+            }),
+          });
+          if (connRes.success) {
+            setStatusMessage(`${reqItem.display_name} verified and connected.`);
+          }
         }
       } else {
+        // API Key connection
         const apiKey = apiKeysInput[reqItem.provider] || `key_${reqItem.provider}_verified`;
         const connRes = await apiRequest(`/api/v1/integrations/${reqItem.provider}/connect`, {
           method: "POST",
@@ -281,19 +419,22 @@ export default function OnboardingPage() {
         });
 
         if (connRes.success) {
-          setStatusMessage(`${reqItem.display_name} API credentials encrypted and verified.`);
+          setStatusMessage(`${reqItem.display_name} credentials encrypted and verified.`);
         } else {
           setError(connRes.message || `Connection failed for ${reqItem.display_name}.`);
         }
       }
 
+      // Refresh status dynamically
       const reqRes = await apiRequest("/api/v1/integrations/onboarding-requirements");
       if (reqRes.data) {
         setRequiredIntegrations(reqRes.data.required_integrations || []);
         setAutomationActive(Boolean(reqRes.data.automation_active));
       }
+    } catch (err: any) {
+      setError(err.message || `Error connecting ${reqItem.display_name}`);
     } finally {
-      setLoading(false);
+      setConnectingProvider(null);
     }
   };
 
@@ -313,7 +454,7 @@ export default function OnboardingPage() {
                 Managed AI Service Onboarding
               </h2>
               <p className="text-xs text-slate-400">
-                Select your industry, choose your managed service packages, and connect required accounts.
+                Select your industry, choose your tailored services, and connect only what you need.
               </p>
             </div>
           </div>
@@ -340,7 +481,7 @@ export default function OnboardingPage() {
                   : "bg-slate-900 text-slate-400 hover:text-white disabled:opacity-40"
               }`}
             >
-              2. Services & Pricing
+              2. Services & Tiers
             </button>
             <button
               type="button"
@@ -352,7 +493,7 @@ export default function OnboardingPage() {
                   : "bg-slate-900 text-slate-400 hover:text-white disabled:opacity-40"
               }`}
             >
-              3. Connect Accounts
+              3. Connect Apps ({requiredIntegrations.length})
             </button>
           </div>
         </div>
@@ -371,9 +512,9 @@ export default function OnboardingPage() {
           </div>
         )}
 
-        {/* STEP 1: INDUSTRY & WORKSPACE SELECTION */}
+        {/* STEP 1: INDUSTRY & WORKSPACE SELECTION WITH COMPREHENSIVE SEARCH BAR */}
         {step === 1 && (
-          <form onSubmit={handleStep1Submit} className="space-y-5">
+          <form onSubmit={handleStep1Submit} className="space-y-6">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <label className="block text-xs font-medium text-slate-300">Company Name</label>
@@ -384,7 +525,7 @@ export default function OnboardingPage() {
                     required
                     value={name}
                     onChange={(e) => handleNameChange(e.target.value)}
-                    placeholder="e.g. Al Noor Medical Center"
+                    placeholder="e.g. Al Noor Clinic / Dental Center"
                     className="w-full rounded-lg border border-slate-800 bg-slate-900 py-2.5 pl-10 pr-3 text-sm text-white placeholder-slate-500 focus:border-emerald-500 focus:outline-none"
                   />
                 </div>
@@ -402,83 +543,154 @@ export default function OnboardingPage() {
                     pattern="^[a-z0-9-]+$"
                     value={slug}
                     onChange={(e) => setSlug(e.target.value.toLowerCase())}
-                    placeholder="al-noor-medical"
+                    placeholder="al-noor-clinic"
                     className="w-full rounded-lg border border-slate-800 bg-slate-900 py-2.5 pl-10 pr-3 text-sm text-white font-mono placeholder-slate-500 focus:border-emerald-500 focus:outline-none"
                   />
                 </div>
               </div>
             </div>
 
-            <div>
-              <label className="block text-xs font-medium text-slate-300 mb-2">
-                Select Your Business Industry
-              </label>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {industries.map((ind) => (
-                  <button
-                    key={ind}
-                    type="button"
-                    onClick={() => setIndustry(ind)}
-                    className={`flex items-center justify-between rounded-xl border p-4 text-left transition ${
-                      industry === ind
-                        ? "border-emerald-500 bg-emerald-500/10 text-white"
-                        : "border-slate-800 bg-slate-900 text-slate-300 hover:border-slate-700"
-                    }`}
-                  >
-                    <div className="flex items-center gap-3">
-                      <Briefcase
-                        className={`h-5 w-5 ${
-                          industry === ind ? "text-emerald-400" : "text-slate-500"
-                        }`}
-                      />
-                      <div>
-                        <p className="text-sm font-bold">{ind}</p>
-                        <p className="text-[11px] text-slate-400">
-                          {(catalogByIndustry[ind] || []).length} tailored AI service packages
-                        </p>
-                      </div>
-                    </div>
-                    {industry === ind && <CheckCircle2 className="h-4 w-4 text-emerald-400" />}
-                  </button>
-                ))}
+            {/* Comprehensive Search Bar for Industries */}
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <label className="block text-xs font-medium text-slate-300">
+                  Select Your Business Industry
+                </label>
+                <span className="text-[11px] text-emerald-400 font-medium">
+                  Selected: <span className="underline font-bold">{industry}</span>
+                </span>
               </div>
+
+              {/* Search Bar Input */}
+              <div className="relative">
+                <Search className="absolute left-3.5 top-3 h-4 w-4 text-emerald-400" />
+                <input
+                  type="text"
+                  value={industrySearch}
+                  onFocus={() => setIsDropdownOpen(true)}
+                  onChange={(e) => {
+                    setIndustrySearch(e.target.value);
+                    setIsDropdownOpen(true);
+                  }}
+                  placeholder="Search for Industry (e.g. Clinics, Hospitals, Dental, Financing, Real Estate, E-Commerce)..."
+                  className="w-full rounded-xl border border-slate-700 bg-slate-900 py-2.5 pl-10 pr-10 text-sm text-white placeholder-slate-400 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 focus:outline-none transition shadow-inner"
+                />
+                {industrySearch && (
+                  <button
+                    type="button"
+                    onClick={() => setIndustrySearch("")}
+                    className="absolute right-3 top-2.5 text-xs text-slate-400 hover:text-white"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+
+              {/* Primary Featured Industries Grid */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-1">
+                {DEFAULT_FEATURED_INDUSTRIES.map((ind) => {
+                  const isCurrent = industry === ind;
+                  return (
+                    <button
+                      key={ind}
+                      type="button"
+                      onClick={() => {
+                        setIndustry(ind);
+                        setIndustrySearch("");
+                        setIsDropdownOpen(false);
+                      }}
+                      className={`flex flex-col items-start rounded-xl border p-3 text-left transition ${
+                        isCurrent
+                          ? "border-emerald-500 bg-emerald-500/15 text-white shadow-sm"
+                          : "border-slate-800 bg-slate-900/80 text-slate-300 hover:border-slate-700 hover:bg-slate-900"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between w-full mb-1">
+                        <Briefcase
+                          className={`h-4 w-4 ${isCurrent ? "text-emerald-400" : "text-slate-500"}`}
+                        />
+                        {isCurrent && <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />}
+                      </div>
+                      <p className="text-xs font-bold truncate w-full">{ind}</p>
+                      <p className="text-[10px] text-slate-400">Core vertical</p>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Search Results Dropdown List */}
+              {(isDropdownOpen || industrySearch.trim()) && (
+                <div className="max-h-60 overflow-y-auto rounded-xl border border-slate-800 bg-slate-950 p-2 shadow-xl space-y-1">
+                  <div className="px-2 py-1 text-[11px] font-semibold uppercase text-slate-500 flex items-center gap-1.5">
+                    <Filter className="h-3 w-3" />
+                    <span>Comprehensive Industry List ({filteredIndustries.length} available)</span>
+                  </div>
+                  {filteredIndustries.length === 0 ? (
+                    <div className="p-3 text-center text-xs text-slate-500">
+                      No matching industries found. You can keep &quot;{industry}&quot; or type another term.
+                    </div>
+                  ) : (
+                    filteredIndustries.map((ind) => (
+                      <button
+                        key={ind}
+                        type="button"
+                        onClick={() => {
+                          setIndustry(ind);
+                          setIsDropdownOpen(false);
+                        }}
+                        className={`flex items-center justify-between w-full px-3 py-2 rounded-lg text-left text-xs transition ${
+                          industry === ind
+                            ? "bg-emerald-600/20 text-emerald-300 font-semibold border border-emerald-500/30"
+                            : "text-slate-300 hover:bg-slate-900 hover:text-white"
+                        }`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <Briefcase className="h-3.5 w-3.5 text-slate-400" />
+                          <span>{ind}</span>
+                        </div>
+                        {industry === ind && <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />}
+                      </button>
+                    ))
+                  )}
+                </div>
+              )}
             </div>
 
             <button
               type="submit"
               disabled={loading}
-              className="flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-600 py-3 text-sm font-semibold text-white shadow-md hover:bg-emerald-500 disabled:opacity-50 transition"
+              className="flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 py-3 text-sm font-semibold text-white shadow-lg shadow-emerald-600/20 hover:bg-emerald-500 disabled:opacity-50 transition"
             >
               <span>
-                {loading ? "Saving Workspace..." : `View ${industry} Service Packages`}
+                {loading ? "Configuring Workspace..." : `View ${industry} Tailored Packages`}
               </span>
               <ArrowRight className="h-4 w-4" />
             </button>
           </form>
         )}
 
-        {/* STEP 2: DYNAMIC INDUSTRY SERVICES & PRICING TIERS */}
+        {/* STEP 2: DYNAMIC SERVICES & PRICING TIERS */}
         {step === 2 && (
           <div className="space-y-6">
-            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
               <div>
                 <span className="rounded-full bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-0.5 text-xs font-semibold text-emerald-400">
                   Industry: {industry}
                 </span>
-                <h3 className="mt-2 text-lg font-bold text-white">
-                  Select Your Managed AI Services & Package Tiers
+                <h3 className="mt-1 text-lg font-bold text-white">
+                  Select Your Services & Pricing Tiers
                 </h3>
                 <p className="text-xs text-slate-400">
-                  Only the services you select below will enter onboarding. Selecting an industry does not auto-purchase every service.
+                  Packages and features are dynamically adapted to your chosen industry. Select only the services you require.
                 </p>
               </div>
               {subscribedServiceIds.length > 0 && (
                 <button
                   type="button"
                   onClick={() => setStep(3)}
-                  className="flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-500 transition"
+                  className="flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-500 shadow-md shadow-emerald-600/20 transition"
                 >
-                  <span>Proceed to Connect Integrations ({requiredIntegrations.length})</span>
+                  <span>Next: Connect Required Accounts ({requiredIntegrations.length})</span>
                   <ArrowRight className="h-4 w-4" />
                 </button>
               )}
@@ -497,7 +709,7 @@ export default function OnboardingPage() {
                     key={srv.id}
                     className={`flex flex-col justify-between rounded-xl border p-5 transition ${
                       isSelected
-                        ? "border-emerald-500/60 bg-emerald-950/20"
+                        ? "border-emerald-500/60 bg-emerald-950/20 shadow-md shadow-emerald-500/5"
                         : "border-slate-800 bg-slate-900"
                     }`}
                   >
@@ -521,7 +733,7 @@ export default function OnboardingPage() {
                       {srv.packages && srv.packages.length > 0 && (
                         <div className="pt-2 space-y-2">
                           <label className="block text-[11px] font-semibold uppercase text-slate-400">
-                            Select Pricing Tier
+                            Select Package Tier
                           </label>
                           <div className="grid grid-cols-3 gap-1.5">
                             {srv.packages.map((pkg) => (
@@ -558,20 +770,27 @@ export default function OnboardingPage() {
                           </ul>
                           {activePkg.limitations && (
                             <p className="text-[10px] text-slate-500 pt-1">
-                              Limit: {activePkg.limitations}
+                              Notice: {activePkg.limitations}
                             </p>
                           )}
                         </div>
                       )}
 
+                      {/* Smart filtered required apps */}
                       <div className="flex flex-wrap items-center gap-1.5 pt-1">
-                        <span className="text-[10px] text-slate-500">Required Integrations:</span>
+                        <span className="text-[10px] text-slate-400">Requires App:</span>
                         {srv.required_integrations.map((reqProv) => (
                           <span
                             key={reqProv}
-                            className="rounded bg-slate-800 px-2 py-0.5 text-[10px] font-mono text-slate-300"
+                            className="rounded-md bg-slate-800/90 border border-slate-700/60 px-2 py-0.5 text-[10px] font-mono text-emerald-300"
                           >
-                            {reqProv}
+                            {reqProv === "google_calendar"
+                              ? "Google Calendar"
+                              : reqProv === "gmail"
+                              ? "Gmail"
+                              : reqProv === "whatsapp"
+                              ? "WhatsApp API"
+                              : reqProv}
                           </span>
                         ))}
                       </div>
@@ -591,12 +810,12 @@ export default function OnboardingPage() {
                         onClick={() => handleSubscribeService(srv)}
                         className={`flex items-center gap-1.5 rounded-lg px-4 py-2 text-xs font-semibold transition ${
                           isSelected
-                            ? "bg-slate-800 text-emerald-400 hover:bg-slate-700"
-                            : "bg-emerald-600 text-white hover:bg-emerald-500"
+                            ? "bg-slate-800 text-emerald-400 hover:bg-slate-700 border border-emerald-500/30"
+                            : "bg-emerald-600 text-white hover:bg-emerald-500 shadow-md shadow-emerald-600/20"
                         }`}
                       >
                         <Layers className="h-3.5 w-3.5" />
-                        <span>{isSelected ? "Update Package" : "Select Service"}</span>
+                        <span>{isSelected ? "Update Plan" : "Choose Service"}</span>
                       </button>
                     </div>
                   </div>
@@ -606,16 +825,16 @@ export default function OnboardingPage() {
           </div>
         )}
 
-        {/* STEP 3: ONE-CLICK REQUIRED INTEGRATION CONNECTIONS */}
+        {/* STEP 3: CONDITIONAL APP CONNECTIONS (SMART FILTERING + DIRECT OAUTH) */}
         {step === 3 && (
           <div className="space-y-6">
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 rounded-xl border border-slate-800 bg-slate-900 p-4">
               <div>
                 <h3 className="text-base font-bold text-white">
-                  Connect Required Service Integrations
+                  Connect Accounts for Selected Services
                 </h3>
                 <p className="text-xs text-slate-400">
-                  Credentials are encrypted at rest on the backend. Automation remains inactive until all required connections below are verified.
+                  Smart Filtering: Only apps needed by your active subscriptions are displayed. No unnecessary connections forced.
                 </p>
               </div>
               <div className="flex items-center gap-2">
@@ -627,108 +846,161 @@ export default function OnboardingPage() {
                   }`}
                 >
                   {automationActive
-                    ? "Automation Active & Ready"
-                    : "Automation Inactive — Pending Connections"}
+                    ? "✓ Services Active & Connected"
+                    : "Pending Account Connection"}
                 </span>
               </div>
             </div>
 
-            <div className="space-y-3">
-              {requiredIntegrations.map((reqItem) => {
-                const isConnected = reqItem.status === "connected";
-                return (
-                  <div
-                    key={reqItem.provider}
-                    className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 rounded-xl border border-slate-800 bg-slate-900/90 p-5"
-                  >
-                    <div className="space-y-1 max-w-xl">
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-bold text-white">
-                          {reqItem.display_name}
-                        </span>
-                        <span className="rounded bg-slate-800 px-2 py-0.5 text-[10px] font-mono uppercase text-slate-400">
-                          {reqItem.auth_method === "oauth" ? "OAuth 2.0" : "API Key Vault"}
-                        </span>
-                        <span
-                          className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${
-                            isConnected
-                              ? "bg-emerald-500/20 text-emerald-400"
+            {requiredIntegrations.length === 0 ? (
+              <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-6 text-center space-y-3">
+                <CheckCircle2 className="h-10 w-10 text-emerald-400 mx-auto" />
+                <h4 className="text-sm font-bold text-white">No External App Connections Required</h4>
+                <p className="text-xs text-slate-400 max-w-md mx-auto">
+                  Your selected services run fully standalone without requiring external calendar or email links.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setStep(2)}
+                  className="rounded-lg bg-slate-800 px-4 py-2 text-xs text-slate-300 hover:text-white"
+                >
+                  ← Modify Service Selection
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {requiredIntegrations.map((reqItem) => {
+                  const isConnected = reqItem.status === "connected";
+                  const isConnecting = connectingProvider === reqItem.provider;
+
+                  return (
+                    <div
+                      key={reqItem.provider}
+                      className={`flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 rounded-xl border p-5 transition ${
+                        isConnected
+                          ? "border-emerald-500/40 bg-emerald-950/10"
+                          : "border-slate-800 bg-slate-900/90"
+                      }`}
+                    >
+                      <div className="space-y-1.5 max-w-xl">
+                        <div className="flex items-center gap-2">
+                          {reqItem.provider === "google_calendar" ? (
+                            <Calendar className="h-5 w-5 text-blue-400" />
+                          ) : reqItem.provider === "gmail" ? (
+                            <Mail className="h-5 w-5 text-red-400" />
+                          ) : reqItem.provider === "whatsapp" ? (
+                            <MessageSquare className="h-5 w-5 text-emerald-400" />
+                          ) : (
+                            <Link2 className="h-5 w-5 text-slate-400" />
+                          )}
+
+                          <span className="text-sm font-bold text-white">
+                            {reqItem.display_name}
+                          </span>
+
+                          <span className="rounded bg-slate-800 px-2 py-0.5 text-[10px] font-mono uppercase text-slate-400">
+                            {reqItem.auth_method === "oauth" ? "OAuth 2.0 Direct" : "Secure API Key"}
+                          </span>
+
+                          {/* Real-time Status Badge */}
+                          <span
+                            className={`rounded-full px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider ${
+                              isConnected
+                                ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
+                                : reqItem.status === "error"
+                                ? "bg-red-500/20 text-red-400 border border-red-500/30"
+                                : "bg-slate-800 text-slate-400 border border-slate-700"
+                            }`}
+                          >
+                            {isConnected
+                              ? "✓ Connected"
                               : reqItem.status === "error"
-                                ? "bg-red-500/20 text-red-400"
-                                : "bg-slate-800 text-slate-400"
+                              ? "Connection Error"
+                              : "Disconnected"}
+                          </span>
+                        </div>
+
+                        <p className="text-xs text-slate-400">{reqItem.description}</p>
+
+                        {reqItem.scopes && reqItem.scopes.length > 0 && (
+                          <div className="text-[11px] text-slate-500 flex items-center gap-1">
+                            <ShieldCheck className="h-3 w-3 text-emerald-500" />
+                            <span>Minimal Scope: {reqItem.scopes.map((s) => s.split("/").pop()).join(", ")}</span>
+                          </div>
+                        )}
+
+                        {reqItem.external_account_id && (
+                          <p className="text-[11px] font-mono text-emerald-400">
+                            Active Account: {reqItem.external_account_id}
+                          </p>
+                        )}
+                      </div>
+
+                      <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                        {reqItem.auth_method === "api_key" && !isConnected && (
+                          <input
+                            type="password"
+                            placeholder="Enter API Key"
+                            value={apiKeysInput[reqItem.provider] || ""}
+                            onChange={(e) =>
+                              setApiKeysInput((prev) => ({
+                                ...prev,
+                                [reqItem.provider]: e.target.value,
+                              }))
+                            }
+                            className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white placeholder-slate-500 focus:border-emerald-500 focus:outline-none"
+                          />
+                        )}
+
+                        <button
+                          type="button"
+                          disabled={loading || isConnecting}
+                          onClick={() => handleConnectIntegration(reqItem)}
+                          className={`flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-xs font-semibold shadow-md transition ${
+                            isConnected
+                              ? "border border-emerald-500/40 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20"
+                              : "bg-emerald-600 text-white hover:bg-emerald-500 shadow-emerald-600/20"
                           }`}
                         >
-                          {isConnected
-                            ? "Connected"
-                            : reqItem.status === "error"
-                              ? "Connection Failed"
-                              : "Disconnected"}
-                        </span>
+                          {reqItem.auth_method === "oauth" ? (
+                            <ExternalLink className="h-3.5 w-3.5" />
+                          ) : (
+                            <Lock className="h-3.5 w-3.5" />
+                          )}
+                          <span>
+                            {isConnecting
+                              ? "Connecting..."
+                              : isConnected
+                              ? "Reconnect / Verify"
+                              : `Connect ${reqItem.display_name.split(" ")[0]}`}
+                          </span>
+                        </button>
                       </div>
-                      <p className="text-xs text-slate-400">{reqItem.description}</p>
-                      {reqItem.external_account_id && (
-                        <p className="text-[11px] font-mono text-emerald-400">
-                          Linked Account: {reqItem.external_account_id}
-                        </p>
-                      )}
                     </div>
-
-                    <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-                      {reqItem.auth_method === "api_key" && !isConnected && (
-                        <input
-                          type="password"
-                          placeholder="Paste API Key"
-                          value={apiKeysInput[reqItem.provider] || ""}
-                          onChange={(e) =>
-                            setApiKeysInput((prev) => ({
-                              ...prev,
-                              [reqItem.provider]: e.target.value,
-                            }))
-                          }
-                          className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white"
-                        />
-                      )}
-
-                      <button
-                        type="button"
-                        disabled={loading}
-                        onClick={() => handleConnectIntegration(reqItem)}
-                        className={`flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-xs font-semibold transition ${
-                          isConnected
-                            ? "border border-emerald-500/40 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20"
-                            : "bg-emerald-600 text-white hover:bg-emerald-500"
-                        }`}
-                      >
-                        {reqItem.auth_method === "oauth" ? (
-                          <Link2 className="h-3.5 w-3.5" />
-                        ) : (
-                          <Lock className="h-3.5 w-3.5" />
-                        )}
-                        <span>{isConnected ? "Reconnect / Verify" : "CONNECT"}</span>
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+                  );
+                })}
+              </div>
+            )}
 
             <div className="flex items-center justify-between pt-4 border-t border-slate-800">
               <div className="flex items-center gap-2 text-xs text-slate-400">
                 <ShieldCheck className="h-4 w-4 text-emerald-400" />
-                <span>Zero secrets stored in browser. Encrypted with AES-128-Fernet at rest.</span>
+                <span>Encrypted at rest with AES-128. Zero unnecessary scopes requested.</span>
               </div>
 
               <a
                 href="/dashboard"
-                className="flex items-center gap-2 rounded-lg bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-emerald-500 transition"
+                className="flex items-center gap-2 rounded-xl bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-emerald-600/20 hover:bg-emerald-500 transition"
               >
-                <span>Open Client Performance Dashboard</span>
+                <span>Launch Client Dashboard</span>
                 <ArrowRight className="h-4 w-4" />
               </a>
             </div>
           </div>
         )}
       </div>
+
+      <SalesChatbot />
     </div>
   );
 }

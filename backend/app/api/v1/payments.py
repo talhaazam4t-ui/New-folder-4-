@@ -6,14 +6,15 @@ from typing import List
 
 from app.config import settings
 from app.database.supabase import get_db
-from app.dependencies import get_current_tenant
+from app.dependencies import require_permission
 from app.integrations.payment.base import get_payment_provider
 from app.schemas.payment import (
+    BankTransferNotifyRequest,
     InvoiceResponse,
     PaymentCreateRequest,
     PaymentResponse,
 )
-from app.services.billing_service import billing_service
+from app.services.billing_service import COMPANY_BANK_DETAILS, billing_service
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,7 +23,7 @@ router = APIRouter(prefix="/payments", tags=["Billing & Payments"])
 
 @router.get("", response_model=List[PaymentResponse])
 async def list_payments(
-    context=Depends(get_current_tenant),
+    context=Depends(require_permission("payments.read")),
     session: AsyncSession = Depends(get_db),
 ):
     """Retrieve payment transaction records for the active tenant."""
@@ -51,16 +52,34 @@ async def list_payments(
 @router.post("", status_code=status.HTTP_201_CREATED, response_model=PaymentResponse)
 async def record_payment(
     request: PaymentCreateRequest,
-    context=Depends(get_current_tenant),
+    context=Depends(require_permission("payments.create")),
     session: AsyncSession = Depends(get_db),
 ):
     """Record and reconcile a payment transaction for the tenant."""
     return await billing_service.record_payment(session, context.tenant_id, request)
 
 
+@router.get("/bank-details")
+async def get_company_bank_details():
+    """Retrieve official company bank details for direct transfer payments."""
+    return {"success": True, "data": COMPANY_BANK_DETAILS}
+
+
+@router.post("/bank-transfer/notify")
+async def notify_bank_transfer(
+    request: BankTransferNotifyRequest,
+    context=Depends(require_permission("payments.create")),
+    session: AsyncSession = Depends(get_db),
+):
+    """Client notifies platform of completed manual bank transfer."""
+    return await billing_service.record_bank_transfer_notification(
+        session, context.tenant_id, request
+    )
+
+
 @router.get("/invoices", response_model=List[InvoiceResponse])
 async def list_invoices(
-    context=Depends(get_current_tenant),
+    context=Depends(require_permission("payments.read")),
     session: AsyncSession = Depends(get_db),
 ):
     """Retrieve billing invoices issued for the active tenant."""
@@ -85,7 +104,7 @@ async def list_invoices(
 @router.post("/invoices/{invoice_id}/pay", response_model=PaymentResponse)
 async def pay_invoice(
     invoice_id: uuid.UUID,
-    context=Depends(get_current_tenant),
+    context=Depends(require_permission("payments.create")),
     session: AsyncSession = Depends(get_db),
 ):
     """Settle an outstanding invoice for the tenant."""
@@ -111,7 +130,7 @@ async def pay_invoice(
 async def create_payment_intent(
     amount: float,
     currency: str = "USD",
-    context=Depends(get_current_tenant),
+    context=Depends(require_permission("payments.create")),
 ):
     """Generate deposit instructions or checkout intent through the configured payment provider."""
     provider = get_payment_provider(settings.payment_provider)
