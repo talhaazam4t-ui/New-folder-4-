@@ -13,7 +13,9 @@ Provides complete operational control over the managed AI SaaS platform:
    backend errors, execution logs, audit logs, and failed integration alerts.
 """
 
+import re
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from app.agents.registry import agent_registry
@@ -22,7 +24,12 @@ from app.automation.budget_manager import budget_manager
 from app.automation.retry import dead_letter_queue
 from app.config import settings
 from app.core.exceptions import PermissionDeniedError, ResourceNotFoundError
-from app.core.security import encrypt_secret, encrypt_sensitive_config, mask_sensitive_config
+from app.core.security import (
+    encrypt_secret,
+    encrypt_sensitive_config,
+    get_password_hash,
+    mask_sensitive_config,
+)
 from app.database.models.agent import AgentExecution, AgentRegistry, AgentTask
 from app.database.models.automation import Approval, AuditLog, Integration, UsageRecord
 from app.database.models.billing import Payment
@@ -166,6 +173,18 @@ class TenantAssignmentRequest(BaseModel):
     plan_name: str = "growth"
     price: float = 249.0
     billing_interval: str = "monthly"
+
+
+class AdminProvisionTenantRequest(BaseModel):
+    name: str
+    slug: Optional[str] = None
+    industry: str = "Financing"
+    owner_email: str
+    owner_name: Optional[str] = None
+    owner_password: Optional[str] = None
+    plan_name: str = "growth"
+    price: float = 249.0
+    status: str = "active"
 
 
 class PlatformSettingsUpdateRequest(BaseModel):
@@ -394,6 +413,122 @@ async def assign_tenant_industry_and_service(
             ),
         },
         "message": "Client workspace assignment updated by Platform Owner.",
+    }
+
+
+@router.post("/tenants/provision")
+async def admin_provision_tenant(
+    request: AdminProvisionTenantRequest,
+    admin_user: Profile = Depends(verify_platform_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    """Directly provision a new client workspace with an owner profile and subscription from the Admin Console."""
+    norm_industry = normalize_industry(request.industry)
+    owner_email = request.owner_email.strip().lower()
+
+    # 1. Resolve or create Owner Profile
+    owner_res = await session.execute(select(Profile).where(Profile.email == owner_email))
+    owner_profile = owner_res.scalar_one_or_none()
+    if not owner_profile:
+        pwd = request.owner_password or "Client@12345"
+        owner_id = uuid.uuid4()
+        owner_profile = Profile(
+            id=owner_id,
+            full_name=request.owner_name or request.name,
+            email=owner_email,
+            password_hash=get_password_hash(pwd),
+        )
+        session.add(owner_profile)
+        await session.flush()
+
+    # 2. Derive unique slug
+    base_slug = request.slug or re.sub(r"[^a-z0-9]+", "-", request.name.lower()).strip("-")
+    if not base_slug:
+        base_slug = f"client-{uuid.uuid4().hex[:6]}"
+
+    slug = base_slug
+    idx = 1
+    while True:
+        existing = await session.execute(select(Tenant).where(Tenant.slug == slug))
+        if not existing.scalar_one_or_none():
+            break
+        slug = f"{base_slug}-{idx}"
+        idx += 1
+
+    # 3. Create Tenant
+    tenant_status = "active" if request.status.lower() == "active" else "pending_approval"
+    new_tenant = Tenant(
+        name=request.name.strip(),
+        slug=slug,
+        industry=norm_industry,
+        status=tenant_status,
+        settings={
+            "onboarding_completed": True,
+            "automation_active": (tenant_status == "active"),
+            "plan_name": request.plan_name,
+            "theme": "emerald",
+        },
+    )
+    session.add(new_tenant)
+    await session.flush()
+
+    # 4. Create TenantMember
+    membership = TenantMember(
+        tenant_id=new_tenant.id,
+        user_id=owner_profile.id,
+        role="owner",
+        status="active",
+    )
+    session.add(membership)
+
+    # 5. Provision service subscription if catalog service exists
+    services_res = await session.execute(select(Service).where(Service.active.is_(True)))
+    catalog_service = services_res.scalars().first()
+
+    if catalog_service:
+        now_utc = datetime.now(timezone.utc)
+        session.add(
+            ServiceSubscription(
+                tenant_id=new_tenant.id,
+                service_id=catalog_service.id,
+                plan_name=request.plan_name,
+                billing_interval="monthly",
+                price=request.price,
+                status=tenant_status,
+                started_at=now_utc,
+            )
+        )
+
+    # 6. Audit log
+    session.add(
+        AuditLog(
+            tenant_id=new_tenant.id,
+            actor_id=admin_user.id,
+            actor_type="admin",
+            action="admin.tenant.provisioned_by_owner",
+            resource_type="tenant",
+            resource_id=new_tenant.id,
+            metadata_={
+                "tenant_name": new_tenant.name,
+                "slug": new_tenant.slug,
+                "industry": norm_industry,
+                "owner_email": owner_email,
+                "status": tenant_status,
+            },
+        )
+    )
+    await session.commit()
+    return {
+        "success": True,
+        "message": f"Client workspace '{new_tenant.name}' provisioned successfully.",
+        "data": {
+            "id": str(new_tenant.id),
+            "name": new_tenant.name,
+            "slug": new_tenant.slug,
+            "industry": new_tenant.industry,
+            "status": new_tenant.status,
+            "owner_email": owner_email,
+        },
     }
 
 

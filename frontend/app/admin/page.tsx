@@ -97,6 +97,55 @@ export default function AdminDashboardPage() {
   const [modalOAuthUrl, setModalOAuthUrl] = useState<string | null>(null);
   const [connectingIntegration, setConnectingIntegration] = useState(false);
 
+  // Provision New Client Modal
+  const [provisionModalOpen, setProvisionModalOpen] = useState(false);
+  const [provisionForm, setProvisionForm] = useState({
+    name: "",
+    industry: "Financing",
+    owner_email: "",
+    owner_name: "",
+    plan_name: "growth",
+    price: 249,
+    status: "active",
+  });
+  const [provisioning, setProvisioning] = useState(false);
+
+  const handleProvisionClient = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!provisionForm.name.trim() || !provisionForm.owner_email.trim()) {
+      showStatus("Error: Business name and client owner email are required.", true);
+      return;
+    }
+    setProvisioning(true);
+    showStatus(`Provisioning client workspace "${provisionForm.name}"...`);
+    try {
+      const res = await apiRequest("/api/v1/admin/tenants/provision", {
+        method: "POST",
+        body: JSON.stringify(provisionForm),
+      });
+      if (res.success) {
+        showStatus(`Workspace "${res.data?.name || provisionForm.name}" provisioned and activated successfully!`);
+        setProvisionModalOpen(false);
+        setProvisionForm({
+          name: "",
+          industry: "Financing",
+          owner_email: "",
+          owner_name: "",
+          plan_name: "growth",
+          price: 249,
+          status: "active",
+        });
+        fetchOperationsData();
+      } else {
+        showStatus(`Error provisioning workspace: ${res.error?.message || "Failed"}`, true);
+      }
+    } catch (err: any) {
+      showStatus(`Error: ${err.message || "Failed to provision workspace"}`, true);
+    } finally {
+      setProvisioning(false);
+    }
+  };
+
   // Platform Runtime Settings Editor (/api/v1/admin/settings)
   const [platformSettingsForm, setPlatformSettingsForm] = useState({
     default_fast_model: "",
@@ -740,9 +789,17 @@ export default function AdminDashboardPage() {
                       Click any client to switch management context. Control onboarding approvals, payment activation, industry assignment, and subscription tiers.
                     </p>
                   </div>
-                  <span className="text-xs font-mono text-slate-400">
-                    {tenants.length} Registered Companies
-                  </span>
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={() => setProvisionModalOpen(true)}
+                      className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3.5 py-1.5 text-xs font-bold text-white hover:bg-emerald-500 transition shadow-sm shadow-emerald-900/30"
+                    >
+                      <span>➕ Add Client Workspace</span>
+                    </button>
+                    <span className="text-xs font-mono text-slate-400">
+                      {tenants.length} Registered Companies
+                    </span>
+                  </div>
                 </div>
 
                 <div className="overflow-x-auto">
@@ -1893,6 +1950,163 @@ export default function AdminDashboardPage() {
                 {connectingIntegration ? "Linking & Approving..." : "Confirm & Connect Integration"}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Provision Client Workspace Modal */}
+      {provisionModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+          <div className="w-full max-w-lg rounded-2xl border border-slate-800 bg-slate-950 p-6 space-y-4 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2">
+                <Building2 className="h-5 w-5 text-emerald-400" />
+                <h3 className="text-sm font-bold text-white">
+                  Add New Client Workspace
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setProvisionModalOpen(false)}
+                className="text-slate-400 hover:text-white"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-400">
+              Instantly provision a managed client workspace with an owner profile, industry-specific AI agents, and active subscription.
+            </p>
+
+            <form onSubmit={handleProvisionClient} className="space-y-3">
+              <div className="space-y-1">
+                <label className="text-[11px] font-semibold text-slate-300">
+                  Client Business / Company Name *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={provisionForm.name}
+                  onChange={(e) => setProvisionForm({ ...provisionForm, name: e.target.value })}
+                  placeholder="e.g. Apex Financial Partners"
+                  className="w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-xs text-white placeholder-slate-500 focus:border-emerald-500 focus:outline-none"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className="text-[11px] font-semibold text-slate-300">
+                    Industry Vertical *
+                  </label>
+                  <select
+                    value={provisionForm.industry}
+                    onChange={(e) => setProvisionForm({ ...provisionForm, industry: e.target.value })}
+                    className="w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-xs text-white focus:border-emerald-500 focus:outline-none"
+                  >
+                    {AVAILABLE_INDUSTRIES.map((ind) => (
+                      <option key={ind} value={ind}>
+                        {ind}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[11px] font-semibold text-slate-300">
+                    Package Tier & Price
+                  </label>
+                  <select
+                    value={provisionForm.plan_name}
+                    onChange={(e) => {
+                      const tier = e.target.value;
+                      const price = tier === "starter" ? 149 : tier === "scale" ? 499 : 249;
+                      setProvisionForm({ ...provisionForm, plan_name: tier, price });
+                    }}
+                    className="w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-xs text-white focus:border-emerald-500 focus:outline-none"
+                  >
+                    <option value="starter">Starter — $149/mo</option>
+                    <option value="growth">Growth — $249/mo</option>
+                    <option value="scale">Scale — $499/mo</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className="text-[11px] font-semibold text-slate-300">
+                    Client Contact Email *
+                  </label>
+                  <input
+                    type="email"
+                    required
+                    value={provisionForm.owner_email}
+                    onChange={(e) => setProvisionForm({ ...provisionForm, owner_email: e.target.value })}
+                    placeholder="client@company.com"
+                    className="w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-xs text-white placeholder-slate-500 focus:border-emerald-500 focus:outline-none"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[11px] font-semibold text-slate-300">
+                    Client Contact Full Name
+                  </label>
+                  <input
+                    type="text"
+                    value={provisionForm.owner_name}
+                    onChange={(e) => setProvisionForm({ ...provisionForm, owner_name: e.target.value })}
+                    placeholder="e.g. John Doe"
+                    className="w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-xs text-white placeholder-slate-500 focus:border-emerald-500 focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[11px] font-semibold text-slate-300">
+                  Initial Workspace Status
+                </label>
+                <div className="flex gap-4 text-xs text-slate-300 pt-1">
+                  <label className="flex items-center gap-1.5 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="status"
+                      value="active"
+                      checked={provisionForm.status === "active"}
+                      onChange={(e) => setProvisionForm({ ...provisionForm, status: e.target.value })}
+                      className="text-emerald-500 focus:ring-0"
+                    />
+                    <span>Active (Pre-approved / Paid)</span>
+                  </label>
+                  <label className="flex items-center gap-1.5 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="status"
+                      value="pending_approval"
+                      checked={provisionForm.status === "pending_approval"}
+                      onChange={(e) => setProvisionForm({ ...provisionForm, status: e.target.value })}
+                      className="text-emerald-500 focus:ring-0"
+                    />
+                    <span>Pending Approval (Unpaid)</span>
+                  </label>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setProvisionModalOpen(false)}
+                  className="rounded-lg border border-slate-700 bg-slate-800 px-3.5 py-2 text-xs font-semibold text-slate-300 hover:bg-slate-700 transition"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={provisioning}
+                  className="rounded-lg bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-500 transition shadow-sm shadow-emerald-900/30"
+                >
+                  {provisioning ? "Creating Workspace..." : "Create & Provision Workspace"}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

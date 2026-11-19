@@ -161,7 +161,10 @@ async def get_tenant_overview(
     payment_reference = t_settings.get("payment_reference", None)
     is_payment_approved = payment_approved
 
-    if not tenant or tenant.status != "active":
+    if not tenant:
+        service_status = "Suspended"
+        automation_active = False
+    elif tenant.status == "suspended":
         service_status = "Suspended"
         automation_active = False
     elif not is_payment_approved:

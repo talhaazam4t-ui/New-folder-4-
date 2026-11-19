@@ -2,6 +2,7 @@
 """
 
 import pytest
+from app.config import settings
 from app.main import app
 from httpx import ASGITransport, AsyncClient
 
@@ -80,8 +81,13 @@ async def test_bank_details_and_transfer_notification_flow():
 
 
 @pytest.mark.asyncio
-async def test_admin_payment_approval_and_service_activation():
+async def test_admin_payment_approval_and_service_activation(monkeypatch):
     """Verify that Platform Owner can review and approve bank transfer, activating services."""
+    monkeypatch.setattr(
+        settings,
+        "super_admin_emails",
+        [*settings.super_admin_emails, "super.admin@talox.com"],
+    )
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         # 1. Register Super Admin (first registered user in test db)

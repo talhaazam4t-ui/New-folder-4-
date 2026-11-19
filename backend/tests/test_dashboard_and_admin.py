@@ -144,3 +144,49 @@ async def test_admin_global_overview_and_tenant_suspension(monkeypatch):
         stats_after = await client.get("/api/v1/admin/stats", headers=headers)
         assert stats_after.status_code == 200
         assert stats_after.json()["active_tenants"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_admin_direct_client_provisioning(monkeypatch):
+    monkeypatch.setattr(
+        settings,
+        "super_admin_emails",
+        [*settings.super_admin_emails, "platform.owner@talox.com"],
+    )
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # 1. Register Super Admin
+        admin_reg = await client.post("/api/v1/auth/register", json={
+            "email": "platform.owner@talox.com",
+            "password": "Password123!",
+            "full_name": "Platform Owner",
+        })
+        admin_token = admin_reg.json()["access_token"]
+        admin_headers = {"Authorization": f"Bearer {admin_token}"}
+
+        # 2. Provision new client workspace
+        prov_res = await client.post(
+            "/api/v1/admin/tenants/provision",
+            json={
+                "name": "Acme Real Estate",
+                "industry": "Real Estate / Property",
+                "owner_email": "broker@acmeproperty.com",
+                "owner_name": "Broker Bob",
+                "plan_name": "growth",
+                "price": 249.0,
+                "status": "active",
+            },
+            headers=admin_headers,
+        )
+        assert prov_res.status_code == 200
+        data = prov_res.json()["data"]
+        assert data["name"] == "Acme Real Estate"
+        assert data["industry"] == "Real Estate / Property"
+        assert data["status"] == "active"
+        assert data["owner_email"] == "broker@acmeproperty.com"
+
+        # 3. Verify it shows up in admin operations
+        ops_res = await client.get("/api/v1/admin/operations", headers=admin_headers)
+        assert ops_res.status_code == 200
+        tenants = ops_res.json()["data"]["tenants"]
+        assert any(t["slug"] == data["slug"] for t in tenants)
