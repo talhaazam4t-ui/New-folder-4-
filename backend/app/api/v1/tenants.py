@@ -7,6 +7,7 @@ from typing import Any, Dict, List
 from app.core.exceptions import TenantIsolationError
 from app.database.models.agent import TenantAgent
 from app.database.models.automation import AuditLog
+from app.database.models.billing import Payment
 from app.database.models.business import BusinessRecord
 from app.database.models.marketing import Lead
 from app.database.models.tenant import Profile, Tenant
@@ -20,7 +21,7 @@ from app.schemas.tenant import (
     TenantResponse,
     TenantUpdateRequest,
 )
-from app.services.billing_service import billing_service, normalize_industry
+from app.services.billing_service import COMPANY_BANK_DETAILS, billing_service, normalize_industry
 from app.services.integration_service import integration_service
 from app.services.tenant_service import tenant_service
 from fastapi import APIRouter, Depends, status
@@ -82,7 +83,7 @@ async def get_tenant_overview(
     leads_rows = list(leads_rows_res.scalars().all())
     total_leads = len(leads_rows)
     qualified_leads = sum(
-        1 for lead_item in leads_rows if lead_item.status in ("qualified", "converted") or float(lead_item.qualification_score or 0) >= 70.0
+        1 for lead in leads_rows if lead.status in ("qualified", "converted") or float(lead.qualification_score or 0) >= 70.0
     )
 
     messages_sent = 0
@@ -90,33 +91,33 @@ async def get_tenant_overview(
     lead_performance: List[Dict[str, Any]] = []
     appointment_performance: List[Dict[str, Any]] = []
 
-    for lead_item in leads_rows:
-        meta = lead_item.metadata_ or {}
+    for lead in leads_rows:
+        meta = lead.metadata_ or {}
         msg_cnt = int(meta.get("messages_sent_count", 0))
-        if msg_cnt == 0 and lead_item.status in ("contacted", "qualified", "converted"):
+        if msg_cnt == 0 and lead.status in ("contacted", "qualified", "converted"):
             msg_cnt = 1
         messages_sent += msg_cnt
 
-        is_booked = bool(meta.get("meeting_booked")) or lead_item.status == "converted"
+        is_booked = bool(meta.get("meeting_booked")) or lead.status == "converted"
         if is_booked:
             meetings_booked += 1
             appointment_performance.append({
-                "lead_id": str(lead_item.id),
-                "client_name": lead_item.name,
+                "lead_id": str(lead.id),
+                "client_name": lead.name,
                 "meeting_title": meta.get("meeting_title", "Consultation & Service Discovery"),
-                "scheduled_at": meta.get("meeting_scheduled_at", lead_item.created_at.isoformat()),
+                "scheduled_at": meta.get("meeting_scheduled_at", lead.created_at.isoformat()),
                 "status": "Confirmed",
             })
 
         lead_performance.append({
-            "id": str(lead_item.id),
-            "name": lead_item.name,
-            "source": lead_item.source,
-            "status": lead_item.status,
-            "qualification_score": float(lead_item.qualification_score or 0.0),
+            "id": str(lead.id),
+            "name": lead.name,
+            "source": lead.source,
+            "status": lead.status,
+            "qualification_score": float(lead.qualification_score or 0.0),
             "messages_sent": msg_cnt,
             "meeting_booked": is_booked,
-            "created_at": lead_item.created_at.isoformat(),
+            "created_at": lead.created_at.isoformat(),
         })
 
     conversion_rate = round((meetings_booked / total_leads * 100.0), 1) if total_leads > 0 else 0.0
@@ -130,7 +131,7 @@ async def get_tenant_overview(
     )
     active_agents = agents_res.scalar() or 0
 
-    # 6. Subscriptions, Packages & Onboarding / Integration Status
+    # 6. Subscriptions, Packages & Payment Approval Status
     onboarding_summary = await integration_service.get_onboarding_requirements(session, tenant_id)
     subscriptions = await billing_service.get_tenant_subscriptions(session, tenant_id)
     active_subs = [s for s in subscriptions if s.status == "active"]
@@ -141,14 +142,76 @@ async def get_tenant_overview(
         else "No Active Package"
     )
 
+    t_settings = dict(tenant.settings or {}) if tenant else {}
+    raw_payment_approved = t_settings.get("payment_approved")
+    if raw_payment_approved is False:
+        payment_approved = False
+        completed_pay = await session.execute(
+            select(Payment).where(Payment.tenant_id == tenant_id, Payment.status == "completed").limit(1)
+        )
+        if completed_pay.scalar_one_or_none():
+            payment_approved = True
+    elif raw_payment_approved is True:
+        payment_approved = True
+    else:
+        # Default to True for legacy/unscoped records without explicit onboarding payment lock
+        payment_approved = True
+
+    payment_notified = bool(t_settings.get("payment_notified", False))
+    payment_reference = t_settings.get("payment_reference", None)
+    is_payment_approved = payment_approved
+
     if not tenant or tenant.status != "active":
         service_status = "Suspended"
-    elif onboarding_summary["automation_active"]:
+        automation_active = False
+    elif not is_payment_approved:
+        automation_active = False
+        if payment_notified:
+            service_status = "Payment Transfer Submitted — Verification In Progress"
+        else:
+            service_status = "Awaiting Bank Transfer Payment Approval"
+    elif is_payment_approved and (onboarding_summary["automation_active"] or len(active_subs) > 0):
         service_status = "Active — Delivering Outcomes"
+        automation_active = True
     elif len(active_subs) > 0:
         service_status = "Pending Integration Connection"
+        automation_active = False
     else:
         service_status = "Awaiting Service Selection"
+        automation_active = False
+
+    # Format purchased services precisely with slot numbers & mirroring selection
+    purchased_services = []
+    service_slugs = []
+    for idx, srv in enumerate(onboarding_summary["purchased_services"]):
+        slug_val = srv.get("service_slug", "")
+        service_slugs.append(slug_val)
+        purchased_services.append({
+            "slot_number": idx + 1,
+            "subscription_id": srv.get("subscription_id"),
+            "service_id": srv.get("service_id"),
+            "service_name": srv.get("service_name"),
+            "service_slug": slug_val,
+            "plan_name": srv.get("plan_name", "growth").replace("_", " ").title(),
+            "price": float(srv.get("price", 0.0)),
+            "billing_interval": srv.get("billing_interval", "monthly"),
+            "status": "Active" if is_payment_approved else "Awaiting Payment Approval",
+            "required_integrations": srv.get("required_integrations", []),
+        })
+
+    # Service-specific modules calculation based exclusively on client chosen services
+    enabled_modules = []
+    if is_payment_approved:
+        has_concierge = any("concierge" in s or "whatsapp" in s or "booking" in s for s in service_slugs)
+        has_lead_gen = any("lead" in s or "outreach" in s or "marketing" in s for s in service_slugs)
+        has_finance = any("finance" in s or "ledger" in s or "invoice" in s for s in service_slugs)
+
+        if has_concierge or not service_slugs:
+            enabled_modules.extend(["whatsapp_concierge", "appointments"])
+        if has_lead_gen or not service_slugs:
+            enabled_modules.extend(["lead_funnel", "outreach_campaigns"])
+        if has_finance or not service_slugs:
+            enabled_modules.extend(["financial_ledger", "revenue_reports"])
 
     # 7. Recent Client-Safe Activity Feed
     audit_res = await session.execute(
@@ -167,6 +230,21 @@ async def get_tenant_overview(
         for a in audit_res.scalars().all()
     ]
 
+    # Clean empty state for operational metrics when payment is not yet approved
+    metrics_data = {
+        "income": total_income if is_payment_approved else 0.0,
+        "expenses": total_expenses if is_payment_approved else 0.0,
+        "net_profit": (total_income - total_expenses) if is_payment_approved else 0.0,
+        "outstanding": total_outstanding if is_payment_approved else 0.0,
+        "leads": total_leads if is_payment_approved else 0,
+        "leads_generated": total_leads if is_payment_approved else 0,
+        "qualified_leads": qualified_leads if is_payment_approved else 0,
+        "messages_sent": messages_sent if is_payment_approved else 0,
+        "meetings_booked": meetings_booked if is_payment_approved else 0,
+        "conversion_rate": conversion_rate if is_payment_approved else 0.0,
+        "active_agents": active_agents if is_payment_approved else 0,
+    }
+
     return {
         "success": True,
         "data": {
@@ -175,41 +253,34 @@ async def get_tenant_overview(
             "role": context.role,
             "selected_industry": selected_industry,
             "service_status": service_status,
-            "automation_active": onboarding_summary["automation_active"],
+            "automation_active": automation_active,
+            "is_payment_approved": is_payment_approved,
+            "payment_notified": payment_notified,
+            "payment_reference": payment_reference,
+            "bank_details": COMPANY_BANK_DETAILS,
             "current_package": current_package,
-            "purchased_services": onboarding_summary["purchased_services"],
+            "purchased_services": purchased_services,
+            "enabled_modules": enabled_modules,
             "subscription_info": {
                 "active_services_count": len(active_subs),
                 "current_package": current_package,
                 "monthly_investment": round(monthly_spend, 2),
                 "billing_cycle": active_subs[0].billing_interval if active_subs else "monthly",
-                "status": "Active" if active_subs else "Inactive",
+                "status": "Active" if is_payment_approved else "Awaiting Payment Approval",
             },
             "integrations_status": onboarding_summary["required_integrations"],
-            "metrics": {
-                "income": total_income,
-                "expenses": total_expenses,
-                "net_profit": total_income - total_expenses,
-                "outstanding": total_outstanding,
-                "leads": total_leads,
-                "leads_generated": total_leads,
-                "qualified_leads": qualified_leads,
-                "messages_sent": messages_sent,
-                "meetings_booked": meetings_booked,
-                "conversion_rate": conversion_rate,
-                "active_agents": active_agents,
-            },
-            "lead_performance": lead_performance[:15],
-            "appointment_performance": appointment_performance[:15],
+            "metrics": metrics_data,
+            "lead_performance": lead_performance[:15] if is_payment_approved else [],
+            "appointment_performance": appointment_performance[:15] if is_payment_approved else [],
             "recent_activity": recent_activity,
             "reports": {
                 "period": "Current Billing Cycle",
-                "leads_generated": total_leads,
-                "qualified_leads": qualified_leads,
-                "messages_sent": messages_sent,
-                "meetings_booked": meetings_booked,
-                "conversion_rate": conversion_rate,
-                "net_business_value": round(total_income - total_expenses, 2),
+                "leads_generated": total_leads if is_payment_approved else 0,
+                "qualified_leads": qualified_leads if is_payment_approved else 0,
+                "messages_sent": messages_sent if is_payment_approved else 0,
+                "meetings_booked": meetings_booked if is_payment_approved else 0,
+                "conversion_rate": conversion_rate if is_payment_approved else 0.0,
+                "net_business_value": round(total_income - total_expenses, 2) if is_payment_approved else 0.0,
             },
         },
     }
@@ -318,7 +389,6 @@ async def add_tenant_member(
     """Invite or assign a registered user to a tenant workspace with a specific role."""
     if tenant_id != context.tenant_id:
         raise TenantIsolationError("Access denied: path tenant_id does not match X-Tenant-ID context")
-
     return await tenant_service.add_tenant_member(
         session=session,
         tenant_id=tenant_id,
@@ -336,7 +406,6 @@ async def list_tenant_members(
     """List all members of a tenant workspace."""
     if tenant_id != context.tenant_id:
         raise TenantIsolationError("Access denied: path tenant_id does not match X-Tenant-ID context")
-
     return await tenant_service.list_tenant_members(
         session=session,
         tenant_id=tenant_id,

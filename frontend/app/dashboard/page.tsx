@@ -4,6 +4,7 @@ import React, { useEffect, useState } from "react";
 import { Navbar } from "@/components/shared/Navbar";
 import { Sidebar } from "@/components/shared/Sidebar";
 import { StatCard } from "@/components/dashboard/StatCard";
+import { SalesChatbot } from "@/components/chatbot/SalesChatbot";
 import { apiRequest } from "@/lib/api";
 import { getActiveTenant, getAuthToken } from "@/lib/auth";
 import {
@@ -20,6 +21,14 @@ import {
   FileBarChart,
   CreditCard,
   Sparkles,
+  Copy,
+  Check,
+  Lock,
+  Building2,
+  Send,
+  Clock,
+  ShieldCheck,
+  AlertTriangle,
 } from "lucide-react";
 
 interface OverviewPayload {
@@ -29,16 +38,29 @@ interface OverviewPayload {
   selected_industry: string;
   service_status: string;
   automation_active: boolean;
+  is_payment_approved?: boolean;
+  payment_notified?: boolean;
+  payment_reference?: string | null;
+  bank_details?: {
+    bank_name: string;
+    account_name: string;
+    account_number: string;
+    iban: string;
+  };
   current_package: string;
   purchased_services: Array<{
+    slot_number?: number;
     subscription_id: string;
     service_id: string;
     service_name: string;
+    service_slug?: string;
     plan_name: string;
     price: number;
     billing_interval: string;
     status: string;
+    required_integrations?: string[];
   }>;
+  enabled_modules?: string[];
   subscription_info: {
     active_services_count: number;
     current_package: string;
@@ -102,6 +124,18 @@ export default function ClientDashboardPage() {
   const [overview, setOverview] = useState<OverviewPayload | null>(null);
   const [loading, setLoading] = useState(true);
 
+  // 1-Click Copy States for Bank Account & IBAN
+  const [copiedAccount, setCopiedAccount] = useState(false);
+  const [copiedIban, setCopiedIban] = useState(false);
+
+  // Payment Notification Form States
+  const [isNotifyingPayment, setIsNotifyingPayment] = useState(false);
+  const [txnRefInput, setTxnRefInput] = useState("");
+  const [txnNotesInput, setTxnNotesInput] = useState("");
+  const [notifyLoading, setNotifyLoading] = useState(false);
+  const [notifySuccessMsg, setNotifySuccessMsg] = useState<string | null>(null);
+  const [notifyErrorMsg, setNotifyErrorMsg] = useState<string | null>(null);
+
   const loadClientPerformance = async () => {
     const tenant = getActiveTenant();
     if (!tenant?.id) {
@@ -128,6 +162,52 @@ export default function ClientDashboardPage() {
     loadClientPerformance();
   }, []);
 
+  const copyToClipboard = (text: string, type: "account" | "iban") => {
+    if (navigator?.clipboard) {
+      navigator.clipboard.writeText(text);
+      if (type === "account") {
+        setCopiedAccount(true);
+        setTimeout(() => setCopiedAccount(false), 2000);
+      } else {
+        setCopiedIban(true);
+        setTimeout(() => setCopiedIban(false), 2000);
+      }
+    }
+  };
+
+  const handleNotifyPayment = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!txnRefInput.trim()) return;
+
+    setNotifyLoading(true);
+    setNotifyErrorMsg(null);
+    setNotifySuccessMsg(null);
+
+    try {
+      const res = await apiRequest("/api/v1/payments/bank-transfer/notify", {
+        method: "POST",
+        body: JSON.stringify({
+          transaction_reference: txnRefInput.trim(),
+          notes: txnNotesInput.trim() || undefined,
+        }),
+      });
+
+      if (res.success || (res as any).payment_id) {
+        setNotifySuccessMsg(
+          "Bank transfer submitted! Our admin team has been notified and will verify your payment to activate services."
+        );
+        setIsNotifyingPayment(false);
+        loadClientPerformance();
+      } else {
+        setNotifyErrorMsg(res.error?.message || "Failed to submit transaction reference.");
+      }
+    } catch (err: any) {
+      setNotifyErrorMsg(err.message || "An error occurred submitting payment notification.");
+    } finally {
+      setNotifyLoading(false);
+    }
+  };
+
   const m = overview?.metrics || {
     income: 0,
     expenses: 0,
@@ -140,6 +220,23 @@ export default function ClientDashboardPage() {
     meetings_booked: 0,
     conversion_rate: 0,
   };
+
+  const isApproved = Boolean(overview?.is_payment_approved);
+  const isNotified = Boolean(overview?.payment_notified);
+  const bankDetails = overview?.bank_details || {
+    bank_name: "Faysal Bank",
+    account_name: "Talha Azam",
+    account_number: "3398701000005292",
+    iban: "PK97FAYS3398701000005292",
+  };
+
+  const enabledModules = overview?.enabled_modules || [];
+  const showConciergeModules =
+    !isApproved || enabledModules.includes("whatsapp_concierge") || enabledModules.length === 0;
+  const showLeadModules =
+    !isApproved || enabledModules.includes("lead_funnel") || enabledModules.length === 0;
+  const showFinancialModules =
+    !isApproved || enabledModules.includes("financial_ledger") || enabledModules.length === 0;
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col">
@@ -158,12 +255,18 @@ export default function ClientDashboardPage() {
                 </h1>
                 <span
                   className={`rounded-full px-3 py-0.5 text-xs font-semibold ${
-                    overview?.automation_active
+                    isApproved
                       ? "bg-emerald-100 text-emerald-800"
+                      : isNotified
+                      ? "bg-blue-100 text-blue-800"
                       : "bg-amber-100 text-amber-800"
                   }`}
                 >
-                  {overview?.service_status || "Loading Status..."}
+                  {isApproved
+                    ? "Active — Delivering Outcomes"
+                    : isNotified
+                    ? "Payment Transfer Submitted — Verification In Progress"
+                    : "Awaiting Bank Transfer Payment Approval"}
                 </span>
               </div>
               <p className="mt-1 text-xs sm:text-sm text-slate-500">
@@ -193,365 +296,596 @@ export default function ClientDashboardPage() {
             </div>
           </div>
 
-          {/* Primary Outcome KPIs: Leads Generated, Messages Sent, Meetings Booked, Conversion Rate */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            <StatCard
-              title="Leads Generated"
-              value={loading ? "..." : m.leads_generated}
-              icon={Users}
-              badge={{ text: `${m.qualified_leads} Qualified`, variant: "success" }}
-              subtext="Verified prospects sourced for your business"
-            />
-            <StatCard
-              title="Messages Sent"
-              value={loading ? "..." : m.messages_sent}
-              icon={MessageSquare}
-              badge={{ text: "WhatsApp & Email", variant: "neutral" }}
-              subtext="Automated outreach & concierge replies"
-            />
-            <StatCard
-              title="Meetings Booked"
-              value={loading ? "..." : m.meetings_booked}
-              icon={CalendarCheck}
-              badge={{ text: "Calendar Synced", variant: "success" }}
-              subtext="Confirmed client appointments scheduled"
-            />
-            <StatCard
-              title="Conversion Rate"
-              value={loading ? "..." : `${m.conversion_rate}%`}
-              icon={TrendingUp}
-              badge={{
-                text: m.conversion_rate >= 20 ? "High Performing" : "Active Funnel",
-                variant: "success",
-              }}
-              subtext="Lead-to-booked-appointment conversion"
-            />
-          </div>
-
-          {/* Middle Section: Current Package, Purchased Services & Integration Connection Status */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            {/* Purchased Services & Subscription Information */}
-            <div className="lg:col-span-2 rounded-xl border border-slate-200 bg-white p-6 shadow-sm space-y-4">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Layers className="h-5 w-5 text-emerald-600" />
-                  <div>
-                    <h2 className="text-base font-bold text-slate-900">
-                      Purchased Services & Subscription Package
-                    </h2>
-                    <p className="text-xs text-slate-500">
-                      Active managed AI services delivering outcomes for {overview?.selected_industry}
-                    </p>
-                  </div>
+          {/* OFFICIAL COMPANY BANK DETAILS CARD WITH 1-CLICK COPY & PAYMENT NOTIFICATION */}
+          <div className="rounded-2xl border-2 border-emerald-500/30 bg-gradient-to-br from-slate-900 via-slate-950 to-slate-900 p-6 text-white shadow-xl space-y-5">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-slate-800 pb-4">
+              <div className="flex items-center gap-3">
+                <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-emerald-500 text-slate-950 font-bold shadow-lg shadow-emerald-500/20">
+                  <Building2 className="h-6 w-6" />
                 </div>
-                <div className="text-right">
-                  <span className="rounded-full bg-emerald-50 border border-emerald-200 px-3 py-1 text-xs font-bold text-emerald-700">
-                    Package: {overview?.current_package || "None"}
-                  </span>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-base font-extrabold text-white">
+                      Official Company Bank Details (Direct Bank Transfer)
+                    </h2>
+                    <span className="rounded-full bg-emerald-500/20 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-emerald-300 border border-emerald-500/30">
+                      Verified Account
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-400">
+                    Transfer your monthly service investment directly to our corporate bank account for instant admin approval.
+                  </p>
                 </div>
               </div>
 
-              {overview?.purchased_services && overview.purchased_services.length > 0 ? (
-                <div className="divide-y divide-slate-100">
-                  {overview.purchased_services.map((srv) => (
-                    <div
-                      key={srv.subscription_id}
-                      className="py-3 flex items-center justify-between text-xs"
-                    >
-                      <div>
-                        <p className="font-bold text-slate-900 text-sm">{srv.service_name}</p>
-                        <p className="text-slate-500 capitalize">
-                          Tier: {srv.plan_name} • Billing: {srv.billing_interval}
-                        </p>
-                      </div>
-                      <div className="flex items-center gap-3">
-                        <span className="font-mono font-bold text-slate-900 text-sm">
-                          ${srv.price.toFixed(2)}/mo
-                        </span>
-                        <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 text-[10px] font-bold uppercase text-emerald-800">
-                          {srv.status}
-                        </span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="rounded-lg bg-slate-50 p-4 text-xs text-slate-500 flex items-center justify-between">
-                  <span>No managed service packages selected yet.</span>
-                  <a
-                    href="/onboarding"
-                    className="font-semibold text-emerald-600 hover:underline"
+              <div>
+                {isApproved ? (
+                  <div className="flex items-center gap-1.5 rounded-lg bg-emerald-500/20 px-3 py-1.5 text-xs font-bold text-emerald-300 border border-emerald-500/30">
+                    <CheckCircle2 className="h-4 w-4" />
+                    <span>Payment Approved & Verified</span>
+                  </div>
+                ) : isNotified ? (
+                  <div className="flex items-center gap-1.5 rounded-lg bg-blue-500/20 px-3 py-1.5 text-xs font-bold text-blue-300 border border-blue-500/30">
+                    <Clock className="h-4 w-4 animate-spin" />
+                    <span>Transfer Submitted — Awaiting Verification</span>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => setIsNotifyingPayment(true)}
+                    className="flex items-center gap-2 rounded-xl bg-emerald-500 px-4 py-2 text-xs font-extrabold text-slate-950 hover:bg-emerald-400 shadow-md shadow-emerald-500/20 transition"
                   >
-                    Select Industry Package →
-                  </a>
-                </div>
-              )}
-
-              <div className="pt-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-600">
-                <div className="flex items-center gap-2">
-                  <CreditCard className="h-4 w-4 text-slate-400" />
-                  <span>
-                    Monthly Subscription Total:{" "}
-                    <strong className="text-slate-900">
-                      ${overview?.subscription_info?.monthly_investment?.toFixed(2) || "0.00"}
-                    </strong>
-                  </span>
-                </div>
-                <a href="/billing" className="font-semibold text-emerald-600 hover:text-emerald-700">
-                  View Invoices & Billing History →
-                </a>
+                    <Send className="h-3.5 w-3.5" />
+                    <span>I Have Made the Transfer</span>
+                  </button>
+                )}
               </div>
             </div>
 
-            {/* Integration Connection Status */}
-            <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm space-y-4">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Link2 className="h-5 w-5 text-emerald-600" />
-                  <div>
-                    <h2 className="text-base font-bold text-slate-900">
-                      Integration Status
-                    </h2>
-                    <p className="text-xs text-slate-500">Required service channels</p>
-                  </div>
-                </div>
-                <a
-                  href="/onboarding"
-                  className="text-xs font-semibold text-emerald-600 hover:underline"
-                >
-                  Connect
-                </a>
+            {/* Bank Details Grid with 1-Click Copy */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 text-xs">
+              <div className="rounded-xl border border-slate-800 bg-slate-900/80 p-3.5 space-y-1">
+                <p className="text-[11px] font-medium text-slate-400">Bank Name</p>
+                <p className="text-sm font-bold text-white">{bankDetails.bank_name}</p>
               </div>
 
-              <div className="space-y-2.5">
-                {overview?.integrations_status && overview.integrations_status.length > 0 ? (
-                  overview.integrations_status.map((integ) => {
-                    const connected = integ.status === "connected";
-                    return (
-                      <div
-                        key={integ.provider}
-                        className="flex items-center justify-between rounded-lg border border-slate-100 bg-slate-50 p-3 text-xs"
-                      >
-                        <div>
-                          <p className="font-semibold text-slate-800">{integ.display_name}</p>
-                          {integ.external_account_id && (
-                            <p className="text-[10px] font-mono text-slate-500">
-                              {integ.external_account_id}
-                            </p>
-                          )}
-                        </div>
+              <div className="rounded-xl border border-slate-800 bg-slate-900/80 p-3.5 space-y-1">
+                <p className="text-[11px] font-medium text-slate-400">Account Title / Name</p>
+                <p className="text-sm font-bold text-white">{bankDetails.account_name}</p>
+              </div>
+
+              <div className="rounded-xl border border-slate-800 bg-slate-900/80 p-3.5 flex items-center justify-between">
+                <div>
+                  <p className="text-[11px] font-medium text-slate-400">Account Number</p>
+                  <p className="text-sm font-mono font-bold text-emerald-400 tracking-wider">
+                    {bankDetails.account_number}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => copyToClipboard(bankDetails.account_number, "account")}
+                  className="flex items-center gap-1 rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-[11px] font-semibold text-slate-200 hover:border-emerald-500 hover:text-white transition"
+                  title="Copy Account Number"
+                >
+                  {copiedAccount ? (
+                    <>
+                      <Check className="h-3.5 w-3.5 text-emerald-400" />
+                      <span className="text-emerald-400">Copied</span>
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="h-3.5 w-3.5 text-slate-400" />
+                      <span>Copy</span>
+                    </>
+                  )}
+                </button>
+              </div>
+
+              <div className="rounded-xl border border-slate-800 bg-slate-900/80 p-3.5 flex items-center justify-between">
+                <div>
+                  <p className="text-[11px] font-medium text-slate-400">IBAN</p>
+                  <p className="text-xs font-mono font-bold text-emerald-400 tracking-wider">
+                    {bankDetails.iban}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => copyToClipboard(bankDetails.iban, "iban")}
+                  className="flex items-center gap-1 rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-[11px] font-semibold text-slate-200 hover:border-emerald-500 hover:text-white transition"
+                  title="Copy IBAN"
+                >
+                  {copiedIban ? (
+                    <>
+                      <Check className="h-3.5 w-3.5 text-emerald-400" />
+                      <span className="text-emerald-400">Copied</span>
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="h-3.5 w-3.5 text-slate-400" />
+                      <span>Copy</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+
+            {/* Notification / Proof Submission Modal Form */}
+            {isNotifyingPayment && (
+              <form
+                onSubmit={handleNotifyPayment}
+                className="mt-4 rounded-xl border border-emerald-500/40 bg-slate-950 p-4 space-y-3 animate-in fade-in duration-150"
+              >
+                <div className="flex items-center justify-between">
+                  <h4 className="text-xs font-extrabold text-white">
+                    Notify Platform Admin of Completed Bank Transfer
+                  </h4>
+                  <button
+                    type="button"
+                    onClick={() => setIsNotifyingPayment(false)}
+                    className="text-xs text-slate-400 hover:text-white"
+                  >
+                    Cancel
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                  <div>
+                    <label className="block text-[11px] font-medium text-slate-300">
+                      Transaction Reference / Receipt ID *
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="e.g., FT26118909 or Bank Reference No."
+                      value={txnRefInput}
+                      onChange={(e) => setTxnRefInput(e.target.value)}
+                      className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-white placeholder-slate-500 focus:border-emerald-500 focus:outline-none"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-medium text-slate-300">
+                      Additional Notes / Transfer Slip Note (Optional)
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g., Transferred from Meezan Bank"
+                      value={txnNotesInput}
+                      onChange={(e) => setTxnNotesInput(e.target.value)}
+                      className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-white placeholder-slate-500 focus:border-emerald-500 focus:outline-none"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-end gap-3 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsNotifyingPayment(false)}
+                    className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={notifyLoading || !txnRefInput.trim()}
+                    className="flex items-center gap-1.5 rounded-lg bg-emerald-500 px-4 py-1.5 text-xs font-bold text-slate-950 hover:bg-emerald-400 disabled:opacity-50"
+                  >
+                    {notifyLoading ? "Submitting Notification..." : "Submit Payment Verification"}
+                  </button>
+                </div>
+              </form>
+            )}
+
+            {notifySuccessMsg && (
+              <div className="flex items-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-300">
+                <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-400" />
+                <span>{notifySuccessMsg}</span>
+              </div>
+            )}
+
+            {notifyErrorMsg && (
+              <div className="flex items-center gap-2 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-300">
+                <AlertCircle className="h-4 w-4 shrink-0 text-red-400" />
+                <span>{notifyErrorMsg}</span>
+              </div>
+            )}
+
+            {/* Inactive Notice Banner when not approved */}
+            {!isApproved && (
+              <div className="flex items-start gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-200">
+                <Lock className="h-4 w-4 shrink-0 text-amber-400 mt-0.5" />
+                <div>
+                  <p className="font-bold text-amber-300">
+                    AI Services Currently Locked — Awaiting Payment Approval
+                  </p>
+                  <p className="text-slate-300 mt-0.5">
+                    Your managed AI services remain inactive until payment is received and approved by our administrator.
+                    Once confirmed, your AI concierge, automated lead pipelines, and calendar bookings will unlock immediately.
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* MANAGED AI SERVICES & SUBSCRIPTION SYNCHRONIZATION */}
+          <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border-b border-slate-100 pb-4">
+              <div className="flex items-center gap-2">
+                <Layers className="h-5 w-5 text-emerald-600" />
+                <div>
+                  <h2 className="text-base font-bold text-slate-900">
+                    Managed AI Services & Synchronized Packages
+                  </h2>
+                  <p className="text-xs text-slate-500">
+                    Precisely mirroring your chosen services, package slots, and pricing from onboarding for {overview?.selected_industry}
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <span className="rounded-full bg-emerald-50 border border-emerald-200 px-3 py-1 text-xs font-bold text-emerald-700">
+                  Primary Package: {overview?.current_package || "None"}
+                </span>
+                <span
+                  className={`rounded-full px-2.5 py-0.5 text-xs font-bold ${
+                    isApproved
+                      ? "bg-emerald-100 text-emerald-800"
+                      : "bg-amber-100 text-amber-800"
+                  }`}
+                >
+                  {isApproved ? "Services Activated" : "Pending Payment Approval"}
+                </span>
+              </div>
+            </div>
+
+            {/* Synchronized Services List with exact slot numbers */}
+            {overview?.purchased_services && overview.purchased_services.length > 0 ? (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 pt-2">
+                {overview.purchased_services.map((srv, idx) => (
+                  <div
+                    key={srv.subscription_id || idx}
+                    className="flex flex-col justify-between rounded-xl border border-slate-200 bg-slate-50/50 p-4 space-y-3 hover:border-emerald-300 transition"
+                  >
+                    <div>
+                      <div className="flex items-center justify-between">
+                        <span className="rounded-md bg-slate-200/80 px-2 py-0.5 text-[10px] font-extrabold uppercase text-slate-700">
+                          Slot {srv.slot_number || idx + 1}
+                        </span>
                         <span
-                          className={`flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[10px] font-bold uppercase ${
-                            connected
+                          className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${
+                            isApproved
                               ? "bg-emerald-100 text-emerald-800"
                               : "bg-amber-100 text-amber-800"
                           }`}
                         >
-                          {connected ? (
-                            <CheckCircle2 className="h-3 w-3" />
-                          ) : (
-                            <AlertCircle className="h-3 w-3" />
-                          )}
-                          {integ.status}
+                          {srv.status || (isApproved ? "Active" : "Awaiting Approval")}
                         </span>
                       </div>
-                    );
-                  })
-                ) : (
-                  <p className="text-xs text-slate-400 py-4 text-center">
-                    Select a service package to view required integrations.
-                  </p>
-                )}
+
+                      <h3 className="mt-2 text-sm font-bold text-slate-900">
+                        {srv.service_name}
+                      </h3>
+                      <p className="text-xs text-slate-500 mt-0.5 capitalize">
+                        Tier: <strong className="text-slate-700">{srv.plan_name}</strong>
+                      </p>
+                    </div>
+
+                    <div className="pt-3 border-t border-slate-200/80 flex items-center justify-between text-xs">
+                      <span className="font-mono text-base font-extrabold text-slate-900">
+                        ${srv.price.toFixed(2)}
+                        <span className="text-[11px] font-normal text-slate-500">
+                          /{srv.billing_interval || "mo"}
+                        </span>
+                      </span>
+                      <span className="text-[11px] text-slate-500">
+                        {isApproved ? "Automated 24/7" : "Locked prior to payment"}
+                      </span>
+                    </div>
+                  </div>
+                ))}
               </div>
+            ) : (
+              <div className="rounded-lg bg-slate-50 p-6 text-center text-xs text-slate-500 space-y-2">
+                <p>No managed service packages selected yet.</p>
+                <a
+                  href="/onboarding"
+                  className="inline-flex items-center gap-1 font-semibold text-emerald-600 hover:underline"
+                >
+                  <span>Select Industry Package in Onboarding →</span>
+                </a>
+              </div>
+            )}
+
+            <div className="pt-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-600">
+              <div className="flex items-center gap-2">
+                <CreditCard className="h-4 w-4 text-slate-400" />
+                <span>
+                  Total Synchronized Monthly Investment:{" "}
+                  <strong className="text-slate-900 font-mono text-sm">
+                    ${overview?.subscription_info?.monthly_investment?.toFixed(2) || "0.00"}
+                  </strong>
+                </span>
+              </div>
+              <a href="/billing" className="font-semibold text-emerald-600 hover:text-emerald-700">
+                View Billing Invoices & Receipts →
+              </a>
             </div>
           </div>
 
-          {/* Lead Performance & Appointment Performance */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Lead Performance */}
-            <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm space-y-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h3 className="text-base font-bold text-slate-900">Lead Performance</h3>
-                  <p className="text-xs text-slate-500">
-                    Recent leads sourced, qualified, and contacted on your behalf
-                  </p>
-                </div>
-                <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-semibold text-slate-700">
-                  {overview?.lead_performance?.length || 0} Recent
+          {/* PRIMARY OPERATIONAL OUTCOME KPIS (Locked / Empty State prior to approval) */}
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-bold text-slate-900">
+                Operational Outcomes & Deliverables
+              </h2>
+              {!isApproved && (
+                <span className="flex items-center gap-1 text-xs text-amber-700 font-semibold bg-amber-50 border border-amber-200 px-2.5 py-0.5 rounded-full">
+                  <Lock className="h-3 w-3" />
+                  <span>Locked until payment approved</span>
                 </span>
-              </div>
-
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-xs">
-                  <thead>
-                    <tr className="border-b border-slate-200 text-slate-400 uppercase font-semibold">
-                      <th className="py-2.5 px-2">Prospect</th>
-                      <th className="py-2.5 px-2">Source</th>
-                      <th className="py-2.5 px-2">Score</th>
-                      <th className="py-2.5 px-2">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 text-slate-700">
-                    {!overview?.lead_performance || overview.lead_performance.length === 0 ? (
-                      <tr>
-                        <td colSpan={4} className="py-6 text-center text-slate-400">
-                          No leads recorded yet.
-                        </td>
-                      </tr>
-                    ) : (
-                      overview.lead_performance.map((lead) => (
-                        <tr key={lead.id}>
-                          <td className="py-2.5 px-2 font-semibold text-slate-900">{lead.name}</td>
-                          <td className="py-2.5 px-2 uppercase text-[10px] font-mono text-slate-500">
-                            {lead.source}
-                          </td>
-                          <td className="py-2.5 px-2 font-mono font-bold text-emerald-700">
-                            {lead.qualification_score}%
-                          </td>
-                          <td className="py-2.5 px-2">
-                            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold uppercase text-slate-700">
-                              {lead.status}
-                            </span>
-                          </td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
+              )}
             </div>
 
-            {/* Appointment Performance */}
-            <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm space-y-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h3 className="text-base font-bold text-slate-900">Appointment Performance</h3>
-                  <p className="text-xs text-slate-500">
-                    Confirmed meetings and consultations booked by your AI Concierge
-                  </p>
-                </div>
-                <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 text-xs font-semibold text-emerald-800">
-                  {m.meetings_booked} Booked
-                </span>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <StatCard
+                title="Leads Generated"
+                value={loading ? "..." : isApproved ? m.leads_generated : 0}
+                icon={Users}
+                badge={{
+                  text: isApproved ? `${m.qualified_leads} Qualified` : "Locked (Pending Payment)",
+                  variant: isApproved ? "success" : "neutral",
+                }}
+                subtext="Verified prospects sourced for your business"
+              />
+              <StatCard
+                title="Messages Sent"
+                value={loading ? "..." : isApproved ? m.messages_sent : 0}
+                icon={MessageSquare}
+                badge={{
+                  text: isApproved ? "WhatsApp & Email" : "Inactive",
+                  variant: isApproved ? "neutral" : "neutral",
+                }}
+                subtext="Automated outreach & concierge replies"
+              />
+              <StatCard
+                title="Meetings Booked"
+                value={loading ? "..." : isApproved ? m.meetings_booked : 0}
+                icon={CalendarCheck}
+                badge={{
+                  text: isApproved ? "Calendar Synced" : "Pending Approval",
+                  variant: isApproved ? "success" : "neutral",
+                }}
+                subtext="Confirmed client appointments scheduled"
+              />
+              <StatCard
+                title="Conversion Rate"
+                value={loading ? "..." : isApproved ? `${m.conversion_rate}%` : "0.0%"}
+                icon={TrendingUp}
+                badge={{
+                  text: isApproved
+                    ? m.conversion_rate >= 20
+                      ? "High Performing"
+                      : "Active Funnel"
+                    : "Funnel Locked",
+                  variant: isApproved ? "success" : "neutral",
+                }}
+                subtext="Lead-to-booked-appointment conversion"
+              />
+            </div>
+          </div>
+
+          {/* CLIENT-CHOSEN CUSTOM MODULES SECTION */}
+          {/* If not approved, show clean empty state message */}
+          {!isApproved ? (
+            <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center space-y-3">
+              <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-amber-50 text-amber-600 border border-amber-200">
+                <Lock className="h-6 w-6" />
+              </div>
+              <h3 className="text-base font-bold text-slate-800">
+                Active Operations and Reporting Feeds are Inactive
+              </h3>
+              <p className="text-xs text-slate-500 max-w-lg mx-auto">
+                Once your payment is approved by the platform admin, this area will exclusively show the live operational modules for your selected services (e.g. WhatsApp Concierge, Lead Funnel, or Financial Ledger).
+              </p>
+            </div>
+          ) : (
+            <>
+              {/* Dynamic Modules based on purchased services */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* Lead Performance Module (if Lead Gen / Outreach service selected) */}
+                {showLeadModules && (
+                  <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm space-y-4">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <h3 className="text-base font-bold text-slate-900">Lead Performance</h3>
+                        <p className="text-xs text-slate-500">
+                          Recent leads sourced, qualified, and contacted on your behalf
+                        </p>
+                      </div>
+                      <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-semibold text-slate-700">
+                        {overview?.lead_performance?.length || 0} Recent
+                      </span>
+                    </div>
+
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-xs">
+                        <thead>
+                          <tr className="border-b border-slate-200 text-slate-400 uppercase font-semibold">
+                            <th className="py-2.5 px-2">Prospect</th>
+                            <th className="py-2.5 px-2">Source</th>
+                            <th className="py-2.5 px-2">Score</th>
+                            <th className="py-2.5 px-2">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 text-slate-700">
+                          {!overview?.lead_performance || overview.lead_performance.length === 0 ? (
+                            <tr>
+                              <td colSpan={4} className="py-6 text-center text-slate-400">
+                                No leads recorded yet.
+                              </td>
+                            </tr>
+                          ) : (
+                            overview.lead_performance.map((lead) => (
+                              <tr key={lead.id}>
+                                <td className="py-2.5 px-2 font-semibold text-slate-900">{lead.name}</td>
+                                <td className="py-2.5 px-2 uppercase text-[10px] font-mono text-slate-500">
+                                  {lead.source}
+                                </td>
+                                <td className="py-2.5 px-2 font-mono font-bold text-emerald-700">
+                                  {lead.qualification_score}%
+                                </td>
+                                <td className="py-2.5 px-2">
+                                  <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold uppercase text-slate-700">
+                                    {lead.status}
+                                  </span>
+                                </td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {/* Appointment Performance Module (if WhatsApp Concierge service selected) */}
+                {showConciergeModules && (
+                  <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm space-y-4">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <h3 className="text-base font-bold text-slate-900">Appointment Performance</h3>
+                        <p className="text-xs text-slate-500">
+                          Confirmed meetings and consultations booked by your AI Concierge
+                        </p>
+                      </div>
+                      <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 text-xs font-semibold text-emerald-800">
+                        {m.meetings_booked} Booked
+                      </span>
+                    </div>
+
+                    <div className="space-y-2.5">
+                      {!overview?.appointment_performance ||
+                      overview.appointment_performance.length === 0 ? (
+                        <p className="text-xs text-slate-400 py-6 text-center">
+                          Booked meetings will appear here automatically as leads convert.
+                        </p>
+                      ) : (
+                        overview.appointment_performance.map((appt) => (
+                          <div
+                            key={appt.lead_id}
+                            className="flex items-center justify-between rounded-lg border border-slate-100 bg-slate-50 p-3 text-xs"
+                          >
+                            <div>
+                              <p className="font-bold text-slate-900">{appt.client_name}</p>
+                              <p className="text-slate-500">{appt.meeting_title}</p>
+                            </div>
+                            <div className="text-right">
+                              <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 text-[10px] font-bold uppercase text-emerald-800">
+                                {appt.status}
+                              </span>
+                              <p className="text-[10px] text-slate-400 mt-1">
+                                {new Date(appt.scheduled_at).toLocaleDateString()}
+                              </p>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
 
-              <div className="space-y-2.5">
-                {!overview?.appointment_performance ||
-                overview.appointment_performance.length === 0 ? (
-                  <p className="text-xs text-slate-400 py-6 text-center">
-                    Booked meetings will appear here automatically as leads convert.
-                  </p>
-                ) : (
-                  overview.appointment_performance.map((appt) => (
-                    <div
-                      key={appt.lead_id}
-                      className="flex items-center justify-between rounded-lg border border-slate-100 bg-slate-50 p-3 text-xs"
-                    >
+              {/* Bottom Section: Reports & Business Results + Recent Activity Feed */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* Reports and Business Results */}
+                {showFinancialModules && (
+                  <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm space-y-4">
+                    <div className="flex items-center gap-2">
+                      <FileBarChart className="h-5 w-5 text-emerald-600" />
                       <div>
-                        <p className="font-bold text-slate-900">{appt.client_name}</p>
-                        <p className="text-slate-500">{appt.meeting_title}</p>
-                      </div>
-                      <div className="text-right">
-                        <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 text-[10px] font-bold uppercase text-emerald-800">
-                          {appt.status}
-                        </span>
-                        <p className="text-[10px] text-slate-400 mt-1">
-                          {new Date(appt.scheduled_at).toLocaleDateString()}
+                        <h3 className="text-base font-bold text-slate-900">
+                          Reports & Business Results
+                        </h3>
+                        <p className="text-xs text-slate-500">
+                          Verified financial and operational outcomes ({overview?.reports?.period || "Current Period"})
                         </p>
                       </div>
                     </div>
-                  ))
-                )}
-              </div>
-            </div>
-          </div>
 
-          {/* Bottom Section: Reports & Business Results + Recent Activity Feed */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Reports and Business Results */}
-            <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm space-y-4">
-              <div className="flex items-center gap-2">
-                <FileBarChart className="h-5 w-5 text-emerald-600" />
-                <div>
-                  <h3 className="text-base font-bold text-slate-900">
-                    Reports & Business Results
-                  </h3>
-                  <p className="text-xs text-slate-500">
-                    Verified financial and operational outcomes ({overview?.reports?.period || "Current Period"})
-                  </p>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4 pt-2">
-                <div className="rounded-lg bg-slate-50 p-3.5 border border-slate-100">
-                  <p className="text-[11px] text-slate-500">Recorded Revenue</p>
-                  <p className="text-lg font-extrabold text-slate-900">
-                    ${m.income.toLocaleString()}
-                  </p>
-                </div>
-                <div className="rounded-lg bg-slate-50 p-3.5 border border-slate-100">
-                  <p className="text-[11px] text-slate-500">Net Business Profit</p>
-                  <p className="text-lg font-extrabold text-emerald-700">
-                    ${m.net_profit.toLocaleString()}
-                  </p>
-                </div>
-                <div className="rounded-lg bg-slate-50 p-3.5 border border-slate-100">
-                  <p className="text-[11px] text-slate-500">Qualified Pipeline</p>
-                  <p className="text-lg font-extrabold text-slate-900">
-                    {m.qualified_leads} Prospects
-                  </p>
-                </div>
-                <div className="rounded-lg bg-slate-50 p-3.5 border border-slate-100">
-                  <p className="text-[11px] text-slate-500">Outstanding Receivables</p>
-                  <p className="text-lg font-extrabold text-amber-700">
-                    ${m.outstanding.toLocaleString()}
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            {/* Recent Activity Feed */}
-            <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm space-y-4">
-              <div className="flex items-center gap-2">
-                <Activity className="h-5 w-5 text-emerald-600" />
-                <div>
-                  <h3 className="text-base font-bold text-slate-900">Recent Activity Feed</h3>
-                  <p className="text-xs text-slate-500">
-                    Live log of managed service deliveries for your business
-                  </p>
-                </div>
-              </div>
-
-              <div className="space-y-2.5">
-                {!overview?.recent_activity || overview.recent_activity.length === 0 ? (
-                  <p className="text-xs text-slate-400 py-6 text-center">
-                    Recent service activity will appear here as automations run.
-                  </p>
-                ) : (
-                  overview.recent_activity.slice(0, 6).map((act) => (
-                    <div
-                      key={act.id}
-                      className="flex items-center justify-between rounded-lg border border-slate-100 bg-slate-50 px-3.5 py-2.5 text-xs"
-                    >
-                      <div>
-                        <span className="font-semibold text-slate-800">{act.action}</span>
-                        <span className="ml-2 rounded bg-slate-200 px-1.5 py-0.5 text-[10px] uppercase text-slate-600">
-                          {act.resource_type}
-                        </span>
+                    <div className="grid grid-cols-2 gap-4 pt-2">
+                      <div className="rounded-lg bg-slate-50 p-3.5 border border-slate-100">
+                        <p className="text-[11px] text-slate-500">Recorded Revenue</p>
+                        <p className="text-lg font-extrabold text-slate-900">
+                          ${m.income.toLocaleString()}
+                        </p>
                       </div>
-                      <span className="text-[11px] text-slate-400">
-                        {new Date(act.timestamp).toLocaleTimeString([], {
-                          hour: "2-digit",
-                          minute: "2-digit",
-                        })}
-                      </span>
+                      <div className="rounded-lg bg-slate-50 p-3.5 border border-slate-100">
+                        <p className="text-[11px] text-slate-500">Net Business Profit</p>
+                        <p className="text-lg font-extrabold text-emerald-700">
+                          ${m.net_profit.toLocaleString()}
+                        </p>
+                      </div>
+                      <div className="rounded-lg bg-slate-50 p-3.5 border border-slate-100">
+                        <p className="text-[11px] text-slate-500">Qualified Pipeline</p>
+                        <p className="text-lg font-extrabold text-slate-900">
+                          {m.qualified_leads} Prospects
+                        </p>
+                      </div>
+                      <div className="rounded-lg bg-slate-50 p-3.5 border border-slate-100">
+                        <p className="text-[11px] text-slate-500">Outstanding Receivables</p>
+                        <p className="text-lg font-extrabold text-amber-700">
+                          ${m.outstanding.toLocaleString()}
+                        </p>
+                      </div>
                     </div>
-                  ))
+                  </div>
                 )}
+
+                {/* Recent Activity Feed */}
+                <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm space-y-4">
+                  <div className="flex items-center gap-2">
+                    <Activity className="h-5 w-5 text-emerald-600" />
+                    <div>
+                      <h3 className="text-base font-bold text-slate-900">Recent Activity Feed</h3>
+                      <p className="text-xs text-slate-500">
+                        Automated agent operations and audit logs
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    {!overview?.recent_activity || overview.recent_activity.length === 0 ? (
+                      <p className="text-xs text-slate-400 py-6 text-center">
+                        No activity recorded in this billing cycle.
+                      </p>
+                    ) : (
+                      overview.recent_activity.map((act) => (
+                        <div
+                          key={act.id}
+                          className="flex items-center justify-between rounded-lg border border-slate-100 bg-slate-50 p-2.5 text-xs"
+                        >
+                          <div>
+                            <p className="font-semibold text-slate-800">{act.action}</p>
+                            <p className="text-[10px] text-slate-400 capitalize">
+                              Resource: {act.resource_type}
+                            </p>
+                          </div>
+                          <p className="text-[10px] text-slate-400">
+                            {new Date(act.timestamp).toLocaleTimeString([], {
+                              hour: "2-digit",
+                              minute: "2-digit",
+                            })}
+                          </p>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
               </div>
-            </div>
-          </div>
+            </>
+          )}
+
+          {/* PERSISTENT AI SALES & SUPPORT CHATBOT */}
+          <SalesChatbot />
         </main>
       </div>
     </div>

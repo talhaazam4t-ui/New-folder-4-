@@ -24,9 +24,11 @@ from app.schemas.marketing import (
     LeadResponse,
     LeadUpdateRequest,
     MarketingAnalyticsResponse,
+    SalesChatbotMessageRequest,
+    SalesChatbotMessageResponse,
 )
 from app.services.marketing_service import marketing_service
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Header, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter(prefix="/marketing", tags=["Marketing & Growth Engine"])
@@ -250,4 +252,31 @@ async def get_marketing_analytics(
     return await marketing_service.get_analytics(
         session=session,
         tenant_id=context.tenant_id,
+    )
+
+
+@router.post("/chatbot/message", response_model=SalesChatbotMessageResponse)
+async def sales_chatbot_message(
+    request: SalesChatbotMessageRequest,
+    x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-ID"),
+    session: AsyncSession = Depends(get_db),
+):
+    """Public & in-app AI Sales & Support Chatbot for Pre-Registration Visitors and Dashboard Assistance.
+
+    - Guides visitors through 27 industries and package tiers.
+    - Provides WhatsApp contact (+92 339 8701000) for human assistance.
+    - Intent Trigger: detects hot buying intent / human request and logs trigger alert.
+    - Seamless Transition: returns pre-loaded URL (/register?industry=...&package=...) to avoid repeating onboarding.
+    """
+    tenant_uuid = None
+    if x_tenant_id:
+        try:
+            tenant_uuid = uuid.UUID(x_tenant_id)
+        except ValueError:
+            pass
+
+    return await marketing_service.handle_sales_chatbot_message(
+        request=request,
+        session=session,
+        tenant_id=tenant_uuid,
     )

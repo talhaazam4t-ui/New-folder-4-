@@ -32,10 +32,12 @@ from app.database.models.tenant import Profile, Tenant, TenantMember
 from app.database.supabase import get_db
 from app.dependencies import get_current_user
 from app.schemas.marketing import LeadGenerationRequest
+from app.schemas.payment import BankTransferApproveRequest
 from app.schemas.service import SubscriptionCreateRequest
 from app.services.auth_service import auth_service
 from app.services.billing_service import billing_service, normalize_industry
 from app.services.marketing_service import marketing_service
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import func, select
@@ -396,6 +398,22 @@ async def assign_tenant_industry_and_service(
     }
 
 
+@router.post("/tenants/{tenant_id}/approve-payment")
+async def admin_approve_tenant_payment(
+    tenant_id: uuid.UUID,
+    request: BankTransferApproveRequest = BankTransferApproveRequest(),
+    admin_user: Profile = Depends(verify_platform_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    """Owner verification and approval of client bank transfer, activating AI services."""
+    return await billing_service.approve_tenant_payment(
+        session=session,
+        tenant_id=tenant_id,
+        admin_user_id=admin_user.id,
+        notes=request.notes,
+    )
+
+
 @router.post("/tenants/{tenant_id}/reset-circuit")
 async def reset_tenant_circuit_breaker(
     tenant_id: uuid.UUID,
@@ -457,6 +475,29 @@ async def get_owner_operations_control_center(
         select(Approval).order_by(Approval.created_at.desc()).limit(30)
     )
     approvals_rows = approvals_res.scalars().all()
+
+    # Pending Bank Payments Awaiting Owner Verification
+    pending_payments_res = await session.execute(
+        select(Payment, Tenant.name)
+        .join(Tenant, Payment.tenant_id == Tenant.id)
+        .where(Payment.status.in_(["pending_verification", "pending"]))
+        .order_by(Payment.created_at.desc())
+    )
+    pending_payments_rows = pending_payments_res.all()
+    pending_payments_data = [
+        {
+            "id": str(p.id),
+            "tenant_id": str(p.tenant_id),
+            "tenant_name": t_name,
+            "amount": float(p.amount),
+            "currency": p.currency,
+            "payment_method": p.payment_method,
+            "provider_reference": p.provider_reference,
+            "status": p.status,
+            "created_at": p.created_at.isoformat() if p.created_at else None,
+        }
+        for p, t_name in pending_payments_rows
+    ]
 
     # Leads & Outreach Campaigns across platform
     leads_res = await session.execute(select(Lead).order_by(Lead.created_at.desc()).limit(50))
@@ -527,15 +568,15 @@ async def get_owner_operations_control_center(
     # Compute Lead Gen & Outreach summary
     total_messages_sent = 0
     total_meetings_booked = 0
-    for lead_item in leads_rows:
-        meta = lead_item.metadata_ or {}
-        total_messages_sent += int(meta.get("messages_sent_count", 1 if lead_item.status != "new" else 0))
-        if meta.get("meeting_booked") or lead_item.status == "converted":
+    for lead in leads_rows:
+        meta = lead.metadata_ or {}
+        total_messages_sent += int(meta.get("messages_sent_count", 1 if lead.status != "new" else 0))
+        if meta.get("meeting_booked") or lead.status == "converted":
             total_meetings_booked += 1
 
     total_leads_cnt = len(leads_rows)
     qualified_leads_cnt = sum(
-        1 for lead_item in leads_rows if lead_item.status in ("qualified", "converted") or float(lead_item.qualification_score or 0) >= 70.0
+        1 for lead in leads_rows if lead.status in ("qualified", "converted") or float(lead.qualification_score or 0) >= 70.0
     )
 
     return {
@@ -610,6 +651,7 @@ async def get_owner_operations_control_center(
                 }
                 for ap in approvals_rows
             ],
+            "pending_payments": pending_payments_data,
             "lead_gen_outreach": {
                 "summary": {
                     "total_leads": total_leads_cnt,
@@ -624,18 +666,18 @@ async def get_owner_operations_control_center(
                 },
                 "leads": [
                     {
-                        "id": str(lead_row.id),
-                        "tenant_id": str(lead_row.tenant_id),
-                        "name": lead_row.name,
-                        "email": lead_row.email,
-                        "phone": lead_row.phone,
-                        "source": lead_row.source,
-                        "status": lead_row.status,
-                        "qualification_score": float(lead_row.qualification_score or 0.0),
-                        "metadata": lead_row.metadata_ or {},
-                        "created_at": lead_row.created_at.isoformat() if lead_row.created_at else None,
+                        "id": str(lead.id),
+                        "tenant_id": str(lead.tenant_id),
+                        "name": lead.name,
+                        "email": lead.email,
+                        "phone": lead.phone,
+                        "source": lead.source,
+                        "status": lead.status,
+                        "qualification_score": float(lead.qualification_score or 0.0),
+                        "metadata": lead.metadata_ or {},
+                        "created_at": lead.created_at.isoformat() if lead.created_at else None,
                     }
-                    for lead_row in leads_rows
+                    for lead in leads_rows
                 ],
                 "campaigns": [
                     {

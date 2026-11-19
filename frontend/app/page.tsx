@@ -1,17 +1,13 @@
 import React from "react";
-import { MessageSquare, ShieldAlert, Users, Sparkles } from "lucide-react";
-
-export const metadata = {
-  title: "Teloxtech SaaS | Autonomous Multi-Tenant AI Platform",
-  description: "Enterprise Multi-Tenant SaaS with Independent Client & Admin Portals",
-};
+import { SalesChatbot } from "@/components/chatbot/SalesChatbot";
+import { Users, ShieldAlert, MessageSquare } from "lucide-react";
 
 export default function Home() {
   const supportWhatsapp = "03238300330";
   const whatsappUrl = `https://wa.me/923238300330?text=Hi%20Teloxtech%2C%20I%20would%20like%20to%20inquire%20about%20your%20services`;
 
   return (
-    <main className="flex min-h-screen flex-col items-center justify-center p-6 bg-gradient-to-b from-slate-900 via-slate-950 to-slate-900 text-white">
+    <main className="flex min-h-screen flex-col items-center justify-center p-8 bg-gradient-to-b from-slate-900 to-slate-950 text-white relative">
       <div className="max-w-3xl text-center space-y-6">
         <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shadow-sm">
           <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
@@ -76,6 +72,8 @@ export default function Home() {
           </div>
         </div>
       </div>
+
+      <SalesChatbot />
     </main>
   );
 }

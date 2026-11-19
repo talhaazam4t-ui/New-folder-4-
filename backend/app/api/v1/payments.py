@@ -15,11 +15,12 @@ from app.database.supabase import get_db
 from app.dependencies import require_permission
 from app.integrations.payment.base import get_payment_provider
 from app.schemas.payment import (
+    BankTransferNotifyRequest,
     InvoiceResponse,
     PaymentCreateRequest,
     PaymentResponse,
 )
-from app.services.billing_service import billing_service
+from app.services.billing_service import COMPANY_BANK_DETAILS, billing_service
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -64,6 +65,24 @@ async def record_payment(
     if idempotency_key and not request.provider_reference:
         request.provider_reference = idempotency_key
     return await billing_service.record_payment(session, context.tenant_id, request)
+
+
+@router.get("/bank-details")
+async def get_company_bank_details():
+    """Retrieve official company bank details for direct transfer payments."""
+    return {"success": True, "data": COMPANY_BANK_DETAILS}
+
+
+@router.post("/bank-transfer/notify")
+async def notify_bank_transfer(
+    request: BankTransferNotifyRequest,
+    context=Depends(require_permission("payments.create")),
+    session: AsyncSession = Depends(get_db),
+):
+    """Client notifies platform of completed manual bank transfer."""
+    return await billing_service.record_bank_transfer_notification(
+        session, context.tenant_id, request
+    )
 
 
 @router.get("/invoices", response_model=List[InvoiceResponse])
