@@ -7,6 +7,7 @@ Supports:
 """
 
 import os
+import sys
 from typing import AsyncGenerator, Optional
 
 from app.config import settings
@@ -37,7 +38,7 @@ def get_engine() -> AsyncEngine:
     if _engine is not None:
         return _engine
 
-    db_url = settings.supabase_database_url
+    db_url = (settings.supabase_database_url or os.environ.get("SUPABASE_DATABASE_URL") or "").strip()
 
     if db_url and (db_url.startswith("postgresql") or db_url.startswith("postgres")):
         # Format connection string for asyncpg if not already prefixed
@@ -69,6 +70,20 @@ def get_engine() -> AsyncEngine:
                 "Production environment error: SUPABASE_DATABASE_URL is not set or invalid. "
                 "Silent fallback to SQLite in production/staging is strictly prohibited. "
                 "Please configure a valid PostgreSQL connection string."
+            )
+
+        # In development/test mode, only use SQLite if TALOX_ALLOW_SQLITE_FALLBACK=true or during test runs
+        allow_sqlite = (
+            os.environ.get("TALOX_ALLOW_SQLITE_FALLBACK", "").lower() in ("1", "true")
+            or "pytest" in os.environ.get("_", "").lower()
+            or "pytest" in sys.argv[0].lower()
+            or os.environ.get("TALOX_SQLITE_DB_URL") is not None
+        )
+        if not allow_sqlite and not db_url:
+            raise RuntimeError(
+                "Database configuration error: SUPABASE_DATABASE_URL is missing or empty. "
+                "Ensure process.env.SUPABASE_DATABASE_URL is configured with your Supabase "
+                "PostgreSQL connection string (postgresql+asyncpg://postgres:[YOUR-PASSWORD]@db.pmmduhflikdvddzpgwsi.supabase.co:5432/postgres)."
             )
 
         logger.info("Using local SQLite async engine for development/testing")
@@ -128,9 +143,15 @@ async def init_db(engine: Optional[AsyncEngine] = None) -> None:
                 await conn.run_sync(Base.metadata.create_all)
             logger.info("Database tables initialized successfully")
     except Exception as exc:
-        if engine is None and settings.app_env == "development":
+        allow_sqlite = (
+            os.environ.get("TALOX_ALLOW_SQLITE_FALLBACK", "").lower() in ("1", "true")
+            or "pytest" in os.environ.get("_", "").lower()
+            or "pytest" in sys.argv[0].lower()
+            or os.environ.get("TALOX_SQLITE_DB_URL") is not None
+        )
+        if engine is None and allow_sqlite and settings.app_env != "production":
             logger.warning(
-                "Primary database connection failed in development; falling back to local SQLite",
+                "Primary database connection failed in test/local mode; falling back to local SQLite",
                 error=str(exc),
             )
             _engine = create_async_engine(
