@@ -12,11 +12,14 @@ Provides:
 
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TypedDict
 
+import httpx
 from app.automation.approval_manager import approval_manager
 from app.automation.budget_manager import budget_manager
+from app.config import settings
 from app.core.exceptions import ResourceNotFoundError, TaloxException
+from app.core.logging import logger
 from app.database.models.automation import AuditLog
 from app.database.models.marketing import Lead, MarketingCampaign, MarketingMetric
 from app.integrations.ai_providers.router import route_and_execute_ai_task
@@ -38,6 +41,16 @@ from app.schemas.marketing import (
 )
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+
+class _LeadCandidate(TypedDict, total=False):
+    name: str
+    email: str
+    phone: str
+    rating: float
+    address: str
+    website: str
+    place_id: str
 
 
 class MarketingService:
@@ -89,6 +102,14 @@ class MarketingService:
             prompt=prompt,
             tenant_id=str(tenant_id),
         )
+        if not ai_res.success:
+            err_msg = ai_res.error_message or ai_res.content
+            budget_manager.record_failure(str(tenant_id), err_msg)
+            raise TaloxException(
+                message=f"Competitor research AI call failed: {err_msg}",
+                code="AI_PROVIDER_ERROR",
+                status_code=502,
+            )
         budget_manager.record_success(str(tenant_id), ai_res.total_tokens, ai_res.estimated_cost)
         return {
             "industry": request.industry,
@@ -115,6 +136,14 @@ class MarketingService:
             prompt=prompt,
             tenant_id=str(tenant_id),
         )
+        if not ai_res.success:
+            err_msg = ai_res.error_message or ai_res.content
+            budget_manager.record_failure(str(tenant_id), err_msg)
+            raise TaloxException(
+                message=f"Audience research AI call failed: {err_msg}",
+                code="AI_PROVIDER_ERROR",
+                status_code=502,
+            )
         budget_manager.record_success(str(tenant_id), ai_res.total_tokens, ai_res.estimated_cost)
         return {
             "product_or_service": request.product_or_service,
@@ -140,6 +169,14 @@ class MarketingService:
             prompt=prompt,
             tenant_id=str(tenant_id),
         )
+        if not ai_res.success:
+            err_msg = ai_res.error_message or ai_res.content
+            budget_manager.record_failure(str(tenant_id), err_msg)
+            raise TaloxException(
+                message=f"Content generation AI call failed: {err_msg}",
+                code="AI_PROVIDER_ERROR",
+                status_code=502,
+            )
         budget_manager.record_success(str(tenant_id), ai_res.total_tokens, ai_res.estimated_cost)
         return {
             "channel": request.channel,
@@ -412,6 +449,14 @@ class MarketingService:
             prompt=f"Qualify lead '{lead.name}' from source '{lead.source}' with metadata {lead.metadata_}",
             tenant_id=str(tenant_id),
         )
+        if not ai_res.success:
+            err_msg = ai_res.error_message or ai_res.content
+            budget_manager.record_failure(str(tenant_id), err_msg)
+            raise TaloxException(
+                message=f"Lead qualification AI call failed: {err_msg}",
+                code="AI_PROVIDER_ERROR",
+                status_code=502,
+            )
         budget_manager.record_success(str(tenant_id), ai_res.total_tokens, ai_res.estimated_cost)
 
         lead.qualification_score = score
@@ -445,34 +490,111 @@ class MarketingService:
         if not loc_slug:
             loc_slug = "global"
 
-        if norm_ind == "Financing":
-            candidates = [
-                {"name": f"{loc_tag} Capital & Investment Advisory LLC", "email": f"advisory@{loc_slug}capital.com", "phone": "+971501122331", "rating": 4.9},
-                {"name": f"Apex Commercial Lending ({loc_tag})", "email": f"loans@{loc_slug}apexlending.io", "phone": "+966502233442", "rating": 4.8},
-                {"name": f"{loc_tag} SME Asset & Trade Finance", "email": f"desk@{loc_slug}smetrade.org", "phone": "+971503344553", "rating": 4.7},
-                {"name": f"Crescent Wealth Partners - {loc_tag}", "email": f"inquiries@crescentwealth-{loc_slug}.com", "phone": "+966504455664", "rating": 4.9},
-            ]
-        elif norm_ind == "Clinics / Hospitals":
-            candidates = [
-                {"name": f"{loc_tag} Specialized Medical & Surgical Center", "email": f"appointments@{loc_slug}medcenter.med", "phone": "+971521112233", "rating": 4.9},
-                {"name": f"PrimeCare Aesthetics & Dental - {loc_tag}", "email": f"care@{loc_slug}primecare.org", "phone": "+966552223344", "rating": 4.8},
-                {"name": f"{loc_tag} Polyclinic & Wellness Group", "email": f"booking@{loc_slug}wellnessclinic.com", "phone": "+971523334455", "rating": 4.7},
-                {"name": f"Royal Diagnostics & Healthcare ({loc_tag})", "email": f"info@{loc_slug}royaldiag.med", "phone": "+971524445566", "rating": 4.9},
-            ]
-        elif norm_ind == "Real Estate / Property":
-            candidates = [
-                {"name": f"{loc_tag} Prime Luxury Estates & Developments", "email": f"sales@{loc_slug}primeestates.ae", "phone": "+971581012021", "rating": 4.9},
-                {"name": f"Skyline Commercial & Residential ({loc_tag})", "email": f"leasing@{loc_slug}skylineproperties.com", "phone": "+966542023032", "rating": 4.8},
-                {"name": f"{loc_tag} Boulevard Assets & Property Management", "email": f"portfolio@{loc_slug}boulevard.io", "phone": "+971583034043", "rating": 4.7},
-                {"name": f"Crestline Investment Properties - {loc_tag}", "email": f"investors@{loc_slug}crestline.ae", "phone": "+971584045054", "rating": 4.9},
-            ]
-        else:  # E-Commerce
-            candidates = [
-                {"name": f"{loc_tag} Direct Retail & Wholesale Hub", "email": f"vip@{loc_slug}retaildirect.store", "phone": "+971561192281", "rating": 4.8},
-                {"name": f"PureCommerce Goods - {loc_tag}", "email": f"orders@{loc_slug}purecommerce.me", "phone": "+966532293382", "rating": 4.7},
-                {"name": f"{loc_tag} Consumer Goods & Lifestyle Brands", "email": f"concierge@{loc_slug}goods.shop", "phone": "+971563394483", "rating": 4.9},
-                {"name": f"DesertLuxe Logistics & Retail ({loc_tag})", "email": f"b2b@{loc_slug}desertluxe.store", "phone": "+966534495584", "rating": 4.8},
-            ]
+        places_api_key = (settings.google_places_api_key or "").strip()
+        is_places_configured = bool(
+            places_api_key and places_api_key not in ("your-google-places-api-key", "mock")
+        )
+
+        candidates: List[_LeadCandidate] = []
+        data_source = "synthetic_demo"
+
+        if is_places_configured:
+            try:
+                query_text = f"{request.keywords or norm_ind} in {target_loc}"
+                async with httpx.AsyncClient(timeout=15.0) as http_client:
+                    resp = await http_client.post(
+                        "https://places.googleapis.com/v1/places:searchText",
+                        headers={
+                            "X-Goog-Api-Key": places_api_key,
+                            "X-Goog-FieldMask": (
+                                "places.id,places.displayName,places.formattedAddress,"
+                                "places.internationalPhoneNumber,places.nationalPhoneNumber,"
+                                "places.rating,places.websiteUri"
+                            ),
+                            "Content-Type": "application/json",
+                        },
+                        json={
+                            "textQuery": query_text,
+                            "maxResultCount": min(max(request.limit, 1), 20),
+                        },
+                    )
+                if resp.status_code == 200:
+                    places_data = resp.json().get("places") or []
+                    for place in places_data:
+                        display_name = (place.get("displayName") or {}).get("text")
+                        if not display_name:
+                            continue
+                        phone = place.get("internationalPhoneNumber") or place.get("nationalPhoneNumber") or ""
+                        website = place.get("websiteUri") or ""
+                        candidates.append({
+                            "name": str(display_name),
+                            "email": "",
+                            "phone": str(phone),
+                            "rating": float(place.get("rating") or 4.5),
+                            "address": str(place.get("formattedAddress") or ""),
+                            "website": str(website),
+                            "place_id": str(place.get("id") or ""),
+                        })
+                    data_source = "google_places_api"
+                else:
+                    logger.warning(
+                        "Google Places API returned non-200 status",
+                        status_code=resp.status_code,
+                        body=resp.text[:200],
+                    )
+                    if settings.app_env in ("production", "staging"):
+                        raise TaloxException(
+                            message=f"Google Places API request failed with status {resp.status_code}",
+                            code="GOOGLE_PLACES_API_ERROR",
+                            status_code=502,
+                        )
+            except TaloxException:
+                raise
+            except Exception as exc:
+                logger.warning("Google Places API call failed", error=str(exc))
+                if settings.app_env in ("production", "staging"):
+                    raise TaloxException(
+                        message=f"Google Places API request failed: {str(exc)}",
+                        code="GOOGLE_PLACES_API_ERROR",
+                        status_code=502,
+                    )
+        elif settings.app_env in ("production", "staging"):
+            raise TaloxException(
+                message="GOOGLE_PLACES_API_KEY is required for live Google Maps lead generation in production/staging",
+                code="GOOGLE_PLACES_NOT_CONFIGURED",
+                status_code=400,
+            )
+
+        if not candidates and data_source != "google_places_api":
+            data_source = "synthetic_demo"
+            if norm_ind == "Financing":
+                candidates = [
+                    {"name": f"{loc_tag} Capital & Investment Advisory LLC", "email": f"advisory@{loc_slug}capital.com", "phone": "+971501122331", "rating": 4.9},
+                    {"name": f"Apex Commercial Lending ({loc_tag})", "email": f"loans@{loc_slug}apexlending.io", "phone": "+966502233442", "rating": 4.8},
+                    {"name": f"{loc_tag} SME Asset & Trade Finance", "email": f"desk@{loc_slug}smetrade.org", "phone": "+971503344553", "rating": 4.7},
+                    {"name": f"Crescent Wealth Partners - {loc_tag}", "email": f"inquiries@crescentwealth-{loc_slug}.com", "phone": "+966504455664", "rating": 4.9},
+                ]
+            elif norm_ind == "Clinics / Hospitals":
+                candidates = [
+                    {"name": f"{loc_tag} Specialized Medical & Surgical Center", "email": f"appointments@{loc_slug}medcenter.med", "phone": "+971521112233", "rating": 4.9},
+                    {"name": f"PrimeCare Aesthetics & Dental - {loc_tag}", "email": f"care@{loc_slug}primecare.org", "phone": "+966552223344", "rating": 4.8},
+                    {"name": f"{loc_tag} Polyclinic & Wellness Group", "email": f"booking@{loc_slug}wellnessclinic.com", "phone": "+971523334455", "rating": 4.7},
+                    {"name": f"Royal Diagnostics & Healthcare ({loc_tag})", "email": f"info@{loc_slug}royaldiag.med", "phone": "+971524445566", "rating": 4.9},
+                ]
+            elif norm_ind == "Real Estate / Property":
+                candidates = [
+                    {"name": f"{loc_tag} Prime Luxury Estates & Developments", "email": f"sales@{loc_slug}primeestates.ae", "phone": "+971581012021", "rating": 4.9},
+                    {"name": f"Skyline Commercial & Residential ({loc_tag})", "email": f"leasing@{loc_slug}skylineproperties.com", "phone": "+966542023032", "rating": 4.8},
+                    {"name": f"{loc_tag} Boulevard Assets & Property Management", "email": f"portfolio@{loc_slug}boulevard.io", "phone": "+971583034043", "rating": 4.7},
+                    {"name": f"Crestline Investment Properties - {loc_tag}", "email": f"investors@{loc_slug}crestline.ae", "phone": "+971584045054", "rating": 4.9},
+                ]
+            else:  # E-Commerce
+                candidates = [
+                    {"name": f"{loc_tag} Direct Retail & Wholesale Hub", "email": f"vip@{loc_slug}retaildirect.store", "phone": "+971561192281", "rating": 4.8},
+                    {"name": f"PureCommerce Goods - {loc_tag}", "email": f"orders@{loc_slug}purecommerce.me", "phone": "+966532293382", "rating": 4.7},
+                    {"name": f"{loc_tag} Consumer Goods & Lifestyle Brands", "email": f"concierge@{loc_slug}goods.shop", "phone": "+971563394483", "rating": 4.9},
+                    {"name": f"DesertLuxe Logistics & Retail ({loc_tag})", "email": f"b2b@{loc_slug}desertluxe.store", "phone": "+966534495584", "rating": 4.8},
+                ]
 
         candidates = candidates[: request.limit]
 
@@ -489,8 +611,9 @@ class MarketingService:
         for cand in candidates:
             c_email = cand.get("email", "").lower()
             c_phone = cand.get("phone", "")
-            # Quality check: must have at least one valid contact channel and rating >= 4.0
-            if (not c_email and not c_phone) or float(cand.get("rating", 0)) < 4.0:
+            c_website = cand.get("website", "")
+            # Quality check: must have at least one valid contact channel (or website from Places API) and rating >= 4.0
+            if (not c_email and not c_phone and not c_website) or float(cand.get("rating", 0.0)) < 4.0:
                 rejected_low_quality += 1
                 continue
 
@@ -502,9 +625,9 @@ class MarketingService:
             qual_score = round(min(96.0, 65.0 + float(cand.get("rating", 4.5)) * 5.0), 1)
             lead_row = Lead(
                 tenant_id=tenant_id,
-                name=cand["name"],
-                email=c_email,
-                phone=c_phone,
+                name=cand.get("name", "Business Lead"),
+                email=c_email or None,
+                phone=c_phone or None,
                 source="google_maps",
                 status="qualified" if qual_score >= 80.0 else "new",
                 qualification_score=qual_score,
@@ -514,6 +637,10 @@ class MarketingService:
                     "location": request.location,
                     "keywords": request.keywords or norm_ind,
                     "google_maps_rating": cand.get("rating"),
+                    "address": cand.get("address"),
+                    "website": c_website or None,
+                    "place_id": cand.get("place_id"),
+                    "data_source": data_source,
                     "quality_verified": True,
                     "messages_sent_count": 0,
                     "meeting_booked": False,
@@ -537,6 +664,7 @@ class MarketingService:
                 metadata_={
                     "industry": norm_ind,
                     "location": request.location,
+                    "data_source": data_source,
                     "created_count": len(created_leads),
                     "skipped_duplicates": skipped_duplicates,
                 },
@@ -546,6 +674,7 @@ class MarketingService:
         return {
             "industry": norm_ind,
             "location": request.location,
+            "data_source": data_source,
             "created_count": len(created_leads),
             "skipped_duplicates": skipped_duplicates,
             "rejected_low_quality": rejected_low_quality,
@@ -609,6 +738,14 @@ class MarketingService:
             ),
             tenant_id=str(tenant_id),
         )
+        if not ai_res.success:
+            err_msg = ai_res.error_message or ai_res.content
+            budget_manager.record_failure(str(tenant_id), err_msg)
+            raise TaloxException(
+                message=f"Outreach copy AI generation failed: {err_msg}",
+                code="AI_PROVIDER_ERROR",
+                status_code=502,
+            )
         budget_manager.record_success(str(tenant_id), ai_res.total_tokens, ai_res.estimated_cost)
 
         if request.require_approval:

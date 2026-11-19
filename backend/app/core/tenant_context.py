@@ -19,16 +19,16 @@ class TenantContext:
 
     @property
     def is_owner(self) -> bool:
-        return self.role == "owner"
+        return self.role in ("owner", "super_admin")
 
     @property
     def is_admin(self) -> bool:
-        return self.role in ("owner", "admin")
+        return self.role in ("owner", "admin", "super_admin")
 
     @property
     def can_manage(self) -> bool:
-        return self.role in ("owner", "admin", "manager")
+        return self.role in ("owner", "admin", "manager", "super_admin")
 
     @property
     def can_write(self) -> bool:
-        return self.role in ("owner", "admin", "manager", "staff")
+        return self.role in ("owner", "admin", "manager", "staff", "super_admin")

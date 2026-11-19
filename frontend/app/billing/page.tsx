@@ -68,6 +68,7 @@ export default function BillingPage() {
   const [invoices, setInvoices] = useState<InvoiceItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<boolean>(false);
 
   const fetchBillingData = async () => {
     const tenant = getActiveTenant();
@@ -107,6 +108,7 @@ export default function BillingPage() {
   }, []);
 
   const handleSubscribe = async (serviceId: string, serviceName: string, price = 99.0, planName = "starter") => {
+    setActionError(false);
     setActionMessage(`Activating subscription for ${serviceName}...`);
     const res = await apiRequest("/api/v1/services/subscribe", {
       method: "POST",
@@ -118,25 +120,37 @@ export default function BillingPage() {
       }),
     });
 
-    if (res.id || res.data?.id) {
+    if (!res.error && (res.id || res.data?.id)) {
+      setActionError(false);
       setActionMessage(`Subscribed to ${serviceName}! Invoice generated.`);
       fetchBillingData();
     } else {
+      setActionError(true);
       setActionMessage(res.error?.message || "Failed to subscribe.");
     }
   };
 
   const handlePayInvoice = async (invoiceId: string) => {
-    setActionMessage("Settling invoice payment...");
+    setActionError(false);
+    setActionMessage("Submitting invoice payment...");
     const res = await apiRequest(`/api/v1/payments/invoices/${invoiceId}/pay`, {
       method: "POST",
     });
 
-    if (res.id || res.data?.id) {
-      setActionMessage("Payment successful! Invoice marked as paid.");
+    if (!res.error && (res.id || res.data?.id)) {
+      const paymentStatus = res.status || res.data?.status;
+      setActionError(false);
+      if (paymentStatus === "completed") {
+        setActionMessage("Payment successful! Invoice marked as paid.");
+      } else {
+        setActionMessage(
+          "Bank transfer payment submitted (pending Super Admin confirmation). Invoice status is now payment_pending."
+        );
+      }
       fetchBillingData();
     } else {
-      setActionMessage("Payment settlement failed.");
+      setActionError(true);
+      setActionMessage(res.error?.message || "Payment submission failed.");
     }
   };
 
@@ -144,7 +158,9 @@ export default function BillingPage() {
     .filter((s) => s.status === "active")
     .reduce((acc, curr) => acc + curr.price, 0);
 
-  const unpaidInvoices = invoices.filter((inv) => inv.status === "issued");
+  const unpaidInvoices = invoices.filter((inv) =>
+    ["issued", "payment_pending", "overdue"].includes(inv.status)
+  );
   const totalOutstanding = unpaidInvoices.reduce((acc, curr) => acc + curr.total, 0);
 
   return (
@@ -173,7 +189,13 @@ export default function BillingPage() {
           </div>
 
           {actionMessage && (
-            <div className="rounded-lg bg-emerald-50 border border-emerald-200 p-3 text-xs text-emerald-800 font-medium">
+            <div
+              className={`rounded-lg border p-3 text-xs font-medium ${
+                actionError
+                  ? "bg-red-50 border-red-200 text-red-800"
+                  : "bg-emerald-50 border-emerald-200 text-emerald-800"
+              }`}
+            >
               {actionMessage}
             </div>
           )}
@@ -341,15 +363,21 @@ export default function BillingPage() {
                           {new Date(inv.created_at).toLocaleDateString()}
                         </td>
                         <td className="py-3 px-4 text-right">
-                          {inv.status === "issued" ? (
+                          {inv.status === "issued" || inv.status === "overdue" ? (
                             <button
                               onClick={() => handlePayInvoice(inv.id)}
                               className="rounded bg-emerald-600 px-3 py-1 text-xs font-semibold text-white hover:bg-emerald-500 transition"
                             >
-                              Settle Invoice
+                              Submit Payment
                             </button>
-                          ) : (
+                          ) : inv.status === "payment_pending" ? (
+                            <span className="text-[11px] text-amber-600 font-semibold">
+                              Pending Confirmation
+                            </span>
+                          ) : inv.status === "paid" ? (
                             <span className="text-[11px] text-emerald-600 font-medium">Settled</span>
+                          ) : (
+                            <span className="text-[11px] text-slate-400 uppercase">{inv.status}</span>
                           )}
                         </td>
                       </tr>

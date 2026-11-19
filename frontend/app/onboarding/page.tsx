@@ -98,8 +98,21 @@ export default function OnboardingPage() {
       const savedPreselected = localStorage.getItem("teloxtech_preselected_service");
       const chosenService = svcParam || savedPreselected;
       if (chosenService) {
-        setPreselectedService(chosenService);
         const lower = chosenService.toLowerCase();
+        const slugAliases: Record<string, string> = {
+          whatsapp: "whatsapp-business-concierge",
+          "whatsapp-conversational-ai": "whatsapp-business-concierge",
+          "whatsapp-24-7-concierge": "whatsapp-business-concierge",
+          orchestration: "multi-agent-orchestration",
+          finance: "business-financial-tracking",
+          "business-finance": "business-financial-tracking",
+          marketing: "ai-marketing-growth",
+          "lead-generation-outreach": "ai-marketing-growth",
+          "lead-generation-growth": "ai-marketing-growth",
+        };
+        const normalizedSlug = slugAliases[lower] || chosenService;
+        setPreselectedService(normalizedSlug);
+
         if (lower.includes("clinic") || lower.includes("patient") || lower.includes("hospital") || lower.includes("doctor")) {
           setIndustry("Clinics / Hospitals");
         } else if (lower.includes("rent") || lower.includes("property") || lower.includes("real estate") || lower.includes("landlord")) {
@@ -168,9 +181,24 @@ export default function OnboardingPage() {
       const statusParam = urlParams.get("status");
 
       if (oauthError) {
+        sessionStorage.removeItem("talox_oauth_return_to");
         setError(`OAuth authorization was denied or failed: ${errorDesc || oauthError}`);
         window.history.replaceState({}, document.title, window.location.pathname);
       } else if (connectedProvider && statusParam === "success") {
+        const storedReturnTo =
+          sessionStorage.getItem("talox_oauth_return_to") || urlParams.get("return_to");
+        sessionStorage.removeItem("talox_oauth_return_to");
+        if (
+          storedReturnTo &&
+          storedReturnTo.startsWith("/") &&
+          !storedReturnTo.startsWith("//") &&
+          storedReturnTo !== "/onboarding"
+        ) {
+          window.location.href = `${storedReturnTo}?connected=${encodeURIComponent(
+            connectedProvider
+          )}&status=success`;
+          return;
+        }
         setStatusMessage(
           `${connectedProvider.replace("_", " ").toUpperCase()} successfully connected and verified via OAuth 2.0!`
         );
@@ -187,10 +215,26 @@ export default function OnboardingPage() {
             }),
           });
           if (cbRes.success && cbRes.data) {
+            const storedReturnTo =
+              sessionStorage.getItem("talox_oauth_return_to") || urlParams.get("return_to");
+            sessionStorage.removeItem("talox_oauth_return_to");
+            if (
+              storedReturnTo &&
+              storedReturnTo.startsWith("/") &&
+              !storedReturnTo.startsWith("//") &&
+              storedReturnTo !== "/onboarding"
+            ) {
+              const providerParam = cbRes.data.provider || "oauth";
+              window.location.href = `${storedReturnTo}?connected=${encodeURIComponent(
+                providerParam
+              )}&status=success`;
+              return;
+            }
             setStatusMessage(
               `${cbRes.data.display_name || "Integration"} securely connected and verified via OAuth 2.0!`
             );
           } else {
+            sessionStorage.removeItem("talox_oauth_return_to");
             setError(
               cbRes.error?.message ||
                 cbRes.message ||
@@ -198,6 +242,7 @@ export default function OnboardingPage() {
             );
           }
         } catch (err: any) {
+          sessionStorage.removeItem("talox_oauth_return_to");
           setError(err.message || "OAuth 2.0 callback processing error.");
         } finally {
           setLoading(false);
@@ -236,11 +281,14 @@ export default function OnboardingPage() {
             industry,
           }),
         });
-        if (patchRes.id) {
-          setActiveTenant(patchRes as any);
+        const updatedTenant = patchRes.id ? patchRes : patchRes.data;
+        if (!patchRes.error && updatedTenant?.id) {
+          setActiveTenant(updatedTenant as any);
           setStep(2);
           return;
         }
+        setError(patchRes.error?.message || "Failed to update company workspace settings.");
+        return;
       }
 
       const res = await apiRequest("/api/v1/tenants", {
@@ -313,6 +361,8 @@ export default function OnboardingPage() {
       } else {
         setError(res.error?.message || "Could not activate service package.");
       }
+    } catch (err: any) {
+      setError(err.message || "An error occurred while subscribing to the service package.");
     } finally {
       setLoading(false);
     }
@@ -341,6 +391,7 @@ export default function OnboardingPage() {
 
         // 2. Persist state for verification
         if (typeof window !== "undefined") {
+          sessionStorage.removeItem("talox_oauth_return_to");
           sessionStorage.setItem(
             "teloxtech_pending_oauth",
             JSON.stringify({
@@ -353,20 +404,30 @@ export default function OnboardingPage() {
           window.location.href = oauthInfo.data.authorization_url;
         }
       } else {
-        const apiKey = apiKeysInput[reqItem.provider] || `key_${reqItem.provider}_verified`;
+        const apiKey = (apiKeysInput[reqItem.provider] || "").trim();
+        if (!apiKey) {
+          setError(`Please enter a valid API Key for ${reqItem.display_name} before connecting.`);
+          setLoading(false);
+          return;
+        }
         const connRes = await apiRequest(`/api/v1/integrations/${reqItem.provider}/connect`, {
           method: "POST",
           body: JSON.stringify({
             api_key: apiKey,
             account_identifier:
-              accountIdsInput[reqItem.provider] || `${slug || "workspace"}-booking`,
+              accountIdsInput[reqItem.provider] || `${slug || "workspace"}-${reqItem.provider}`,
           }),
         });
 
-        if (connRes.success) {
+        if (connRes.success && connRes.data?.status === "connected") {
+          setApiKeysInput((prev) => ({ ...prev, [reqItem.provider]: "" }));
           setStatusMessage(`${reqItem.display_name} API credentials encrypted and verified.`);
         } else {
-          setError(connRes.message || `Connection failed for ${reqItem.display_name}.`);
+          setError(
+            connRes.error?.message ||
+              connRes.message ||
+              `Connection failed for ${reqItem.display_name}.`
+          );
         }
 
         const reqRes = await apiRequest("/api/v1/integrations/onboarding-requirements");
@@ -526,7 +587,7 @@ export default function OnboardingPage() {
                   <input
                     type="text"
                     required
-                    pattern="^[a-z0-9-]+$"
+                    pattern="^(?:[a-z0-9]|-)+$"
                     value={slug}
                     onChange={(e) => setSlug(e.target.value.toLowerCase())}
                     placeholder="al-noor-medical"
@@ -616,7 +677,9 @@ export default function OnboardingPage() {
                 const isSelected = subscribedServiceIds.includes(srv.id);
                 const isPreselectedMatch =
                   Boolean(preselectedService) &&
-                  (srv.name.toLowerCase().includes(preselectedService!.toLowerCase()) ||
+                  (srv.slug.toLowerCase() === preselectedService!.toLowerCase() ||
+                    srv.slug.toLowerCase().includes(preselectedService!.toLowerCase()) ||
+                    srv.name.toLowerCase().includes(preselectedService!.toLowerCase()) ||
                     preselectedService!.toLowerCase().includes(srv.name.toLowerCase()));
                 const chosenPlan =
                   selectedPackages[srv.id] || srv.packages?.[0]?.plan_name || "starter";
@@ -814,10 +877,10 @@ export default function OnboardingPage() {
                     </div>
 
                     <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-                      {reqItem.auth_method === "api_key" && !isConnected && (
+                      {reqItem.auth_method === "api_key" && (
                         <input
                           type="password"
-                          placeholder="Paste API Key"
+                          placeholder={isConnected ? "Paste new API Key to reconnect" : "Paste API Key"}
                           value={apiKeysInput[reqItem.provider] || ""}
                           onChange={(e) =>
                             setApiKeysInput((prev) => ({

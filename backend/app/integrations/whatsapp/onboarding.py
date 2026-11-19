@@ -38,6 +38,7 @@ class MetaEmbeddedSignupAdapter:
         self,
         tenant_id: str,
         oauth_code: str,
+        redirect_uri: Optional[str] = None,
     ) -> MetaOnboardingResult:
         """Exchange OAuth authorization code for system access token and configure WABA."""
         logger.info(
@@ -57,14 +58,18 @@ class MetaEmbeddedSignupAdapter:
         # 2. Live Meta Graph API Token Exchange
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
+                token_params: Dict[str, Any] = {
+                    "client_id": settings.meta_app_id,
+                    "client_secret": settings.whatsapp_app_secret,
+                    "code": oauth_code,
+                }
+                if redirect_uri:
+                    token_params["redirect_uri"] = redirect_uri
+
                 # Exchange code for access token
                 token_resp = await client.get(
                     f"{self.graph_api_url}/oauth/access_token",
-                    params={
-                        "client_id": settings.meta_app_id,
-                        "client_secret": settings.whatsapp_app_secret,
-                        "code": oauth_code,
-                    },
+                    params=token_params,
                 )
                 token_resp.raise_for_status()
                 token_data = token_resp.json()

@@ -8,6 +8,8 @@
 # Environment & Secrets (NEVER bake into image)
 .env
 .env.*
+**/.env
+**/.env.*
 *.pem
 *.key
 

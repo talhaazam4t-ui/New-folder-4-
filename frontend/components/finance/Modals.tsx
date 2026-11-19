@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { FinancialAccount } from "./types";
 import { X, DollarSign, Building2, Wallet } from "lucide-react";
 
@@ -23,6 +23,12 @@ export function LogTransactionModal({ isOpen, onClose, accounts, onSubmit }: Log
   const [dueDate, setDueDate] = useState("");
   const [notes, setNotes] = useState("");
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (isOpen && !accountId && accounts.length > 0) {
+      setAccountId(accounts[0].id);
+    }
+  }, [isOpen, accounts, accountId]);
 
   if (!isOpen) return null;
 

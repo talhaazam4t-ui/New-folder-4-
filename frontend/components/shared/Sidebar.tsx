@@ -9,6 +9,7 @@ import {
   Sparkles,
   MessageSquare,
   ShieldCheck,
+  Megaphone,
 } from "lucide-react";
 import { SUPPORT_WHATSAPP_NUMBER, SUPPORT_WHATSAPP_LINK } from "@/lib/auth";
 
@@ -23,7 +24,8 @@ export function Sidebar({ currentPath = "/dashboard" }: SidebarProps) {
     { label: "Performance Overview", href: "/dashboard", icon: LayoutDashboard },
     { label: "Onboarding & Connections", href: "/onboarding", icon: Sparkles },
     { label: "Services & Packages", href: "/billing", icon: CreditCard },
-    { label: "Financial Results", href: "/business", icon: TrendingUp },
+    { label: "Financial Results", href: "/finance", icon: TrendingUp },
+    { label: "Marketing & Leads", href: "/marketing", icon: Megaphone },
     { label: "Integrations & Account", href: "/settings", icon: Settings },
   ];
 
@@ -37,7 +39,9 @@ export function Sidebar({ currentPath = "/dashboard" }: SidebarProps) {
           <nav className="space-y-1 mt-2">
             {clientNavItems.map((item) => {
               const Icon = item.icon;
-              const isActive = currentPath === item.href;
+              const isActive =
+                currentPath === item.href ||
+                (item.href === "/finance" && currentPath === "/business");
               return (
                 <a
                   key={item.href}

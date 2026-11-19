@@ -59,6 +59,7 @@ export default function MarketingPage() {
   const [copyTopic, setCopyTopic] = useState("");
   const [generatedCopy, setGeneratedCopy] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const loadMarketingWorkspace = async () => {
     const [campRes, leadRes, anaRes] = await Promise.all([
@@ -69,9 +70,11 @@ export default function MarketingPage() {
 
     if (Array.isArray(campRes)) setCampaigns(campRes);
     else if (campRes.data) setCampaigns(campRes.data);
+    else if (campRes.error) setErrorMessage(campRes.error.message);
 
     if (Array.isArray(leadRes)) setLeads(leadRes);
     else if (leadRes.data) setLeads(leadRes.data);
+    else if (leadRes.error) setErrorMessage(leadRes.error.message);
 
     const ana = (anaRes.data || anaRes) as MarketingAnalytics;
     if (ana && ana.total_campaigns !== undefined) setAnalytics(ana);
@@ -93,6 +96,7 @@ export default function MarketingPage() {
   const handleCreateCampaign = async (e: React.FormEvent) => {
     e.preventDefault();
     setStatusMessage(null);
+    setErrorMessage(null);
     const res = await apiRequest("/api/v1/marketing/campaigns", {
       method: "POST",
       body: JSON.stringify({
@@ -102,29 +106,33 @@ export default function MarketingPage() {
         budget: parseFloat(campBudget),
       }),
     });
-    if (res.id || res.data?.id) {
+    if (!res.error && (res.id || res.data?.id)) {
       setCampName("");
       setStatusMessage("Campaign created in 'draft' status and queued for Owner approval.");
       loadMarketingWorkspace();
+    } else {
+      setErrorMessage(res.error?.message || "Failed to save campaign draft.");
     }
   };
 
   const handleApproveCampaign = async (campaignId: string) => {
     setStatusMessage(null);
+    setErrorMessage(null);
     const res = await apiRequest(`/api/v1/marketing/campaigns/${campaignId}/approve`, {
       method: "POST",
     });
-    if (res.id || res.data?.id) {
+    if (!res.error && (res.id || res.data?.id)) {
       setStatusMessage("Campaign approved and published live!");
       loadMarketingWorkspace();
     } else {
-      setStatusMessage(res.error?.message || "Failed to approve campaign.");
+      setErrorMessage(res.error?.message || "Failed to approve campaign.");
     }
   };
 
   const handleCreateLead = async (e: React.FormEvent) => {
     e.preventDefault();
     setStatusMessage(null);
+    setErrorMessage(null);
     const res = await apiRequest("/api/v1/marketing/leads", {
       method: "POST",
       body: JSON.stringify({
@@ -134,28 +142,35 @@ export default function MarketingPage() {
         source: leadSource,
       }),
     });
-    if (res.id || res.data?.id) {
+    if (!res.error && (res.id || res.data?.id)) {
       setLeadName("");
       setLeadEmail("");
       setLeadPhone("");
       setStatusMessage("Lead added to CRM.");
       loadMarketingWorkspace();
+    } else {
+      setErrorMessage(res.error?.message || "Failed to add lead to CRM.");
     }
   };
 
   const handleQualifyLead = async (leadId: string) => {
     setStatusMessage(null);
+    setErrorMessage(null);
     const res = await apiRequest(`/api/v1/marketing/leads/${leadId}/qualify`, {
       method: "POST",
     });
-    if (res.id || res.data?.id) {
+    if (!res.error && (res.id || res.data?.id)) {
       setStatusMessage("AI Lead Qualification completed.");
       loadMarketingWorkspace();
+    } else {
+      setErrorMessage(res.error?.message || "Failed to qualify lead.");
     }
   };
 
   const handleGenerateCopy = async (e: React.FormEvent) => {
     e.preventDefault();
+    setStatusMessage(null);
+    setErrorMessage(null);
     const res = await apiRequest("/api/v1/marketing/content/generate", {
       method: "POST",
       body: JSON.stringify({
@@ -165,8 +180,15 @@ export default function MarketingPage() {
       }),
     });
     const data = res.data || res;
-    if (data?.generated_copy) {
+    if (!res.error && data?.generated_copy) {
       setGeneratedCopy(data.generated_copy);
+      setStatusMessage(
+        data?.provider
+          ? `AI marketing copy generated via ${data.provider}.`
+          : "AI marketing copy generated."
+      );
+    } else {
+      setErrorMessage(res.error?.message || "Failed to generate marketing copy.");
     }
   };
 
@@ -174,7 +196,7 @@ export default function MarketingPage() {
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
       <Navbar />
       <div className="flex flex-1">
-        <Sidebar />
+        <Sidebar currentPath="/marketing" />
         <main className="flex-1 p-8 space-y-8 overflow-y-auto">
           <div>
             <h1 className="text-2xl font-bold text-white">Marketing, Campaigns & Lead CRM</h1>
@@ -186,6 +208,12 @@ export default function MarketingPage() {
           {statusMessage && (
             <div className="p-4 rounded-lg bg-indigo-950/60 border border-indigo-700 text-indigo-200 text-sm">
               {statusMessage}
+            </div>
+          )}
+
+          {errorMessage && (
+            <div className="p-4 rounded-lg bg-red-950/60 border border-red-700 text-red-200 text-sm">
+              {errorMessage}
             </div>
           )}
 

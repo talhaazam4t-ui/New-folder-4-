@@ -14,6 +14,7 @@ Tests:
 """
 
 import pytest
+from app.config import settings
 from app.database.models.automation import Integration
 from app.database.supabase import get_session_factory
 from app.main import app
@@ -22,8 +23,11 @@ from sqlalchemy import select
 
 
 @pytest.mark.asyncio
-async def test_oauth_authorization_url_generation_all_providers():
+async def test_oauth_authorization_url_generation_all_providers(monkeypatch):
     """Verify that clicking connect generates real third-party OAuth redirect URLs with signed state."""
+    monkeypatch.setattr(settings, "google_client_id", "test-google-client-id.apps.googleusercontent.com")
+    monkeypatch.setattr(settings, "google_client_secret", "test-google-client-secret")
+    monkeypatch.setattr(settings, "meta_app_id", "test-meta-app-id")
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         # Register user and tenant
@@ -97,8 +101,11 @@ async def test_oauth_authorization_url_generation_all_providers():
 
 
 @pytest.mark.asyncio
-async def test_oauth_callback_token_exchange_and_encryption():
+async def test_oauth_callback_token_exchange_and_encryption(monkeypatch):
     """Verify that exchanging code + signed state stores encrypted tokens and transitions status to connected."""
+    monkeypatch.setattr(settings, "google_client_id", "test-google-client-id.apps.googleusercontent.com")
+    monkeypatch.setattr(settings, "google_client_secret", "test-google-client-secret")
+    monkeypatch.setattr(settings, "meta_app_id", "test-meta-app-id")
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         # Register user and tenant

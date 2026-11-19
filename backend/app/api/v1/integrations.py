@@ -15,6 +15,7 @@ import uuid
 from typing import Any, Dict, Optional
 
 from app.config import settings
+from app.core.logging import logger
 from app.core.tenant_context import TenantContext
 from app.database.supabase import get_db
 from app.dependencies import require_permission
@@ -160,29 +161,41 @@ async def oauth_browser_redirect_callback(
 ):
     """Direct browser redirect target for third-party OAuth providers (Google / Meta)."""
     frontend_base = settings.frontend_url.rstrip("/")
+    return_to = "/onboarding"
+
+    if state:
+        try:
+            state_data = verify_oauth_state(state)
+            candidate_return = str(state_data.get("return_to") or "/onboarding")
+            if candidate_return.startswith("/") and not candidate_return.startswith("//"):
+                return_to = candidate_return
+        except Exception:
+            state_data = None
+    else:
+        state_data = None
+
+    err_sep = "&" if "?" in return_to else "?"
 
     if error:
         err_param = urllib.parse.quote(error_description or error or "access_denied")
         return RedirectResponse(
-            f"{frontend_base}/onboarding?error={err_param}&provider={provider}",
+            f"{frontend_base}{return_to}{err_sep}error={err_param}&provider={provider}",
             status_code=302,
         )
 
-    if not code or not state:
+    if not code or not state or not state_data:
         return RedirectResponse(
-            f"{frontend_base}/onboarding?error=missing_code_or_state&provider={provider}",
+            f"{frontend_base}{return_to}{err_sep}error=missing_code_or_state&provider={provider}",
             status_code=302,
         )
 
     try:
-        state_data = verify_oauth_state(state)
         tenant_id_str = state_data.get("tenant_id")
         user_id_str = state_data.get("user_id")
-        return_to = state_data.get("return_to") or "/onboarding"
 
         if not tenant_id_str:
             return RedirectResponse(
-                f"{frontend_base}/onboarding?error=invalid_state_tenant&provider={provider}",
+                f"{frontend_base}{return_to}{err_sep}error=invalid_state_tenant&provider={provider}",
                 status_code=302,
             )
 
@@ -205,7 +218,7 @@ async def oauth_browser_redirect_callback(
     except Exception as exc:
         err_msg = urllib.parse.quote(str(exc))
         return RedirectResponse(
-            f"{frontend_base}/onboarding?error={err_msg}&provider={provider}",
+            f"{frontend_base}{return_to}{err_sep}error={err_msg}&provider={provider}",
             status_code=302,
         )
 
@@ -346,21 +359,25 @@ async def process_whatsapp_meta_webhook(
             tenant_id = None
             if phone_number_id:
                 from app.database.models.automation import Integration
-                stmt = select(Integration.tenant_id).where(
+                stmt = select(Integration).where(
                     Integration.provider == "whatsapp",
-                    Integration.account_identifier == phone_number_id,
                     Integration.status == "connected",
                 )
                 res = await session.execute(stmt)
-                tenant_id = res.scalar_one_or_none()
+                for integ_row in res.scalars().all():
+                    cfg = integ_row.configuration or {}
+                    if (
+                        integ_row.external_account_id == phone_number_id
+                        or cfg.get("phone_number_id") == phone_number_id
+                    ):
+                        tenant_id = integ_row.tenant_id
+                        break
 
-            # If not matched by specific phone_number_id, find active tenant
             if not tenant_id:
-                from app.database.models.tenant import Tenant
-                res = await session.execute(select(Tenant.id).where(Tenant.status == "active").limit(1))
-                tenant_id = res.scalar_one_or_none()
-
-            if not tenant_id:
+                logger.warning(
+                    "WhatsApp webhook event skipped: unmatched phone_number_id",
+                    phone_number_id=phone_number_id,
+                )
                 continue
 
             for msg in value.get("messages", []):
@@ -381,8 +398,13 @@ async def process_whatsapp_meta_webhook(
                     results.append(res)
                     processed_count += 1
 
-    # Support simple JSON fallback (e.g., test suites)
-    if not entries and "sender_phone" in payload and "message_text" in payload:
+    # Support simple JSON fallback strictly in development/test with explicit X-Tenant-ID
+    if (
+        not entries
+        and settings.app_env in ("development", "test")
+        and "sender_phone" in payload
+        and "message_text" in payload
+    ):
         tenant_id = None
         header_tenant = raw_request.headers.get("x-tenant-id")
         if header_tenant:
@@ -392,23 +414,32 @@ async def process_whatsapp_meta_webhook(
                 tenant_id = None
 
         if not tenant_id:
-            from app.database.models.tenant import Tenant
-            res = await session.execute(
-                select(Tenant.id).where(Tenant.status.in_(["active", "pending_approval"])).limit(1)
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "code": "TENANT_HEADER_REQUIRED",
+                    "message": "Valid X-Tenant-ID header is required for webhook fallback",
+                },
             )
-            tenant_id = res.scalar_one_or_none()
 
-        if tenant_id:
-            res = await integration_service.process_inbound_whatsapp_message(
-                session=session,
-                tenant_id=tenant_id,
-                sender_phone=payload.get("sender_phone"),
-                sender_name=payload.get("sender_name", "WhatsApp Contact"),
-                message_text=payload.get("message_text"),
-                message_id=payload.get("message_id"),
+        from app.database.models.tenant import Tenant
+        t_res = await session.execute(select(Tenant.id).where(Tenant.id == tenant_id))
+        if not t_res.scalar_one_or_none():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"code": "TENANT_NOT_FOUND", "message": "Tenant workspace not found"},
             )
-            results.append(res)
-            processed_count += 1
+
+        res = await integration_service.process_inbound_whatsapp_message(
+            session=session,
+            tenant_id=tenant_id,
+            sender_phone=payload.get("sender_phone"),
+            sender_name=payload.get("sender_name", "WhatsApp Contact"),
+            message_text=payload.get("message_text"),
+            message_id=payload.get("message_id"),
+        )
+        results.append(res)
+        processed_count += 1
 
     return {
         "success": True,

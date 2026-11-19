@@ -1,5 +1,6 @@
 import pytest
 from app.automation.budget_manager import budget_manager
+from app.config import settings
 from app.main import app
 from httpx import ASGITransport, AsyncClient
 
@@ -62,8 +63,13 @@ async def test_multi_agent_orchestration_pipeline_and_telemetry():
 
 
 @pytest.mark.asyncio
-async def test_agent_tool_permission_disable_and_approval_gates():
+async def test_agent_tool_permission_disable_and_approval_gates(monkeypatch):
     """Verify unauthorized tool blocking, disabled agent blocking, and sensitive action approval interception."""
+    monkeypatch.setattr(
+        settings,
+        "super_admin_emails",
+        [*settings.super_admin_emails, "sec@multiagent.ai"],
+    )
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         reg = await client.post("/api/v1/auth/register", json={

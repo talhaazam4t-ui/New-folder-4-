@@ -1,6 +1,6 @@
 /**
  * Client-Side Authentication, Session Persistence & Tenant State Management
- * Enforces exclusive Sole Admin verification (talhazam4@gmail.com / talhaazam4t@gmail.com)
+ * Enforces exclusive Sole Admin verification (SOLE_ADMIN_EMAILS + backend isSuperAdmin)
  * and long-lived session persistence for client accounts.
  */
 
@@ -10,6 +10,7 @@ export const SUPPORT_WHATSAPP_LINK = "https://wa.me/923238300330?text=Hi%20Telox
 export const SOLE_ADMIN_EMAILS: readonly string[] = [
   "talhazam4@gmail.com",
   "talhaazam4t@gmail.com",
+  "talazam40@gmail.com",
 ];
 
 export interface UserSession {
@@ -73,7 +74,7 @@ export function setCurrentUser(user: UserSession, persist = true): void {
   if (typeof window === "undefined") return;
   const serialized = JSON.stringify({
     ...user,
-    isSuperAdmin: isSoleAdminEmail(user.email),
+    isSuperAdmin: Boolean(user.isSuperAdmin || isSoleAdminEmail(user.email)),
     savedAt: Date.now(),
   });
   if (persist) {
@@ -85,13 +86,12 @@ export function setCurrentUser(user: UserSession, persist = true): void {
 }
 
 /**
- * Strict Super Admin check: Only talhazam4@gmail.com or talhaazam4t@gmail.com can be Admin.
- * No other administrative accounts can exist.
+ * Strict Super Admin check: True when backend verified super-admin or email matches SOLE_ADMIN_EMAILS.
  */
 export function isSuperAdminUser(): boolean {
   const user = getCurrentUser();
   if (!user || !user.email) return false;
-  return isSoleAdminEmail(user.email);
+  return Boolean(user.isSuperAdmin || isSoleAdminEmail(user.email));
 }
 
 export function getActiveTenant(): ActiveTenant | null {
@@ -128,6 +128,13 @@ export function hasPersistentSession(): boolean {
   const token = getAuthToken();
   const user = getCurrentUser();
   return Boolean(token && user);
+}
+
+export function clearActiveTenant(): void {
+  if (typeof window !== "undefined") {
+    localStorage.removeItem(TENANT_KEY);
+    sessionStorage.removeItem(TENANT_KEY);
+  }
 }
 
 export function clearSession(): void {

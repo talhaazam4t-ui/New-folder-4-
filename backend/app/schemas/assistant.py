@@ -20,8 +20,8 @@ class AssistantChatRequest(BaseModel):
         description="Optional client-provided API Key (Gemini or DeepSeek)"
     )
     model: Optional[str] = Field(
-        default="gemini-2.5-flash-lite",
-        description="Target model (e.g. gemini-2.5-flash-lite, deepseek-chat)"
+        default="deepseek-chat",
+        description="Target model (e.g. deepseek-chat, deepseek-reasoner, gemini-2.5-flash-lite)"
     )
 
 

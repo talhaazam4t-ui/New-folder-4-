@@ -20,15 +20,12 @@ import {
   CheckCheck,
   RefreshCw,
   ExternalLink,
-  Lock,
   AlertTriangle,
   CheckCircle2,
   Clock,
   Sparkles,
   MapPin,
   X,
-  Radio,
-  Sliders,
 } from "lucide-react";
 
 type AdminTab = "platform" | "agents" | "leads" | "integrations" | "monitoring";
@@ -74,9 +71,16 @@ const INDUSTRY_AGENT_PROFILES: Record<string, string[]> = {
 
 export default function AdminDashboardPage() {
   const [activeTab, setActiveTab] = useState<AdminTab>("platform");
+  const [sidebarItem, setSidebarItem] = useState<string>("platform");
   const [ops, setOps] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<boolean>(false);
+
+  const showStatus = (msg: string, isError = false) => {
+    setActionError(isError);
+    setActionMessage(msg);
+  };
 
   // Global Client / Workspace Selection across tabs
   const [selectedTenantId, setSelectedTenantId] = useState<string>("");
@@ -89,8 +93,21 @@ export default function AdminDashboardPage() {
   const [modalTenantId, setModalTenantId] = useState("");
   const [modalProvider, setModalProvider] = useState("");
   const [modalAccountIdentifier, setModalAccountIdentifier] = useState("");
+  const [modalApiKey, setModalApiKey] = useState("");
   const [modalOAuthUrl, setModalOAuthUrl] = useState<string | null>(null);
   const [connectingIntegration, setConnectingIntegration] = useState(false);
+
+  // Platform Runtime Settings Editor (/api/v1/admin/settings)
+  const [platformSettingsForm, setPlatformSettingsForm] = useState({
+    default_fast_model: "",
+    default_reasoning_model: "",
+    default_tenant_daily_token_budget: 150000,
+    rate_limit_agent_rpm: 60,
+    mandatory_approval_for_campaigns: true,
+    mandatory_approval_for_bulk_outreach: true,
+  });
+  const [savingSettings, setSavingSettings] = useState(false);
+  const [resettingCircuit, setResettingCircuit] = useState(false);
 
   const fetchOperationsData = async () => {
     try {
@@ -101,6 +118,22 @@ export default function AdminDashboardPage() {
       }
       if (res.data) {
         setOps(res.data);
+        if (res.data.platform_settings) {
+          setPlatformSettingsForm({
+            default_fast_model: res.data.platform_settings.default_fast_model || "",
+            default_reasoning_model: res.data.platform_settings.default_reasoning_model || "",
+            default_tenant_daily_token_budget: Number(
+              res.data.platform_settings.default_tenant_daily_token_budget ?? 150000
+            ),
+            rate_limit_agent_rpm: Number(res.data.platform_settings.rate_limit_agent_rpm ?? 60),
+            mandatory_approval_for_campaigns: Boolean(
+              res.data.platform_settings.mandatory_approval_for_campaigns ?? true
+            ),
+            mandatory_approval_for_bulk_outreach: Boolean(
+              res.data.platform_settings.mandatory_approval_for_bulk_outreach ?? true
+            ),
+          });
+        }
         const tenants = res.data.tenants || [];
         if (tenants.length > 0) {
           // If no client selected or selected client no longer exists, default to first tenant
@@ -131,9 +164,64 @@ export default function AdminDashboardPage() {
       window.location.href = "/dashboard";
       return;
     }
+
+    if (typeof window !== "undefined") {
+      const urlParams = new URLSearchParams(window.location.search);
+      const tabParam = urlParams.get("tab");
+      const connectedProvider = urlParams.get("connected");
+      const statusParam = urlParams.get("status");
+      const oauthError = urlParams.get("error");
+      if (tabParam) {
+        handleSidebarTabChange(tabParam);
+        window.history.replaceState({}, document.title, window.location.pathname);
+      }
+      if (oauthError) {
+        showStatus(`Error: OAuth integration failed: ${oauthError}`, true);
+        setActiveTab("integrations");
+        setSidebarItem("integrations");
+        window.history.replaceState({}, document.title, window.location.pathname);
+      } else if (connectedProvider && statusParam === "success") {
+        showStatus(
+          `${connectedProvider.replace(/_/g, " ").toUpperCase()} connected and verified via OAuth 2.0.`
+        );
+        setActiveTab("integrations");
+        setSidebarItem("integrations");
+        window.history.replaceState({}, document.title, window.location.pathname);
+      }
+    }
+
     fetchOperationsData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const handleSidebarTabChange = (itemId: string) => {
+    setSidebarItem(itemId);
+    if (itemId === "platform" || itemId === "tenants" || itemId === "services") {
+      setActiveTab("platform");
+      if (itemId === "tenants" || itemId === "services") {
+        setTimeout(() => {
+          document
+            .getElementById(itemId === "tenants" ? "admin-tenants-section" : "admin-services-section")
+            ?.scrollIntoView({ behavior: "smooth", block: "start" });
+        }, 60);
+      }
+    } else if (itemId === "agents" || itemId === "approvals") {
+      setActiveTab("agents");
+      if (itemId === "approvals") {
+        setTimeout(() => {
+          document
+            .getElementById("admin-approvals-section")
+            ?.scrollIntoView({ behavior: "smooth", block: "start" });
+        }, 60);
+      }
+    } else if (itemId === "leads") {
+      setActiveTab("leads");
+    } else if (itemId === "integrations") {
+      setActiveTab("integrations");
+    } else {
+      setActiveTab("monitoring");
+    }
+  };
 
   // Handle switching global client context
   const handleSelectClient = (tenantId: string) => {
@@ -143,39 +231,41 @@ export default function AdminDashboardPage() {
     if (tenant?.industry) {
       setLeadGenIndustry(tenant.industry);
     }
-    setActionMessage(`Switched active management context to "${tenant?.name || tenantId}".`);
+    showStatus(`Switched active management context to "${tenant?.name || tenantId}".`);
   };
 
   const handleUpdateTenantStatus = async (tenantId: string, newStatus: string) => {
-    setActionMessage(`Updating tenant status to "${newStatus}"...`);
+    showStatus(`Updating tenant status to "${newStatus}"...`);
     const res = await apiRequest(`/api/v1/admin/tenants/${tenantId}/status`, {
       method: "PATCH",
       body: JSON.stringify({ status: newStatus }),
     });
     if (res.success) {
-      setActionMessage(
+      showStatus(
         newStatus === "active"
           ? "Account payment confirmed and workspace activated successfully."
           : `Tenant status set to "${newStatus}".`
       );
       fetchOperationsData();
     } else {
-      setActionMessage(`Error: ${res.error?.message || "Failed to update status"}`);
+      showStatus(`Error: ${res.error?.message || "Failed to update status"}`, true);
     }
   };
 
   const handleAssignIndustry = async (tenantId: string, industry: string) => {
-    setActionMessage(`Assigning industry "${industry}"...`);
+    showStatus(`Assigning industry "${industry}"...`);
     const res = await apiRequest(`/api/v1/admin/tenants/${tenantId}/assign`, {
       method: "PATCH",
       body: JSON.stringify({ industry }),
     });
     if (res.success) {
-      setActionMessage(`Assigned industry "${industry}" to workspace.`);
+      showStatus(`Assigned industry "${industry}" to workspace.`);
       if (tenantId === selectedTenantId) {
         setLeadGenIndustry(industry);
       }
       fetchOperationsData();
+    } else {
+      showStatus(`Error: ${res.error?.message || "Failed to assign industry"}`, true);
     }
   };
 
@@ -184,9 +274,11 @@ export default function AdminDashboardPage() {
       method: "PATCH",
       body: JSON.stringify({ active: !active }),
     });
-    if (res.id) {
-      setActionMessage("Service availability updated.");
+    if (!res.error && (res.id || res.data?.id || res.success)) {
+      showStatus("Service availability updated.");
       fetchOperationsData();
+    } else {
+      showStatus(`Error: ${res.error?.message || "Failed to update service availability"}`, true);
     }
   };
 
@@ -196,8 +288,50 @@ export default function AdminDashboardPage() {
       body: JSON.stringify({ active: !active }),
     });
     if (res.success) {
-      setActionMessage(`Agent "${agentName}" operational state updated.`);
+      showStatus(`Agent "${agentName}" operational state updated.`);
       fetchOperationsData();
+    } else {
+      showStatus(`Error: ${res.error?.message || "Failed to toggle agent status"}`, true);
+    }
+  };
+
+  const handleSavePlatformSettings = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSavingSettings(true);
+    try {
+      const res = await apiRequest("/api/v1/admin/settings", {
+        method: "PATCH",
+        body: JSON.stringify(platformSettingsForm),
+      });
+      if (res.success) {
+        showStatus("Platform AI routing & governance settings saved.");
+        fetchOperationsData();
+      } else {
+        showStatus(`Error: ${res.error?.message || "Failed to save platform settings"}`, true);
+      }
+    } finally {
+      setSavingSettings(false);
+    }
+  };
+
+  const handleResetCircuit = async (tenantId: string) => {
+    if (!tenantId) return;
+    setResettingCircuit(true);
+    try {
+      const res = await apiRequest(`/api/v1/admin/tenants/${tenantId}/reset-circuit`, {
+        method: "POST",
+      });
+      if (res.success) {
+        showStatus(
+          res.message ||
+            `Circuit breaker reset to ${res.data?.circuit_state || "CLOSED"} for workspace.`
+        );
+        fetchOperationsData();
+      } else {
+        showStatus(`Error: ${res.error?.message || "Failed to reset circuit breaker"}`, true);
+      }
+    } finally {
+      setResettingCircuit(false);
     }
   };
 
@@ -207,23 +341,28 @@ export default function AdminDashboardPage() {
       body: JSON.stringify({ decision, reason: `Reviewed by Platform Owner (${decision})` }),
     });
     if (res.success) {
-      setActionMessage(`Approval ${decision}.`);
+      showStatus(`Approval ${decision}.`);
       fetchOperationsData();
+    } else {
+      showStatus(`Error: ${res.error?.message || "Failed to process approval review"}`, true);
     }
   };
 
   const handleTriggerLeadGen = async (e: React.FormEvent) => {
     e.preventDefault();
-    const targetId = selectedTenantForLeadGen || selectedTenantId;
+    const targetId =
+      selectedTenantForLeadGen && selectedTenantForLeadGen !== "all"
+        ? selectedTenantForLeadGen
+        : selectedTenantId;
     if (!targetId) return;
 
     const tenant = (ops?.tenants || []).find((t: any) => t.id === targetId);
     if (tenant?.status === "suspended") {
-      setActionMessage("Error: Lead generation cannot execute on a suspended client workspace.");
+      showStatus("Error: Lead generation cannot execute on a suspended client workspace.", true);
       return;
     }
 
-    setActionMessage(
+    showStatus(
       `Triggering live Google Maps lead generation in "${leadGenLocation}" for ${tenant?.name || "client"}...`
     );
     const res = await apiRequest(
@@ -238,12 +377,12 @@ export default function AdminDashboardPage() {
       }
     );
     if (res.success) {
-      setActionMessage(
+      showStatus(
         `Lead generation complete: ${res.data?.created_count || 0} verified leads generated in "${leadGenLocation}" (${res.data?.skipped_duplicates || 0} duplicates skipped).`
       );
       fetchOperationsData();
     } else {
-      setActionMessage(`Lead generation failed: ${res.error?.message || "Error"}`);
+      showStatus(`Error: Lead generation failed: ${res.error?.message || "Error"}`, true);
     }
   };
 
@@ -251,30 +390,40 @@ export default function AdminDashboardPage() {
     setModalTenantId(tenantId);
     setModalProvider(provider);
     setModalAccountIdentifier("");
+    setModalApiKey("");
     setModalOAuthUrl(null);
     setIntegrationModalOpen(true);
-    setActionMessage(`Generating OAuth URL for ${provider.toUpperCase()}...`);
+    showStatus(`Preparing connection for ${provider.toUpperCase()}...`);
 
     try {
       const res = await apiRequest(
-        `/api/v1/admin/tenants/${tenantId}/integrations/oauth-url?provider=${provider}`
+        `/api/v1/admin/tenants/${tenantId}/integrations/oauth-url?provider=${encodeURIComponent(provider)}&return_to=/admin`
       );
-      if (res.data?.auth_url) {
-        setModalOAuthUrl(res.data.auth_url);
-        window.open(res.data.auth_url, "_blank", "width=600,height=700");
-        setActionMessage(
+      if (res.success && res.data?.authorization_url) {
+        setModalOAuthUrl(res.data.authorization_url);
+        window.open(res.data.authorization_url, "_blank", "width=600,height=700");
+        showStatus(
           `Redirecting to ${provider.toUpperCase()} authentication. Complete sign-in or enter account identifier below to link.`
         );
+      } else if (res.success && res.data?.auth_method === "api_key") {
+        showStatus(
+          `Enter the ${res.data?.display_name || provider} account identifier below to link this provider.`
+        );
+      } else if (res.error) {
+        showStatus(
+          `Error: ${res.error.message} — You can still link an account identifier manually below.`,
+          true
+        );
       }
-    } catch {
-      // Continue to modal even if OAuth endpoint fails
+    } catch (err: any) {
+      showStatus(`Error: ${err.message || "Failed to generate OAuth URL"}`, true);
     }
   };
 
   const handleConfirmConnectIntegration = async () => {
     if (!modalTenantId || !modalProvider) return;
     setConnectingIntegration(true);
-    setActionMessage(`Linking and approving ${modalProvider.toUpperCase()} integration...`);
+    showStatus(`Linking and approving ${modalProvider.toUpperCase()} integration...`);
 
     try {
       const res = await apiRequest(
@@ -284,16 +433,17 @@ export default function AdminDashboardPage() {
           body: JSON.stringify({
             provider: modalProvider,
             account_identifier: modalAccountIdentifier || `${modalProvider}_verified_account`,
+            api_key: modalApiKey.trim() || undefined,
             status: "connected",
           }),
         }
       );
       if (res.success) {
-        setActionMessage(`Integration ${modalProvider.toUpperCase()} successfully linked and approved!`);
+        showStatus(`Integration ${modalProvider.toUpperCase()} successfully linked and approved!`);
         setIntegrationModalOpen(false);
         fetchOperationsData();
       } else {
-        setActionMessage(`Error: ${res.error?.message || "Failed to link integration"}`);
+        showStatus(`Error: ${res.error?.message || "Failed to link integration"}`, true);
       }
     } finally {
       setConnectingIntegration(false);
@@ -307,21 +457,21 @@ export default function AdminDashboardPage() {
     if (integrationId.startsWith("unlinked_")) {
       const parts = integrationId.split("_");
       const tId = parts[1];
-      const prov = parts[2];
+      const prov = parts.slice(2).join("_");
       handleOpenConnectIntegration(tId, prov);
       return;
     }
 
-    setActionMessage(`Executing integration action "${action}"...`);
+    showStatus(`Executing integration action "${action}"...`);
     const res = await apiRequest(`/api/v1/admin/integrations/${integrationId}/action`, {
       method: "POST",
       body: JSON.stringify({ action }),
     });
     if (res.success) {
-      setActionMessage(`Integration action "${action}" completed successfully.`);
+      showStatus(`Integration action "${action}" completed successfully.`);
       fetchOperationsData();
     } else {
-      setActionMessage(`Action failed: ${res.error?.message || "Error"}`);
+      showStatus(`Error: Action failed: ${res.error?.message || "Error"}`, true);
     }
   };
 
@@ -343,13 +493,31 @@ export default function AdminDashboardPage() {
   const clientAgents = (ops?.ai_agents?.agents || []).filter((ag: any) =>
     permittedAgentNames.includes(ag.name)
   );
+  const allLeads: any[] = ops?.lead_gen_outreach?.leads || [];
+  const filteredLeads = allLeads.filter(
+    (l: any) =>
+      !selectedTenantForLeadGen ||
+      selectedTenantForLeadGen === "all" ||
+      l.tenant_id === selectedTenantForLeadGen
+  );
+  const failedTasks: any[] = ops?.ai_agents?.failed_tasks || [];
+  const dlqEntries: any[] = ops?.ai_agents?.dlq || [];
+  const dailyTokenBudget = Number(
+    ops?.platform_settings?.default_tenant_daily_token_budget ?? 150000
+  );
+  const defaultFastModel = ops?.platform_settings?.default_fast_model || "fast";
+  const defaultReasoningModel = ops?.platform_settings?.default_reasoning_model || "reasoning";
 
   return (
     <div className="min-h-screen bg-slate-900 text-slate-100 flex flex-col font-sans">
       <AdminNavbar />
 
       <div className="flex flex-1">
-        <AdminSidebar currentPath="/admin" />
+        <AdminSidebar
+          currentPath="/admin"
+          activeTab={sidebarItem}
+          onTabChange={handleSidebarTabChange}
+        />
 
         <main className="flex-1 p-6 sm:p-8 space-y-8 max-w-7xl mx-auto w-full">
           {/* Header Banner */}
@@ -397,7 +565,13 @@ export default function AdminDashboardPage() {
           </div>
 
           {actionMessage && (
-            <div className="rounded-lg bg-emerald-500/10 border border-emerald-500/20 p-3 text-xs text-emerald-300 flex items-center justify-between">
+            <div
+              className={`rounded-lg border p-3 text-xs flex items-center justify-between ${
+                actionError
+                  ? "bg-red-500/10 border-red-500/30 text-red-300"
+                  : "bg-emerald-500/10 border-emerald-500/20 text-emerald-300"
+              }`}
+            >
               <span>{actionMessage}</span>
               <button
                 onClick={() => setActionMessage(null)}
@@ -459,7 +633,10 @@ export default function AdminDashboardPage() {
               return (
                 <button
                   key={t.id}
-                  onClick={() => setActiveTab(t.id as AdminTab)}
+                  onClick={() => {
+                    setActiveTab(t.id as AdminTab);
+                    setSidebarItem(t.id);
+                  }}
                   className={`flex items-center gap-2 rounded-lg px-4 py-2 text-xs font-semibold transition ${
                     activeTab === t.id
                       ? "bg-emerald-600 text-white shadow-md shadow-emerald-900/30"
@@ -477,7 +654,7 @@ export default function AdminDashboardPage() {
           {activeTab === "platform" && (
             <div className="space-y-6">
               {/* Registered Clients Table */}
-              <div className="rounded-xl border border-slate-800 bg-slate-950 p-6 space-y-4">
+              <div id="admin-tenants-section" className="rounded-xl border border-slate-800 bg-slate-950 p-6 space-y-4">
                 <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
                   <div>
                     <h2 className="text-base font-bold text-white flex items-center gap-2">
@@ -659,7 +836,7 @@ export default function AdminDashboardPage() {
               </div>
 
               {/* Dynamic Industry Service Catalog & Pricing Control */}
-              <div className="rounded-xl border border-slate-800 bg-slate-950 p-6 space-y-4">
+              <div id="admin-services-section" className="rounded-xl border border-slate-800 bg-slate-950 p-6 space-y-4">
                 <div>
                   <h2 className="text-base font-bold text-white">
                     Industry Service Catalog, Packages & Pricing Control
@@ -754,38 +931,62 @@ export default function AdminDashboardPage() {
                   </div>
                 </div>
 
-                <div className="rounded-lg bg-slate-900/50 border border-slate-800 p-3 text-xs flex flex-wrap items-center gap-4 text-slate-300">
-                  <span>
-                    Industry Package:{" "}
-                    <strong className="text-white font-mono">{activeIndustry}</strong>
-                  </span>
-                  <span>
-                    Subscribed Tier:{" "}
-                    <strong className="text-emerald-400 font-mono uppercase">
-                      {selectedTenant?.selected_package_tier || "Growth Autonomous Suite"}
-                    </strong>
-                  </span>
-                  <span>
-                    Daily Token Budget:{" "}
-                    <strong className="text-white font-mono">150,000 tokens</strong>
-                  </span>
-                  <span>
-                    Status:{" "}
-                    <strong
-                      className={
-                        selectedTenant?.status === "active" ? "text-emerald-400" : "text-amber-400"
-                      }
+                <div className="rounded-lg bg-slate-900/50 border border-slate-800 p-3 text-xs flex flex-wrap items-center justify-between gap-4 text-slate-300">
+                  <div className="flex flex-wrap items-center gap-4">
+                    <span>
+                      Industry Package:{" "}
+                      <strong className="text-white font-mono">{activeIndustry}</strong>
+                    </span>
+                    <span>
+                      Subscribed Tier:{" "}
+                      <strong className="text-emerald-400 font-mono uppercase">
+                        {selectedTenant?.selected_package_tier || "Growth Autonomous Suite"}
+                      </strong>
+                    </span>
+                    <span>
+                      Daily Token Budget:{" "}
+                      <strong className="text-white font-mono">
+                        {dailyTokenBudget.toLocaleString()} tokens
+                      </strong>
+                    </span>
+                    <span>
+                      Status:{" "}
+                      <strong
+                        className={
+                          selectedTenant?.status === "active" ? "text-emerald-400" : "text-amber-400"
+                        }
+                      >
+                        {selectedTenant?.status?.toUpperCase()}
+                      </strong>
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    {selectedTenant?.id && (
+                      <button
+                        type="button"
+                        disabled={resettingCircuit}
+                        onClick={() => handleResetCircuit(selectedTenant.id)}
+                        className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-300 hover:bg-amber-500/20 disabled:opacity-50 transition"
+                      >
+                        {resettingCircuit ? "Resetting..." : "Reset Circuit Breaker"}
+                      </button>
+                    )}
+                    <a
+                      href="/agents"
+                      className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-300 hover:bg-emerald-500/20 transition flex items-center gap-1"
                     >
-                      {selectedTenant?.status?.toUpperCase()}
-                    </strong>
-                  </span>
+                      <span>Open Agent Orchestrator</span>
+                      <ExternalLink className="h-3 w-3" />
+                    </a>
+                  </div>
                 </div>
 
                 {/* Dynamic Agents Grid */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   {clientAgents.map((ag: any) => {
                     const isReasoning = ag.tier === "reasoning";
-                    const modelName = isReasoning ? "claude-3-5-sonnet" : "gpt-4o-mini";
+                    const modelName = isReasoning ? defaultReasoningModel : defaultFastModel;
 
                     return (
                       <div
@@ -827,8 +1028,206 @@ export default function AdminDashboardPage() {
                 </div>
               </div>
 
-              {/* Pending Human Approvals Gate */}
+              {/* Global Platform AI & Governance Settings (PATCH /api/v1/admin/settings) */}
               <div className="rounded-xl border border-slate-800 bg-slate-950 p-6 space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border-b border-slate-800 pb-3">
+                  <div>
+                    <h2 className="text-base font-bold text-white flex items-center gap-2">
+                      <ShieldAlert className="h-4 w-4 text-emerald-400" />
+                      Platform AI Routing &amp; Governance Settings
+                    </h2>
+                    <p className="text-xs text-slate-400">
+                      Configure runtime default models, tenant daily token budgets, agent rate limits, and mandatory approval gates.
+                    </p>
+                  </div>
+                  <span className="text-[11px] font-mono text-slate-400">
+                    Mode: {ops?.platform_settings?.managed_service_mode || "done_for_you"}
+                  </span>
+                </div>
+
+                <form onSubmit={handleSavePlatformSettings} className="space-y-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-400 mb-1">
+                        Default Fast Model
+                      </label>
+                      <input
+                        type="text"
+                        value={platformSettingsForm.default_fast_model}
+                        onChange={(e) =>
+                          setPlatformSettingsForm((prev) => ({
+                            ...prev,
+                            default_fast_model: e.target.value,
+                          }))
+                        }
+                        className="w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-xs text-white font-mono focus:border-emerald-500 focus:outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-400 mb-1">
+                        Default Reasoning Model
+                      </label>
+                      <input
+                        type="text"
+                        value={platformSettingsForm.default_reasoning_model}
+                        onChange={(e) =>
+                          setPlatformSettingsForm((prev) => ({
+                            ...prev,
+                            default_reasoning_model: e.target.value,
+                          }))
+                        }
+                        className="w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-xs text-white font-mono focus:border-emerald-500 focus:outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-400 mb-1">
+                        Daily Tenant Token Budget
+                      </label>
+                      <input
+                        type="number"
+                        min={1000}
+                        step={1000}
+                        value={platformSettingsForm.default_tenant_daily_token_budget}
+                        onChange={(e) =>
+                          setPlatformSettingsForm((prev) => ({
+                            ...prev,
+                            default_tenant_daily_token_budget: Number(e.target.value) || 0,
+                          }))
+                        }
+                        className="w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-xs text-white font-mono focus:border-emerald-500 focus:outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-400 mb-1">
+                        Agent Rate Limit (RPM)
+                      </label>
+                      <input
+                        type="number"
+                        min={1}
+                        value={platformSettingsForm.rate_limit_agent_rpm}
+                        onChange={(e) =>
+                          setPlatformSettingsForm((prev) => ({
+                            ...prev,
+                            rate_limit_agent_rpm: Number(e.target.value) || 1,
+                          }))
+                        }
+                        className="w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-xs text-white font-mono focus:border-emerald-500 focus:outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-between gap-4 pt-1">
+                    <div className="flex flex-wrap items-center gap-6 text-xs text-slate-300">
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={platformSettingsForm.mandatory_approval_for_campaigns}
+                          onChange={(e) =>
+                            setPlatformSettingsForm((prev) => ({
+                              ...prev,
+                              mandatory_approval_for_campaigns: e.target.checked,
+                            }))
+                          }
+                          className="h-4 w-4 rounded border-slate-700 bg-slate-900 text-emerald-500"
+                        />
+                        <span>Mandatory Approval for Campaigns</span>
+                      </label>
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={platformSettingsForm.mandatory_approval_for_bulk_outreach}
+                          onChange={(e) =>
+                            setPlatformSettingsForm((prev) => ({
+                              ...prev,
+                              mandatory_approval_for_bulk_outreach: e.target.checked,
+                            }))
+                          }
+                          className="h-4 w-4 rounded border-slate-700 bg-slate-900 text-emerald-500"
+                        />
+                        <span>Mandatory Approval for Bulk Outreach</span>
+                      </label>
+                    </div>
+
+                    <button
+                      type="submit"
+                      disabled={savingSettings}
+                      className="rounded-lg bg-emerald-600 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-500 disabled:opacity-50 transition"
+                    >
+                      {savingSettings ? "Saving Settings..." : "Save Platform Settings"}
+                    </button>
+                  </div>
+                </form>
+              </div>
+
+              {/* Failed Tasks & Dead-Letter Queue */}
+              <div className="rounded-xl border border-slate-800 bg-slate-950 p-6 space-y-4">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-base font-bold text-white flex items-center gap-2">
+                    <AlertTriangle className="h-4 w-4 text-amber-400" />
+                    Failed Tasks &amp; Dead-Letter Queue ({failedTasks.length} Failed / {dlqEntries.length} DLQ)
+                  </h2>
+                </div>
+                {failedTasks.length === 0 && dlqEntries.length === 0 ? (
+                  <p className="text-xs text-slate-500 italic">
+                    No failed agent tasks or dead-letter queue entries.
+                  </p>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+                    <div className="space-y-2">
+                      <h3 className="text-[11px] font-semibold uppercase text-slate-400">
+                        Failed Tasks ({failedTasks.length})
+                      </h3>
+                      {failedTasks.length === 0 ? (
+                        <p className="text-slate-500 italic">None</p>
+                      ) : (
+                        failedTasks.map((ft: any) => (
+                          <div
+                            key={ft.id}
+                            className="rounded-lg border border-red-900/50 bg-slate-900 p-3 flex items-center justify-between"
+                          >
+                            <div>
+                              <span className="font-mono font-bold text-red-300">
+                                {ft.task_type}
+                              </span>
+                              <p className="text-[10px] font-mono text-slate-500">
+                                Tenant: {ft.tenant_id}
+                              </p>
+                            </div>
+                            <span className="rounded bg-red-500/20 px-2 py-0.5 text-[10px] font-bold text-red-300">
+                              {ft.attempts} attempt(s)
+                            </span>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                    <div className="space-y-2">
+                      <h3 className="text-[11px] font-semibold uppercase text-slate-400">
+                        Dead-Letter Queue ({dlqEntries.length})
+                      </h3>
+                      {dlqEntries.length === 0 ? (
+                        <p className="text-slate-500 italic">None</p>
+                      ) : (
+                        dlqEntries.map((entry: any, idx: number) => (
+                          <div
+                            key={entry.task_id || idx}
+                            className="rounded-lg border border-amber-900/50 bg-slate-900 p-3 space-y-1"
+                          >
+                            <div className="font-mono font-bold text-amber-300">
+                              {entry.task_type || entry.task_id || `DLQ #${idx + 1}`}
+                            </div>
+                            <p className="text-[11px] text-slate-400 break-all">
+                              {entry.error || JSON.stringify(entry)}
+                            </p>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Pending Human Approvals Gate */}
+              <div id="admin-approvals-section" className="rounded-xl border border-slate-800 bg-slate-950 p-6 space-y-4">
                 <div className="flex items-center gap-2">
                   <CheckCheck className="h-5 w-5 text-amber-400" />
                   <h2 className="text-base font-bold text-white">
@@ -914,7 +1313,11 @@ export default function AdminDashboardPage() {
                       Target Client Workspace
                     </label>
                     <select
-                      value={selectedTenantForLeadGen}
+                      value={
+                        selectedTenantForLeadGen && selectedTenantForLeadGen !== "all"
+                          ? selectedTenantForLeadGen
+                          : selectedTenantId
+                      }
                       onChange={(e) => {
                         setSelectedTenantForLeadGen(e.target.value);
                         setSelectedTenantId(e.target.value);
@@ -981,13 +1384,27 @@ export default function AdminDashboardPage() {
 
               {/* Lead Qualification & Outreach Table */}
               <div className="rounded-xl border border-slate-800 bg-slate-950 p-6 space-y-4">
-                <div className="flex items-center justify-between">
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                   <h2 className="text-base font-bold text-white">
                     Tenant-Wide Lead Qualification & Outreach Activity
                   </h2>
-                  <span className="text-xs text-slate-400 font-mono">
-                    {ops?.lead_gen_outreach?.leads?.length || 0} Total Leads Captured
-                  </span>
+                  <div className="flex items-center gap-3">
+                    <select
+                      value={selectedTenantForLeadGen || "all"}
+                      onChange={(e) => setSelectedTenantForLeadGen(e.target.value)}
+                      className="rounded-lg bg-slate-900 border border-slate-700 px-3 py-1.5 text-xs text-white focus:border-emerald-500 focus:outline-none"
+                    >
+                      <option value="all">All Tenants</option>
+                      {tenants.map((t: any) => (
+                        <option key={t.id} value={t.id}>
+                          {t.name}
+                        </option>
+                      ))}
+                    </select>
+                    <span className="text-xs text-slate-400 font-mono">
+                      {filteredLeads.length} Lead(s) Shown
+                    </span>
+                  </div>
                 </div>
 
                 <div className="overflow-x-auto">
@@ -995,6 +1412,7 @@ export default function AdminDashboardPage() {
                     <thead>
                       <tr className="border-b border-slate-800 text-slate-400 uppercase font-semibold">
                         <th className="py-2.5 px-3">Lead Name</th>
+                        <th className="py-2.5 px-3">Client</th>
                         <th className="py-2.5 px-3">Contact</th>
                         <th className="py-2.5 px-3">Location & Industry</th>
                         <th className="py-2.5 px-3">Source</th>
@@ -1003,18 +1421,22 @@ export default function AdminDashboardPage() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-900 text-slate-300">
-                      {(ops?.lead_gen_outreach?.leads || []).length === 0 ? (
+                      {filteredLeads.length === 0 ? (
                         <tr>
-                          <td colSpan={6} className="py-6 text-center text-slate-500 italic">
-                            No leads generated yet. Run Google Maps lead generation above.
+                          <td colSpan={7} className="py-6 text-center text-slate-500 italic">
+                            No leads captured for this selection. Run Google Maps lead generation above.
                           </td>
                         </tr>
                       ) : (
-                        (ops?.lead_gen_outreach?.leads || []).map((l: any) => {
+                        filteredLeads.map((l: any) => {
                           const meta = l.metadata || {};
+                          const leadTenant = tenants.find((t: any) => t.id === l.tenant_id);
                           return (
                             <tr key={l.id} className="hover:bg-slate-900/50">
                               <td className="py-2.5 px-3 font-semibold text-white">{l.name}</td>
+                              <td className="py-2.5 px-3 text-slate-400">
+                                {leadTenant?.name || l.tenant_id}
+                              </td>
                               <td className="py-2.5 px-3 text-slate-400">
                                 {l.email || l.phone || "N/A"}
                               </td>
@@ -1096,6 +1518,7 @@ export default function AdminDashboardPage() {
                     .map((integ: any) => {
                       const isConnected = integ.status === "connected";
                       const isPending = integ.status === "pending_approval";
+                      const isError = integ.status === "error";
                       const isUnlinked = integ.status === "disconnected" || integ.id.startsWith("unlinked_");
 
                       return (
@@ -1106,7 +1529,7 @@ export default function AdminDashboardPage() {
                           <div>
                             <div className="flex items-center gap-2">
                               <span className="font-bold text-white uppercase text-sm">
-                                {integ.provider.replace("_", " ")}
+                                {integ.provider.replace(/_/g, " ")}
                               </span>
                               <span className="text-slate-400 font-mono text-[11px]">
                                 ({integ.integration_type})
@@ -1118,6 +1541,8 @@ export default function AdminDashboardPage() {
                                     ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
                                     : isPending
                                     ? "bg-amber-500/20 text-amber-300 border border-amber-500/30"
+                                    : isError
+                                    ? "bg-red-500/20 text-red-400 border border-red-500/30"
                                     : "bg-slate-800 text-slate-400 border border-slate-700"
                                 }`}
                               >
@@ -1128,6 +1553,10 @@ export default function AdminDashboardPage() {
                                 ) : isPending ? (
                                   <>
                                     <Clock className="h-3 w-3" /> Pending Admin Approval
+                                  </>
+                                ) : isError ? (
+                                  <>
+                                    <AlertTriangle className="h-3 w-3" /> Connection Error
                                   </>
                                 ) : (
                                   <>
@@ -1159,15 +1588,15 @@ export default function AdminDashboardPage() {
                             {isPending && (
                               <button
                                 onClick={() => handleIntegrationAction(integ.id, "approve")}
-                                className="rounded bg-emerald-600 px-3.5 py-1.5 font-semibold text-white hover:bg-emerald-500 transition"
+                                className="rounded bg-emerald-600 px-3.5 py-1.5 font-semibold text-white hover:bg-emerald-500 transition flex items-center gap-1"
                               >
                                 <CheckCircle className="h-3 w-3" />
                                 <span>Approve Integration</span>
                               </button>
                             )}
 
-                            {/* Connected actions */}
-                            {isConnected && (
+                            {/* Connected or Error actions */}
+                            {(isConnected || isError) && (
                               <>
                                 <button
                                   onClick={() => handleIntegrationAction(integ.id, "test")}
@@ -1349,11 +1778,28 @@ export default function AdminDashboardPage() {
                 placeholder={
                   modalProvider === "whatsapp"
                     ? "+971501234567"
+                    : modalProvider === "booking_provider"
+                    ? "booking-account-id"
                     : "client.business@gmail.com"
                 }
                 className="w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-xs text-white placeholder-slate-500 focus:border-emerald-500 focus:outline-none"
               />
             </div>
+
+            {modalProvider === "booking_provider" && (
+              <div className="space-y-1.5">
+                <label className="text-[11px] font-semibold text-slate-300">
+                  Booking Provider API Key (Optional, encrypted at rest)
+                </label>
+                <input
+                  type="password"
+                  value={modalApiKey}
+                  onChange={(e) => setModalApiKey(e.target.value)}
+                  placeholder="Paste provider API key..."
+                  className="w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-xs text-white placeholder-slate-500 focus:border-emerald-500 focus:outline-none"
+                />
+              </div>
+            )}
 
             <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-800">
               <button

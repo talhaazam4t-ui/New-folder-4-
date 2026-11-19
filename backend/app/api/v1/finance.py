@@ -35,18 +35,24 @@ from sqlalchemy.ext.asyncio import AsyncSession
 router = APIRouter(prefix="/finance", tags=["Business Financial & Rent Tracking"])
 
 
-async def verify_finance_module_active(
-    context: TenantContext = Depends(require_permission("business.records.read")),
-    session: AsyncSession = Depends(get_db),
-) -> TenantContext:
-    """Ensure the Business Financial Tracking & Ledger toggle is ACTIVE for this tenant."""
-    is_active = await finance_service.is_module_active(session, str(context.tenant_id))
-    if not is_active:
-        raise PermissionDeniedError(
-            "The Business Financial Tracking & Ledger module is disabled for this tenant. "
-            "Please contact the Super Administrator to activate this service."
-        )
-    return context
+def verify_finance_module_permission(permission_name: str):
+    """Dependency factory ensuring RBAC permission AND active Business Financial Tracking module."""
+    async def _checker(
+        context: TenantContext = Depends(require_permission(permission_name)),
+        session: AsyncSession = Depends(get_db),
+    ) -> TenantContext:
+        is_active = await finance_service.is_module_active(session, context.tenant_id)
+        if not is_active:
+            raise PermissionDeniedError(
+                "The Business Financial Tracking & Ledger module is disabled or not subscribed for this tenant. "
+                "Please subscribe or contact the Super Administrator to activate this service."
+            )
+        return context
+
+    return _checker
+
+
+verify_finance_module_active = verify_finance_module_permission("business.records.read")
 
 
 # --- Module Status ---
@@ -56,12 +62,12 @@ async def get_finance_module_status(
     session: AsyncSession = Depends(get_db),
 ):
     """Check whether the Business Financial Tracking module is active for the tenant."""
-    active = await finance_service.is_module_active(session, str(context.tenant_id))
+    active = await finance_service.is_module_active(session, context.tenant_id)
     return {
         "success": True,
         "data": {
             "tenant_id": str(context.tenant_id),
-            "service": "business-finance",
+            "service": "business-financial-tracking",
             "active": active,
             "status": "ACTIVE" if active else "DISABLED",
         },
@@ -77,20 +83,20 @@ async def list_financial_accounts(
     """List all financial accounts (Bank, Cash, NayaPay, Stripe) for the active tenant."""
     return await finance_service.list_accounts(
         session=session,
-        tenant_id=str(context.tenant_id),
+        tenant_id=context.tenant_id,
     )
 
 
 @router.post("/accounts", status_code=status.HTTP_201_CREATED, response_model=FinancialAccountResponse)
 async def create_financial_account(
     request: FinancialAccountCreateRequest,
-    context: TenantContext = Depends(require_permission("business.records.create")),
+    context: TenantContext = Depends(verify_finance_module_permission("business.records.create")),
     session: AsyncSession = Depends(get_db),
 ):
     """Create a new financial account and audit initial balance."""
     return await finance_service.create_account(
         session=session,
-        tenant_id=str(context.tenant_id),
+        tenant_id=context.tenant_id,
         user_id=context.user_id,
         request=request,
     )
@@ -111,7 +117,7 @@ async def list_financial_transactions(
     """List tenant transactions with multi-criteria filtering."""
     return await finance_service.list_transactions(
         session=session,
-        tenant_id=str(context.tenant_id),
+        tenant_id=context.tenant_id,
         type_=type,
         status_=status,
         start_date=start_date,
@@ -124,13 +130,13 @@ async def list_financial_transactions(
 @router.post("/transactions", status_code=status.HTTP_201_CREATED, response_model=FinancialTransactionResponse)
 async def create_financial_transaction(
     request: FinancialTransactionCreateRequest,
-    context: TenantContext = Depends(require_permission("business.records.create")),
+    context: TenantContext = Depends(verify_finance_module_permission("business.records.create")),
     session: AsyncSession = Depends(get_db),
 ):
     """Log an income, expense, or rent payment with atomic account balance reconciliation."""
     return await finance_service.create_transaction(
         session=session,
-        tenant_id=str(context.tenant_id),
+        tenant_id=context.tenant_id,
         user_id=context.user_id,
         request=request,
     )
@@ -140,13 +146,13 @@ async def create_financial_transaction(
 async def update_financial_transaction(
     transaction_id: uuid.UUID,
     request: FinancialTransactionUpdateRequest,
-    context: TenantContext = Depends(require_permission("business.records.update")),
+    context: TenantContext = Depends(verify_finance_module_permission("business.records.update")),
     session: AsyncSession = Depends(get_db),
 ):
     """Update a transaction (e.g. Mark as Paid) and reconcile ledger balances atomically."""
     return await finance_service.update_transaction(
         session=session,
-        tenant_id=str(context.tenant_id),
+        tenant_id=context.tenant_id,
         user_id=context.user_id,
         transaction_id=transaction_id,
         request=request,
@@ -163,7 +169,7 @@ async def list_rent_schedules(
     """List all recurring property rent schedules for the tenant."""
     return await finance_service.list_rent_schedules(
         session=session,
-        tenant_id=str(context.tenant_id),
+        tenant_id=context.tenant_id,
         status_=status,
     )
 
@@ -171,13 +177,13 @@ async def list_rent_schedules(
 @router.post("/rent-schedules", status_code=status.HTTP_201_CREATED, response_model=RentScheduleResponse)
 async def create_rent_schedule(
     request: RentScheduleCreateRequest,
-    context: TenantContext = Depends(require_permission("business.records.create")),
+    context: TenantContext = Depends(verify_finance_module_permission("business.records.create")),
     session: AsyncSession = Depends(get_db),
 ):
     """Create a recurring rent schedule for a property unit and lessee."""
     return await finance_service.create_rent_schedule(
         session=session,
-        tenant_id=str(context.tenant_id),
+        tenant_id=context.tenant_id,
         user_id=context.user_id,
         request=request,
     )
@@ -187,13 +193,13 @@ async def create_rent_schedule(
 async def update_rent_schedule(
     schedule_id: uuid.UUID,
     request: RentScheduleUpdateRequest,
-    context: TenantContext = Depends(require_permission("business.records.update")),
+    context: TenantContext = Depends(verify_finance_module_permission("business.records.update")),
     session: AsyncSession = Depends(get_db),
 ):
     """Update property unit rent schedule parameters or status (active/vacant)."""
     return await finance_service.update_rent_schedule(
         session=session,
-        tenant_id=str(context.tenant_id),
+        tenant_id=context.tenant_id,
         user_id=context.user_id,
         schedule_id=schedule_id,
         request=request,
@@ -210,7 +216,7 @@ async def get_financial_summary(
     """Retrieve real-time financial KPIs: Cash Balance, Revenue, Expenses, Burn Rate, and Chart Data."""
     return await finance_service.get_summary(
         session=session,
-        tenant_id=str(context.tenant_id),
+        tenant_id=context.tenant_id,
         target_currency=currency,
     )
 
@@ -218,13 +224,13 @@ async def get_financial_summary(
 # --- WhatsApp Automation Reminders ---
 @router.post("/whatsapp/reminders", response_model=WhatsAppReminderSummaryResponse)
 async def trigger_whatsapp_rent_reminders(
-    context: TenantContext = Depends(require_permission("business.records.create")),
+    context: TenantContext = Depends(verify_finance_module_permission("business.records.create")),
     session: AsyncSession = Depends(get_db),
 ):
     """Scan rent schedules and dispatch automated WhatsApp reminders 3 days before due date."""
     return await finance_service.dispatch_rent_reminders(
         session=session,
-        tenant_id=str(context.tenant_id),
+        tenant_id=context.tenant_id,
         user_id=context.user_id,
     )
 
@@ -238,7 +244,7 @@ async def export_financial_csv(
     """Download the complete financial transaction ledger as a CSV reconciliation report."""
     csv_content = await finance_service.export_csv(
         session=session,
-        tenant_id=str(context.tenant_id),
+        tenant_id=context.tenant_id,
     )
     filename = f"financial_ledger_{context.tenant_id}_{date.today().isoformat()}.csv"
     return Response(

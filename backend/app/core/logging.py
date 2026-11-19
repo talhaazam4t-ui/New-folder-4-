@@ -8,13 +8,14 @@ import sys
 
 import structlog
 from app.config import settings
+from structlog.types import Processor
 
 
 def setup_logging() -> None:
     """Initialize structured logging pipelines."""
     log_level = logging.DEBUG if settings.debug else logging.INFO
 
-    shared_processors = [
+    shared_processors: list[Processor] = [
         structlog.contextvars.merge_contextvars,
         structlog.stdlib.add_logger_name,
         structlog.stdlib.add_log_level,
@@ -25,7 +26,7 @@ def setup_logging() -> None:
     ]
 
     if settings.app_env == "production":
-        processors = shared_processors + [
+        processors: list[Processor] = shared_processors + [
             structlog.processors.JSONRenderer()
         ]
     else:

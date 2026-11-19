@@ -64,7 +64,7 @@ def decode_access_token(token: str) -> Optional[Dict[str, Any]]:
                 token,
                 settings.supabase_jwt_secret,
                 algorithms=[ALGORITHM],
-                options={"verify_aud": False},
+                options={"verify_aud": False, "require_exp": True, "require_sub": True},
             )
             # Normalize claims from Supabase JWT format
             if "sub" in payload and "user_id" not in payload:
@@ -81,7 +81,12 @@ def decode_access_token(token: str) -> Optional[Dict[str, Any]]:
 
     # 2. Fallback to application secret key verification
     try:
-        payload = jwt.decode(token, settings.app_secret_key, algorithms=[ALGORITHM])
+        payload = jwt.decode(
+            token,
+            settings.app_secret_key,
+            algorithms=[ALGORITHM],
+            options={"require_exp": True, "require_sub": True},
+        )
         return payload
     except JWTError:
         return None

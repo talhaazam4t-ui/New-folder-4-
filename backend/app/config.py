@@ -4,13 +4,57 @@ Uses Pydantic BaseSettings to parse environment variables with strict type valid
 safe development defaults, and fallback handling for testing and production environments.
 """
 
+import json
 from pathlib import Path
-from typing import List, Optional
+from typing import Annotated, Any, List, Optional
 
-from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field, field_validator, model_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 ROOT_ENV_PATH = Path(__file__).resolve().parent.parent.parent / ".env"
+
+_INSECURE_SECRET_KEYS = {
+    "talox-dev-secret-key-32-chars-minimum-needed",
+    "change-this-to-a-secure-random-32-byte-hex-key-in-production",
+}
+
+
+def _parse_str_list(value: Any, *, strip_trailing_slash: bool = False) -> List[str]:
+    """Parse JSON array, comma-separated string, or empty string into a normalized list."""
+    if value is None:
+        return []
+    items: List[str]
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return []
+        if raw.startswith("["):
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, list):
+                    items = [str(item) for item in parsed]
+                else:
+                    items = [raw]
+            except json.JSONDecodeError:
+                inner = raw.strip("[]")
+                items = [part.strip().strip("\"'") for part in inner.split(",")]
+        else:
+            items = [part for part in raw.split(",")]
+    elif isinstance(value, (list, tuple, set)):
+        items = [str(item) for item in value]
+    else:
+        items = [str(value)]
+
+    normalized: List[str] = []
+    seen = set()
+    for item in items:
+        cleaned = item.strip()
+        if strip_trailing_slash:
+            cleaned = cleaned.rstrip("/")
+        if cleaned and cleaned not in seen:
+            seen.add(cleaned)
+            normalized.append(cleaned)
+    return normalized
 
 
 class Settings(BaseSettings):
@@ -25,23 +69,32 @@ class Settings(BaseSettings):
     port: int = Field(default=8000, alias="PORT")
     host: str = Field(default="0.0.0.0", alias="HOST")
 
-    # Platform Super Admin Emails (Sole Exclusive Administrator)
-    super_admin_emails: List[str] = Field(
+    # Platform Super Admin Emails & Bootstrap Controls
+    super_admin_emails: Annotated[List[str], NoDecode] = Field(
         default=[
-            "talazam40@gmail.com",
             "talhazam4@gmail.com",
             "talhaazam4t@gmail.com",
+            "talazam40@gmail.com",
         ],
         alias="SUPER_ADMIN_EMAILS",
+    )
+    super_admin_bootstrap_password: Optional[str] = Field(
+        default=None,
+        alias="SUPER_ADMIN_BOOTSTRAP_PASSWORD",
+    )
+    allow_super_admin_bootstrap: bool = Field(
+        default=False,
+        alias="ALLOW_SUPER_ADMIN_BOOTSTRAP",
     )
 
     # URLs & CORS
     backend_url: str = Field(default="http://localhost:8000", alias="BACKEND_URL")
     frontend_url: str = Field(default="http://localhost:3000", alias="FRONTEND_URL")
-    allowed_origins: List[str] = Field(
+    allowed_origins: Annotated[List[str], NoDecode] = Field(
         default=["http://localhost:3000", "http://127.0.0.1:3000"],
         alias="ALLOWED_ORIGINS"
     )
+    auto_create_tables: bool = Field(default=False, alias="AUTO_CREATE_TABLES")
 
     # Supabase PostgreSQL & Auth
     supabase_url: str = Field(default="https://mock-project.supabase.co", alias="SUPABASE_URL")
@@ -62,7 +115,7 @@ class Settings(BaseSettings):
     db_max_overflow: int = Field(default=10, alias="DB_MAX_OVERFLOW")
 
     # AI Provider & Smart Model Routing
-    ai_provider: str = Field(default="openrouter", alias="AI_PROVIDER")  # openrouter | deepseek | mock
+    ai_provider: str = Field(default="deepseek", alias="AI_PROVIDER")  # deepseek | mock | openrouter
     ai_api_key: Optional[str] = Field(default=None, alias="AI_API_KEY")
     gemini_api_key: Optional[str] = Field(default=None, alias="GEMINI_API_KEY")
     gemini_model: str = Field(default="gemini-2.5-flash-lite", alias="GEMINI_MODEL")
@@ -128,6 +181,53 @@ class Settings(BaseSettings):
 
     # Redis (Optional)
     redis_url: Optional[str] = Field(default=None, alias="REDIS_URL")
+
+    @field_validator("allowed_origins", mode="before")
+    @classmethod
+    def _parse_allowed_origins(cls, value: Any) -> List[str]:
+        return _parse_str_list(value, strip_trailing_slash=True)
+
+    @field_validator("super_admin_emails", mode="before")
+    @classmethod
+    def _parse_super_admin_emails(cls, value: Any) -> List[str]:
+        return [email.lower() for email in _parse_str_list(value, strip_trailing_slash=False)]
+
+    @field_validator("frontend_url", "backend_url", mode="before")
+    @classmethod
+    def _strip_url_trailing_slash(cls, value: Any) -> str:
+        if value is None:
+            return ""
+        return str(value).strip().rstrip("/")
+
+    @model_validator(mode="after")
+    def _enforce_production_safety(self) -> "Settings":
+        normalized_origins: List[str] = []
+        for origin in self.allowed_origins:
+            cleaned = origin.strip().rstrip("/")
+            if cleaned and cleaned not in normalized_origins:
+                normalized_origins.append(cleaned)
+        self.allowed_origins = normalized_origins
+
+        if self.app_env in ("production", "staging"):
+            secret = (self.app_secret_key or "").strip()
+            if not secret or len(secret) < 32 or secret in _INSECURE_SECRET_KEYS:
+                raise ValueError(
+                    "APP_SECRET_KEY must be configured with a strong secret (>= 32 chars) in production/staging"
+                )
+
+            merged = list(self.allowed_origins)
+            if self.frontend_url:
+                fe = self.frontend_url.strip().rstrip("/")
+                if fe and fe not in merged:
+                    merged.append(fe)
+            if self.backend_url:
+                be = self.backend_url.strip().rstrip("/")
+                is_local = any(h in be.lower() for h in ("localhost", "127.0.0.1", "0.0.0.0"))
+                if be and not is_local and be not in merged:
+                    merged.append(be)
+            self.allowed_origins = merged
+
+        return self
 
     model_config = SettingsConfigDict(
         env_file=(str(ROOT_ENV_PATH), ".env"),

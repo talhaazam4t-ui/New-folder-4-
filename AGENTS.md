@@ -7,8 +7,9 @@
 - **Project MCP Config**: `.mcp.json` at the repository root scopes the Supabase MCP endpoint to `?project_ref=pmmduhflikdvddzpgwsi`.
 - **Available Plugin MCP Servers**:
   - `supabase_mcp`: Primary database, auth, migrations, advisors, and type generation for `pmmduhflikdvddzpgwsi`.
-  - `google-cloud-developer` (`developer-knowledge`): Official Google Cloud documentation lookup for GCP Always-Free `e2-micro` deployment tasks.
-  - `vercel-plugin` (`vercel`): Connected and authorized under team `teloxtech` (`team_Yp6nyxVunnoE36zh1C83gJ7Y`). Use for managing Vercel deployments, environment variables, domains, and project settings for frontend apps.
+  - `google-cloud-developer` (`developer-knowledge`): Official Google documentation lookup for Google APIs (OAuth / Google Places) when needed. Production hosting runs on Render (`render.yaml`) and Railway (`railway.toml`) behind Cloudflare DNS.
+  - `vercel-plugin` (`vercel`): Available plugin MCP under team `teloxtech` (`team_Yp6nyxVunnoE36zh1C83gJ7Y`) for unrelated/legacy Vercel projects only — **not** used by `teloxtech.stream`, whose Next.js static export (`frontend/out`) is served directly by FastAPI on Render and Railway.
+  - `railway_mcp`: Read/inspect secondary Railway service (`talox-tech-stream`) configured via `railway.toml` + `Dockerfile`. Primary live production (`https://teloxtech.stream`) runs on Render (`render.yaml`) behind Cloudflare DNS-only records.
 
 ## Schema & Security Rules
 

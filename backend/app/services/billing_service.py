@@ -25,7 +25,7 @@ from app.schemas.service import (
     SubscriptionCreateRequest,
     SubscriptionResponse,
 )
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 INDUSTRY_ALIASES = {
@@ -59,24 +59,55 @@ class BillingService:
     """Manages monetization, subscriptions, and financial invoices."""
 
     async def ensure_default_catalog(self, session: AsyncSession) -> None:
-        """Populate default industry-aware services if the catalog table is completely empty."""
-        count_res = await session.execute(select(func.count(Service.id)))
-        if (count_res.scalar() or 0) > 0:
-            return
-        from scripts.seed_services import DEFAULT_SERVICES
+        """Populate and upgrade default industry-aware services in the catalog table."""
+        try:
+            from scripts.seed_services import DEFAULT_SERVICES
+        except ImportError:
+            import sys
+            from pathlib import Path
 
+            for parent_idx in (3, 2):
+                candidate_root = Path(__file__).resolve().parents[parent_idx]
+                if (candidate_root / "scripts" / "seed_services.py").is_file():
+                    root_str = str(candidate_root)
+                    if root_str not in sys.path:
+                        sys.path.insert(0, root_str)
+                    break
+            from scripts.seed_services import DEFAULT_SERVICES
+
+        res = await session.execute(select(Service))
+        existing_by_slug = {srv.slug: srv for srv in res.scalars().all()}
+
+        changed = False
         for item in DEFAULT_SERVICES:
-            session.add(
-                Service(
-                    name=item["name"],
-                    slug=item["slug"],
-                    category=item["category"],
-                    description=item["description"],
-                    configuration_schema=item["configuration_schema"],
-                    active=True,
+            srv = existing_by_slug.get(item["slug"])
+            if not srv:
+                session.add(
+                    Service(
+                        name=item["name"],
+                        slug=item["slug"],
+                        category=item["category"],
+                        description=item["description"],
+                        configuration_schema=item["configuration_schema"],
+                        active=True,
+                    )
                 )
-            )
-        await session.commit()
+                changed = True
+            else:
+                schema = srv.configuration_schema or {}
+                needs_upgrade = any(
+                    key not in schema
+                    for key in ("packages", "industries", "industry_profiles")
+                )
+                if needs_upgrade:
+                    srv.name = item["name"]
+                    srv.category = item["category"]
+                    srv.description = item["description"]
+                    srv.configuration_schema = item["configuration_schema"]
+                    changed = True
+
+        if changed:
+            await session.commit()
 
     async def list_services(
         self,

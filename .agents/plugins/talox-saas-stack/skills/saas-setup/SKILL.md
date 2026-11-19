@@ -10,13 +10,20 @@ This runbook guides multi-tenant provisioning, database migration syncing, and e
 
 ## 1. Database Migrations
 - Check existing Supabase migrations in `supabase/migrations/`.
-- To apply migrations locally or remotely:
+- For local SQLite schema initialization & catalog/agent seeding:
   ```bash
-  npx supabase db push
+  python scripts/initialize_db.py
+  python scripts/seed_services.py
+  ```
+- To initialize/link Supabase CLI and apply migrations remotely (use `npx.cmd` on Windows PowerShell):
+  ```bash
+  npx.cmd supabase init
+  npx.cmd supabase link --project-ref pmmduhflikdvddzpgwsi
+  npx.cmd supabase db push
   ```
 - To inspect schema drift:
   ```bash
-  npx supabase db diff
+  npx.cmd supabase db diff
   ```
 
 ## 2. Multi-Tenant Onboarding Flow
@@ -31,5 +38,5 @@ This runbook guides multi-tenant provisioning, database migration syncing, and e
   ```
 - Start Backend:
   ```bash
-  uvicorn backend.app.main:app --reload --port 8000
+  python -m uvicorn app.main:app --app-dir backend --reload --port 8000
   ```

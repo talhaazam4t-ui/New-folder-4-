@@ -146,6 +146,8 @@ class TaskExecutor:
                 prompt=prompt,
                 tenant_id=str(tenant_id),
             )
+            if not ai_res.success:
+                raise RuntimeError(ai_res.error_message or ai_res.content)
             return {
                 "result": ai_res.content,
                 "model": ai_res.model,

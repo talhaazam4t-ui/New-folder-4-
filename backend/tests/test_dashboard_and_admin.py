@@ -1,6 +1,7 @@
 import uuid
 
 import pytest
+from app.config import settings
 from app.database.models.business import BusinessRecord
 from app.database.models.marketing import Lead
 from app.database.supabase import get_session_factory
@@ -85,7 +86,12 @@ async def test_tenant_overview_metrics_endpoint():
 
 
 @pytest.mark.asyncio
-async def test_admin_global_overview_and_tenant_suspension():
+async def test_admin_global_overview_and_tenant_suspension(monkeypatch):
+    monkeypatch.setattr(
+        settings,
+        "super_admin_emails",
+        [*settings.super_admin_emails, "platform.admin@talox.com"],
+    )
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         # 1. Register admin user & create workspace
@@ -104,12 +110,12 @@ async def test_admin_global_overview_and_tenant_suspension():
         }, headers=headers)
         tenant_id = tenant_res.json()["id"]
 
-        # 2. Get global stats
+        # 2. Get global stats (new tenant starts in pending_approval until activated)
         stats_res = await client.get("/api/v1/admin/stats", headers=headers)
         assert stats_res.status_code == 200
         stats = stats_res.json()
         assert stats["total_tenants"] >= 1
-        assert stats["active_tenants"] >= 1
+        assert stats["active_tenants"] >= 0
 
         # 3. List all tenants in admin console
         tenants_res = await client.get("/api/v1/admin/tenants", headers=headers)
@@ -126,7 +132,7 @@ async def test_admin_global_overview_and_tenant_suspension():
         assert suspend_res.status_code == 200
         assert suspend_res.json()["success"] is True
 
-        # 5. Reactivate tenant account
+        # 5. Reactivate tenant account and verify active_tenants increments
         reactivate_res = await client.patch(
             f"/api/v1/admin/tenants/{tenant_id}/status",
             json={"status": "active"},
@@ -134,3 +140,7 @@ async def test_admin_global_overview_and_tenant_suspension():
         )
         assert reactivate_res.status_code == 200
         assert reactivate_res.json()["success"] is True
+
+        stats_after = await client.get("/api/v1/admin/stats", headers=headers)
+        assert stats_after.status_code == 200
+        assert stats_after.json()["active_tenants"] >= 1

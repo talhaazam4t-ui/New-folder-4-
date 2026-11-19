@@ -1,12 +1,18 @@
 import pytest
 from app.automation.budget_manager import budget_manager
+from app.config import settings
 from app.main import app
 from httpx import ASGITransport, AsyncClient
 
 
 @pytest.mark.asyncio
-async def test_executive_analytics_usage_audit_logs_and_admin_circuit_reset():
+async def test_executive_analytics_usage_audit_logs_and_admin_circuit_reset(monkeypatch):
     """Verify cross-engine analytics overview, AI token usage telemetry, audit logs, users/me, subscriptions, and admin circuit reset."""
+    monkeypatch.setattr(
+        settings,
+        "super_admin_emails",
+        [*settings.super_admin_emails, "exec@enterpriseanalytics.io"],
+    )
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         reg = await client.post("/api/v1/auth/register", json={

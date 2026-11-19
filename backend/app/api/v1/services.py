@@ -42,7 +42,11 @@ async def list_supported_industries(
         for srv in all_services:
             schema = srv.configuration_schema or {}
             supported = schema.get("industries", [])
-            if not supported or ind in supported:
+            packages = schema.get("packages", [])
+            # Skip legacy un-packaged rows when industry-aware catalog rows exist
+            if not supported or not packages:
+                continue
+            if ind in supported:
                 profile = (schema.get("industry_profiles") or {}).get(ind, {})
                 ind_services.append({
                     "id": str(srv.id),

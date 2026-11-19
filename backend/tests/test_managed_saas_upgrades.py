@@ -13,6 +13,7 @@ import uuid
 
 import pytest
 from app.automation.budget_manager import budget_manager
+from app.config import settings
 from app.database.models.automation import Integration
 from app.database.supabase import get_session_factory
 from app.main import app
@@ -21,8 +22,13 @@ from sqlalchemy import select
 
 
 @pytest.mark.asyncio
-async def test_owner_vs_client_permission_separation():
+async def test_owner_vs_client_permission_separation(monkeypatch):
     """Verify that a Client who owns their own tenant cannot access Super Admin or Agent Config endpoints."""
+    monkeypatch.setattr(
+        settings,
+        "super_admin_emails",
+        [*settings.super_admin_emails, "owner@talox.io"],
+    )
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         # 1. Register Platform Super Admin (Owner)
@@ -92,10 +98,15 @@ async def test_owner_vs_client_permission_separation():
 
 
 @pytest.mark.asyncio
-async def test_industry_catalog_onboarding_encryption_and_managed_dashboard_flow():
+async def test_industry_catalog_onboarding_encryption_and_managed_dashboard_flow(monkeypatch):
     """Verify dynamic 4-industry catalog, one-click credential connection, encryption at rest,
     automation gating, Google Maps lead gen deduplication, outreach, booking, and Client Dashboard Viewer.
     """
+    monkeypatch.setattr(
+        settings,
+        "super_admin_emails",
+        [*settings.super_admin_emails, "owner@talox.io"],
+    )
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         # 1. Register Owner and Client

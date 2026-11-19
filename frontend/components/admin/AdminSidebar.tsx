@@ -6,11 +6,13 @@ import {
   Building2,
   Cpu,
   Layers,
-  CircleDollarSign,
+  Megaphone,
+  Link2,
   CheckCheck,
   Activity,
   LogOut,
   Users,
+  Terminal,
 } from "lucide-react";
 import { clearSession, getCurrentUser } from "@/lib/auth";
 
@@ -22,17 +24,19 @@ interface AdminSidebarProps {
 
 export function AdminSidebar({
   currentPath = "/admin",
-  activeTab = "platform",
+  activeTab,
   onTabChange,
 }: AdminSidebarProps) {
+  const effectiveTab = activeTab !== undefined ? activeTab : currentPath === "/agents" ? "" : "platform";
   const adminItems = [
     { id: "platform", label: "Global Overview", icon: ShieldAlert },
     { id: "tenants", label: "Tenant Directory", icon: Building2 },
     { id: "services", label: "Service Catalog", icon: Layers },
     { id: "agents", label: "Agent Controls", icon: Cpu },
-    { id: "financial", label: "Financial Ledger", icon: CircleDollarSign },
+    { id: "leads", label: "Lead Gen & Outreach", icon: Megaphone },
+    { id: "integrations", label: "Integrations & OAuth", icon: Link2 },
     { id: "approvals", label: "Approval Center", icon: CheckCheck },
-    { id: "system", label: "System Health", icon: Activity },
+    { id: "monitoring", label: "System Health & Logs", icon: Activity },
   ];
 
   const handleAdminLogout = () => {
@@ -54,11 +58,18 @@ export function AdminSidebar({
           <nav className="space-y-1 mt-4">
             {adminItems.map((item) => {
               const Icon = item.icon;
-              const isActive = activeTab === item.id;
+              const isActive = currentPath === "/admin" && effectiveTab === item.id;
               return (
                 <button
                   key={item.id}
-                  onClick={() => onTabChange && onTabChange(item.id)}
+                  onClick={() => {
+                    if (onTabChange) {
+                      onTabChange(item.id);
+                    } else {
+                      window.location.href =
+                        item.id === "platform" ? "/admin" : `/admin?tab=${item.id}`;
+                    }
+                  }}
                   type="button"
                   className={`w-full text-left flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition ${
                     isActive
@@ -71,6 +82,24 @@ export function AdminSidebar({
                 </button>
               );
             })}
+
+            <div className="pt-2 mt-2 border-t border-slate-800/80">
+              <a
+                href="/agents"
+                className={`w-full flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition ${
+                  currentPath === "/agents"
+                    ? "bg-slate-800 text-white font-semibold border-l-2 border-emerald-500"
+                    : "text-slate-400 hover:bg-slate-900 hover:text-slate-200"
+                }`}
+              >
+                <Terminal
+                  className={`h-4 w-4 ${
+                    currentPath === "/agents" ? "text-emerald-400" : "text-slate-500"
+                  }`}
+                />
+                <span>Agent Orchestrator</span>
+              </a>
+            </div>
           </nav>
         </div>
 

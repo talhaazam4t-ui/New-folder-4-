@@ -15,8 +15,8 @@ class FinancialAccount(Base, TimestampMixin):
     __tablename__ = "financial_accounts"
 
     id: Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[str] = mapped_column(
-        String(255),
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(),
         ForeignKey("tenants.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
@@ -30,8 +30,8 @@ class FinancialTransaction(Base, TimestampMixin):
     __tablename__ = "financial_transactions"
 
     id: Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[str] = mapped_column(
-        String(255),
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(),
         ForeignKey("tenants.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
@@ -58,8 +58,8 @@ class RentSchedule(Base, TimestampMixin):
     __tablename__ = "rent_schedules"
 
     id: Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[str] = mapped_column(
-        String(255),
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(),
         ForeignKey("tenants.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
@@ -84,8 +84,8 @@ class FinancialAuditLog(Base):
         nullable=True,
         index=True,
     )
-    tenant_id: Mapped[str] = mapped_column(
-        String(255),
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(),
         ForeignKey("tenants.id", ondelete="CASCADE"),
         nullable=False,
         index=True,

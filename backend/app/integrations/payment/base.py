@@ -4,9 +4,12 @@ Defines the contract for payment rails (Manual/Bank Transfer, Stripe, Local Paki
 ensuring zero tight coupling to any single gateway.
 """
 
+import hashlib
+import hmac
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Optional
 
+from app.config import settings
 from pydantic import BaseModel
 
 
@@ -77,12 +80,12 @@ class ManualPaymentProvider(PaymentProvider):
         payload: bytes,
         signature: str,
     ) -> bool:
-        # Manual provider does not rely on automated webhooks
-        return True
+        # Manual provider does not support automated webhooks
+        return False
 
 
 class MockStripeProvider(PaymentProvider):
-    """Mock/Sandbox Stripe Adapter for unit testing and local development."""
+    """Stripe Adapter with HMAC-SHA256 webhook verification and dev/test sandbox fallback."""
 
     async def create_payment_intent(
         self,
@@ -106,7 +109,32 @@ class MockStripeProvider(PaymentProvider):
         payload: bytes,
         signature: str,
     ) -> bool:
-        return signature == "valid_test_signature"
+        if not signature:
+            return False
+
+        secret = (settings.payment_webhook_secret or "").strip()
+        if secret and secret != "your-payment-webhook-secret":
+            timestamp: Optional[str] = None
+            v1_signatures = []
+            for part in signature.split(","):
+                key, _, val = part.strip().partition("=")
+                if key == "t" and val:
+                    timestamp = val
+                elif key == "v1" and val:
+                    v1_signatures.append(val)
+            if not timestamp or not v1_signatures:
+                return False
+            signed_payload = f"{timestamp}.".encode("utf-8") + payload
+            expected_sig = hmac.new(
+                secret.encode("utf-8"),
+                signed_payload,
+                hashlib.sha256,
+            ).hexdigest()
+            return any(hmac.compare_digest(sig, expected_sig) for sig in v1_signatures)
+
+        if settings.app_env in ("development", "test"):
+            return signature == "valid_test_signature"
+        return False
 
 
 def get_payment_provider(provider_type: str = "manual") -> PaymentProvider:

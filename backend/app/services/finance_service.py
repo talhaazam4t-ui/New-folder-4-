@@ -12,7 +12,7 @@ import csv
 import io
 import uuid
 from datetime import date, datetime, timedelta, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 
 from app.core.exceptions import ResourceNotFoundError
 from app.database.models.finance import (
@@ -40,6 +40,8 @@ from app.schemas.finance import (
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+FINANCE_SERVICE_SLUGS = ("business-financial-tracking", "business-finance")
+
 
 class FinanceService:
     """Dedicated domain service for multi-tenant financial accounts and rent tracking."""
@@ -47,43 +49,57 @@ class FinanceService:
     def __init__(self):
         self.wa_client = WhatsAppCloudClient()
 
+    @staticmethod
+    def _coerce_tenant_id(tenant_id: Union[uuid.UUID, str]) -> uuid.UUID:
+        if isinstance(tenant_id, uuid.UUID):
+            return tenant_id
+        return uuid.UUID(str(tenant_id))
+
     # --- Module Active Check ---
-    async def is_module_active(self, session: AsyncSession, tenant_id: str) -> bool:
-        """Check if tenant has an active subscription or if module is globally toggled in Operations Console."""
+    async def is_module_active(self, session: AsyncSession, tenant_id: Union[uuid.UUID, str]) -> bool:
+        """Check if tenant has an active finance subscription and the catalog module is enabled."""
+        tenant_uuid = self._coerce_tenant_id(tenant_id)
+
         # 1. Global Service Catalog Toggle from Admin Operations Console
-        srv_q = select(Service).where(Service.slug == "business-finance")
-        srv = (await session.execute(srv_q)).scalar_one_or_none()
-        if srv is not None and not srv.active:
+        srv_q = select(Service).where(Service.slug.in_(FINANCE_SERVICE_SLUGS))
+        services = list((await session.execute(srv_q)).scalars().all())
+        if not services:
             return False
 
-        # 2. Tenant-Specific Service Subscription Status
+        # If canonical slug exists, respect its active toggle; otherwise check any matching active service
+        canonical_srv = next((s for s in services if s.slug == "business-financial-tracking"), None)
+        if canonical_srv is not None and not canonical_srv.active:
+            return False
+        if not any(s.active for s in services):
+            return False
+
+        # 2. Tenant-Specific Active Service Subscription Check
         sub_q = (
             select(ServiceSubscription)
             .join(Service, ServiceSubscription.service_id == Service.id)
             .where(
-                ServiceSubscription.tenant_id == tenant_id,
-                Service.slug == "business-finance",
+                ServiceSubscription.tenant_id == tenant_uuid,
+                Service.slug.in_(FINANCE_SERVICE_SLUGS),
+                Service.active == True,  # noqa: E712
+                ServiceSubscription.status.in_(("active", "trialing")),
             )
         )
         res = await session.execute(sub_q)
-        sub = res.scalar_one_or_none()
-        if sub is not None and sub.status in ("suspended", "canceled"):
-            return False
-
-        return True
+        return res.scalars().first() is not None
 
     # --- Accounts ---
     async def create_account(
         self,
         session: AsyncSession,
-        tenant_id: str,
+        tenant_id: Union[uuid.UUID, str],
         user_id: Optional[uuid.UUID],
         request: FinancialAccountCreateRequest,
     ) -> FinancialAccountResponse:
         """Create a new financial account (Bank, Cash, NayaPay, Stripe) and audit."""
+        tenant_uuid = self._coerce_tenant_id(tenant_id)
         account = FinancialAccount(
             id=uuid.uuid4(),
-            tenant_id=tenant_id,
+            tenant_id=tenant_uuid,
             name=request.name.strip(),
             currency=request.currency.upper(),
             current_balance=float(request.current_balance),
@@ -93,13 +109,13 @@ class FinanceService:
         audit = FinancialAuditLog(
             id=uuid.uuid4(),
             user_id=user_id,
-            tenant_id=tenant_id,
+            tenant_id=tenant_uuid,
             action="CREATE_ACCOUNT",
             diff_json={
                 "account_id": str(account.id),
                 "name": account.name,
                 "currency": account.currency,
-                "initial_balance": account.current_balance,
+                "initial_balance": float(account.current_balance),
             },
         )
         session.add(audit)
@@ -108,7 +124,7 @@ class FinanceService:
 
         return FinancialAccountResponse(
             id=account.id,
-            tenant_id=account.tenant_id,
+            tenant_id=str(account.tenant_id),
             name=account.name,
             currency=account.currency,
             current_balance=float(account.current_balance),
@@ -119,16 +135,17 @@ class FinanceService:
     async def list_accounts(
         self,
         session: AsyncSession,
-        tenant_id: str,
+        tenant_id: Union[uuid.UUID, str],
     ) -> List[FinancialAccountResponse]:
         """List all financial accounts for a tenant."""
-        query = select(FinancialAccount).where(FinancialAccount.tenant_id == tenant_id).order_by(FinancialAccount.name)
+        tenant_uuid = self._coerce_tenant_id(tenant_id)
+        query = select(FinancialAccount).where(FinancialAccount.tenant_id == tenant_uuid).order_by(FinancialAccount.name)
         res = await session.execute(query)
         rows = res.scalars().all()
         return [
             FinancialAccountResponse(
                 id=a.id,
-                tenant_id=a.tenant_id,
+                tenant_id=str(a.tenant_id),
                 name=a.name,
                 currency=a.currency,
                 current_balance=float(a.current_balance),
@@ -142,15 +159,16 @@ class FinanceService:
     async def create_transaction(
         self,
         session: AsyncSession,
-        tenant_id: str,
+        tenant_id: Union[uuid.UUID, str],
         user_id: Optional[uuid.UUID],
         request: FinancialTransactionCreateRequest,
     ) -> FinancialTransactionResponse:
         """Log a new transaction and atomically reconcile current_balance if paid."""
+        tenant_uuid = self._coerce_tenant_id(tenant_id)
         tx_date = request.transaction_date or date.today()
         tx = FinancialTransaction(
             id=uuid.uuid4(),
-            tenant_id=tenant_id,
+            tenant_id=tenant_uuid,
             account_id=request.account_id,
             type=request.type,
             category=request.category.strip(),
@@ -171,7 +189,7 @@ class FinanceService:
                 select(FinancialAccount)
                 .where(
                     FinancialAccount.id == request.account_id,
-                    FinancialAccount.tenant_id == tenant_id,
+                    FinancialAccount.tenant_id == tenant_uuid,
                 )
                 .with_for_update()
             )
@@ -179,19 +197,19 @@ class FinanceService:
             account = acc_res.scalar_one_or_none()
             if account:
                 if request.type in ("income", "rent"):
-                    account.current_balance += float(request.amount)
+                    account.current_balance = float(account.current_balance) + float(request.amount)
                 elif request.type == "expense":
-                    account.current_balance -= float(request.amount)
+                    account.current_balance = float(account.current_balance) - float(request.amount)
 
         audit = FinancialAuditLog(
             id=uuid.uuid4(),
             user_id=user_id,
-            tenant_id=tenant_id,
+            tenant_id=tenant_uuid,
             action="CREATE_TRANSACTION",
             diff_json={
                 "transaction_id": str(tx.id),
                 "type": tx.type,
-                "amount": tx.amount,
+                "amount": float(tx.amount),
                 "currency": tx.currency,
                 "status": tx.status,
                 "account_id": str(tx.account_id) if tx.account_id else None,
@@ -207,24 +225,25 @@ class FinanceService:
     async def update_transaction(
         self,
         session: AsyncSession,
-        tenant_id: str,
+        tenant_id: Union[uuid.UUID, str],
         user_id: Optional[uuid.UUID],
         transaction_id: uuid.UUID,
         request: FinancialTransactionUpdateRequest,
     ) -> FinancialTransactionResponse:
         """Update transaction (e.g. mark as paid) and atomically adjust ledger balance."""
+        tenant_uuid = self._coerce_tenant_id(tenant_id)
         query = (
             select(FinancialTransaction)
             .where(
                 FinancialTransaction.id == transaction_id,
-                FinancialTransaction.tenant_id == tenant_id,
+                FinancialTransaction.tenant_id == tenant_uuid,
             )
             .with_for_update()
         )
         res = await session.execute(query)
         tx = res.scalar_one_or_none()
         if not tx:
-            raise ResourceNotFoundError(f"Financial transaction '{transaction_id}' not found")
+            raise ResourceNotFoundError("FinancialTransaction", str(transaction_id))
 
         old_status = tx.status
         old_amount = float(tx.amount)
@@ -238,7 +257,7 @@ class FinanceService:
                 select(FinancialAccount)
                 .where(
                     FinancialAccount.id == target_account_id,
-                    FinancialAccount.tenant_id == tenant_id,
+                    FinancialAccount.tenant_id == tenant_uuid,
                 )
                 .with_for_update()
             )
@@ -246,19 +265,21 @@ class FinanceService:
             account = acc_res.scalar_one_or_none()
 
             if account:
+                bal = float(account.current_balance)
                 # If transaction was already paid, reverse old amount effect
                 if old_status == "paid":
                     if tx.type in ("income", "rent"):
-                        account.current_balance -= old_amount
+                        bal -= old_amount
                     elif tx.type == "expense":
-                        account.current_balance += old_amount
+                        bal += old_amount
 
                 # If new status is paid, apply new amount effect
                 if new_status == "paid":
                     if tx.type in ("income", "rent"):
-                        account.current_balance += new_amount
+                        bal += new_amount
                     elif tx.type == "expense":
-                        account.current_balance -= new_amount
+                        bal -= new_amount
+                account.current_balance = bal
 
         # Apply fields
         if request.status:
@@ -279,14 +300,14 @@ class FinanceService:
         audit = FinancialAuditLog(
             id=uuid.uuid4(),
             user_id=user_id,
-            tenant_id=tenant_id,
+            tenant_id=tenant_uuid,
             action="UPDATE_TRANSACTION",
             diff_json={
                 "transaction_id": str(tx.id),
                 "old_status": old_status,
                 "new_status": tx.status,
-                "old_amount": old_amount,
-                "new_amount": tx.amount,
+                "old_amount": float(old_amount),
+                "new_amount": float(tx.amount),
             },
         )
         session.add(audit)
@@ -298,7 +319,7 @@ class FinanceService:
     async def list_transactions(
         self,
         session: AsyncSession,
-        tenant_id: str,
+        tenant_id: Union[uuid.UUID, str],
         type_: Optional[str] = None,
         status_: Optional[str] = None,
         start_date: Optional[date] = None,
@@ -307,7 +328,8 @@ class FinanceService:
         offset: int = 0,
     ) -> List[FinancialTransactionResponse]:
         """List tenant transactions with multi-criteria filtering."""
-        query = select(FinancialTransaction).where(FinancialTransaction.tenant_id == tenant_id)
+        tenant_uuid = self._coerce_tenant_id(tenant_id)
+        query = select(FinancialTransaction).where(FinancialTransaction.tenant_id == tenant_uuid)
 
         if type_:
             query = query.where(FinancialTransaction.type == type_)
@@ -327,14 +349,15 @@ class FinanceService:
     async def create_rent_schedule(
         self,
         session: AsyncSession,
-        tenant_id: str,
+        tenant_id: Union[uuid.UUID, str],
         user_id: Optional[uuid.UUID],
         request: RentScheduleCreateRequest,
     ) -> RentScheduleResponse:
         """Create a recurring property rent schedule for a client lessee."""
+        tenant_uuid = self._coerce_tenant_id(tenant_id)
         schedule = RentSchedule(
             id=uuid.uuid4(),
-            tenant_id=tenant_id,
+            tenant_id=tenant_uuid,
             property_unit=request.property_unit.strip(),
             lessee_name=request.lessee_name.strip(),
             lessee_whatsapp=request.lessee_whatsapp.strip(),
@@ -349,13 +372,13 @@ class FinanceService:
         audit = FinancialAuditLog(
             id=uuid.uuid4(),
             user_id=user_id,
-            tenant_id=tenant_id,
+            tenant_id=tenant_uuid,
             action="CREATE_RENT_SCHEDULE",
             diff_json={
                 "schedule_id": str(schedule.id),
                 "property_unit": schedule.property_unit,
                 "lessee_name": schedule.lessee_name,
-                "monthly_rent": schedule.monthly_rent,
+                "monthly_rent": float(schedule.monthly_rent),
             },
         )
         session.add(audit)
@@ -367,11 +390,12 @@ class FinanceService:
     async def list_rent_schedules(
         self,
         session: AsyncSession,
-        tenant_id: str,
+        tenant_id: Union[uuid.UUID, str],
         status_: Optional[str] = None,
     ) -> List[RentScheduleResponse]:
         """List rent schedules for tenant properties."""
-        query = select(RentSchedule).where(RentSchedule.tenant_id == tenant_id)
+        tenant_uuid = self._coerce_tenant_id(tenant_id)
+        query = select(RentSchedule).where(RentSchedule.tenant_id == tenant_uuid)
         if status_:
             query = query.where(RentSchedule.status == status_)
         query = query.order_by(RentSchedule.property_unit)
@@ -382,20 +406,21 @@ class FinanceService:
     async def update_rent_schedule(
         self,
         session: AsyncSession,
-        tenant_id: str,
+        tenant_id: Union[uuid.UUID, str],
         user_id: Optional[uuid.UUID],
         schedule_id: uuid.UUID,
         request: RentScheduleUpdateRequest,
     ) -> RentScheduleResponse:
         """Update property unit rent schedule parameters."""
+        tenant_uuid = self._coerce_tenant_id(tenant_id)
         query = select(RentSchedule).where(
             RentSchedule.id == schedule_id,
-            RentSchedule.tenant_id == tenant_id,
+            RentSchedule.tenant_id == tenant_uuid,
         )
         res = await session.execute(query)
         schedule = res.scalar_one_or_none()
         if not schedule:
-            raise ResourceNotFoundError(f"Rent schedule '{schedule_id}' not found")
+            raise ResourceNotFoundError("RentSchedule", str(schedule_id))
 
         if request.property_unit is not None:
             schedule.property_unit = request.property_unit
@@ -423,12 +448,14 @@ class FinanceService:
     async def get_summary(
         self,
         session: AsyncSession,
-        tenant_id: str,
+        tenant_id: Union[uuid.UUID, str],
         target_currency: str = "USD",
     ) -> FinancialSummaryResponse:
         """Calculate real-time KPIs: Cash Balance, Revenue, Expenses, Burn Rate, and Chart Data."""
+        tenant_uuid = self._coerce_tenant_id(tenant_id)
+
         # 1. Accounts Total Balance & per-currency balances
-        accounts_query = select(FinancialAccount).where(FinancialAccount.tenant_id == tenant_id)
+        accounts_query = select(FinancialAccount).where(FinancialAccount.tenant_id == tenant_uuid)
         acc_res = await session.execute(accounts_query)
         accounts = acc_res.scalars().all()
 
@@ -446,7 +473,7 @@ class FinanceService:
 
         # 3. Monthly Revenue (paid income + paid rent in last 30 days)
         rev_query = select(func.coalesce(func.sum(FinancialTransaction.amount), 0.0)).where(
-            FinancialTransaction.tenant_id == tenant_id,
+            FinancialTransaction.tenant_id == tenant_uuid,
             FinancialTransaction.status == "paid",
             FinancialTransaction.type.in_(["income", "rent"]),
             FinancialTransaction.transaction_date >= thirty_days_ago,
@@ -455,7 +482,7 @@ class FinanceService:
 
         # 4. Monthly Expenses
         exp_query = select(func.coalesce(func.sum(FinancialTransaction.amount), 0.0)).where(
-            FinancialTransaction.tenant_id == tenant_id,
+            FinancialTransaction.tenant_id == tenant_uuid,
             FinancialTransaction.status == "paid",
             FinancialTransaction.type == "expense",
             FinancialTransaction.transaction_date >= thirty_days_ago,
@@ -464,7 +491,7 @@ class FinanceService:
 
         # 5. Accounts Receivable (pending/overdue rent and invoices)
         ar_query = select(func.coalesce(func.sum(FinancialTransaction.amount), 0.0)).where(
-            FinancialTransaction.tenant_id == tenant_id,
+            FinancialTransaction.tenant_id == tenant_uuid,
             FinancialTransaction.status.in_(["pending", "overdue"]),
             FinancialTransaction.type.in_(["income", "rent"]),
         )
@@ -472,14 +499,14 @@ class FinanceService:
 
         # 6. Rent counts
         pending_count_q = select(func.count(FinancialTransaction.id)).where(
-            FinancialTransaction.tenant_id == tenant_id,
+            FinancialTransaction.tenant_id == tenant_uuid,
             FinancialTransaction.type == "rent",
             FinancialTransaction.status == "pending",
         )
         pending_rent_count = int((await session.execute(pending_count_q)).scalar() or 0)
 
         overdue_count_q = select(func.count(FinancialTransaction.id)).where(
-            FinancialTransaction.tenant_id == tenant_id,
+            FinancialTransaction.tenant_id == tenant_uuid,
             FinancialTransaction.type == "rent",
             FinancialTransaction.status == "overdue",
         )
@@ -497,7 +524,7 @@ class FinanceService:
                 m_end = date(m_date.year, m_date.month + 1, 1) - timedelta(days=1)
 
             inc_q = select(func.coalesce(func.sum(FinancialTransaction.amount), 0.0)).where(
-                FinancialTransaction.tenant_id == tenant_id,
+                FinancialTransaction.tenant_id == tenant_uuid,
                 FinancialTransaction.status == "paid",
                 FinancialTransaction.type.in_(["income", "rent"]),
                 FinancialTransaction.transaction_date >= m_start,
@@ -506,7 +533,7 @@ class FinanceService:
             m_inc = float((await session.execute(inc_q)).scalar() or 0.0)
 
             exp_m_q = select(func.coalesce(func.sum(FinancialTransaction.amount), 0.0)).where(
-                FinancialTransaction.tenant_id == tenant_id,
+                FinancialTransaction.tenant_id == tenant_uuid,
                 FinancialTransaction.status == "paid",
                 FinancialTransaction.type == "expense",
                 FinancialTransaction.transaction_date >= m_start,
@@ -541,23 +568,23 @@ class FinanceService:
     async def dispatch_rent_reminders(
         self,
         session: AsyncSession,
-        tenant_id: str,
+        tenant_id: Union[uuid.UUID, str],
         user_id: Optional[uuid.UUID] = None,
     ) -> WhatsAppReminderSummaryResponse:
         """Scan rent schedules and overdue transactions, dispatching automated WhatsApp reminders."""
+        tenant_uuid = self._coerce_tenant_id(tenant_id)
         today = date.today()
         results: List[WhatsAppReminderResult] = []
 
         # 1. Scan active rent schedules with auto_remind_whatsapp enabled
         schedules_q = select(RentSchedule).where(
-            RentSchedule.tenant_id == tenant_id,
+            RentSchedule.tenant_id == tenant_uuid,
             RentSchedule.status == "active",
             RentSchedule.auto_remind_whatsapp == True,  # noqa: E712
         )
         schedules = (await session.execute(schedules_q)).scalars().all()
 
         for s in schedules:
-            # Determine due date for this month
             try:
                 current_due = date(today.year, today.month, min(s.billing_day, 28))
             except ValueError:
@@ -565,7 +592,6 @@ class FinanceService:
 
             days_diff = (current_due - today).days
 
-            # Send reminder if 3 days before or on due date, or overdue within the month
             if -5 <= days_diff <= 3:
                 msg = (
                     f"Assalam o Alaikum {s.lessee_name},\n\n"
@@ -576,7 +602,7 @@ class FinanceService:
                     f"— Platform Finance Team (Teloxtech)"
                 )
                 wa_res = await self.wa_client.send_text_message(
-                    tenant_id=tenant_id,
+                    tenant_id=str(tenant_uuid),
                     to_phone=s.lessee_whatsapp,
                     message_body=msg,
                 )
@@ -584,7 +610,7 @@ class FinanceService:
                 audit = FinancialAuditLog(
                     id=uuid.uuid4(),
                     user_id=user_id,
-                    tenant_id=tenant_id,
+                    tenant_id=tenant_uuid,
                     action="WHATSAPP_RENT_REMINDER_SENT",
                     diff_json={
                         "schedule_id": str(s.id),
@@ -612,14 +638,13 @@ class FinanceService:
 
         # 2. Also scan any pending/overdue rent transactions
         tx_q = select(FinancialTransaction).where(
-            FinancialTransaction.tenant_id == tenant_id,
+            FinancialTransaction.tenant_id == tenant_uuid,
             FinancialTransaction.type == "rent",
             FinancialTransaction.status.in_(["pending", "overdue"]),
         )
         tx_rows = (await session.execute(tx_q)).scalars().all()
         for t in tx_rows:
             if t.due_date:
-                # Find matching lessee phone if possible
                 results.append(
                     WhatsAppReminderResult(
                         transaction_id=str(t.id),
@@ -644,7 +669,7 @@ class FinanceService:
     async def export_csv(
         self,
         session: AsyncSession,
-        tenant_id: str,
+        tenant_id: Union[uuid.UUID, str],
     ) -> str:
         """Generate CSV export of the financial ledger."""
         transactions = await self.list_transactions(session, tenant_id, limit=5000)
@@ -686,7 +711,7 @@ class FinanceService:
     def _to_tx_response(self, tx: FinancialTransaction) -> FinancialTransactionResponse:
         return FinancialTransactionResponse(
             id=tx.id,
-            tenant_id=tx.tenant_id,
+            tenant_id=str(tx.tenant_id),
             account_id=tx.account_id,
             type=tx.type,
             category=tx.category,
@@ -705,7 +730,7 @@ class FinanceService:
     def _to_schedule_response(self, s: RentSchedule) -> RentScheduleResponse:
         return RentScheduleResponse(
             id=s.id,
-            tenant_id=s.tenant_id,
+            tenant_id=str(s.tenant_id),
             property_unit=s.property_unit,
             lessee_name=s.lessee_name,
             lessee_whatsapp=s.lessee_whatsapp,

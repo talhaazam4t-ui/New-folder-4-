@@ -25,6 +25,7 @@ from app.agents.researcher_agent import researcher_agent
 from app.agents.reviewer_agent import reviewer_agent
 from app.automation.approval_manager import approval_manager
 from app.automation.budget_manager import budget_manager
+from app.core.exceptions import TaloxException
 from app.database.models.agent import AgentExecution, AgentTask
 from app.database.models.automation import UsageRecord
 from app.schemas.agent import (
@@ -130,24 +131,48 @@ class MasterOrchestratorAgent(BaseAgent):
         else:
             pipeline = [planner_agent, target_agent, reviewer_agent]
 
-        for stage_agent in pipeline:
-            stage_res = await stage_agent.execute_step(
-                tenant_id=tenant_id,
-                objective=request.objective,
-                context_data=ctx,
-            )
-            stages.append(stage_res)
-            ctx[f"{stage_agent.name}_output"] = stage_res.output
+        try:
+            for stage_agent in pipeline:
+                stage_res = await stage_agent.execute_step(
+                    tenant_id=tenant_id,
+                    objective=request.objective,
+                    context_data=ctx,
+                )
+                stages.append(stage_res)
+                ctx[f"{stage_agent.name}_output"] = stage_res.output
 
-            usage = UsageRecord(
+                usage = UsageRecord(
+                    tenant_id=tenant_id,
+                    provider="deepseek",
+                    model=stage_res.model,
+                    input_tokens=int(stage_res.tokens_used * 0.6),
+                    output_tokens=stage_res.tokens_used - int(stage_res.tokens_used * 0.6),
+                    estimated_cost=stage_res.estimated_cost,
+                )
+                session.add(usage)
+        except Exception as exc:
+            duration_ms = int((time.perf_counter() - start_time) * 1000)
+            error_msg = str(exc)
+            task.status = "failed"
+            task.completed_at = datetime.now(timezone.utc)
+            task.output = {
+                "error": error_msg,
+                "stages": [s.model_dump(mode="json") for s in stages],
+            }
+            execution = AgentExecution(
                 tenant_id=tenant_id,
-                provider="deepseek",
-                model=stage_res.model,
-                input_tokens=int(stage_res.tokens_used * 0.6),
-                output_tokens=stage_res.tokens_used - int(stage_res.tokens_used * 0.6),
-                estimated_cost=stage_res.estimated_cost,
+                task_id=task.id,
+                status="failed",
+                tokens_used=sum(s.tokens_used for s in stages),
+                estimated_cost=round(sum(s.estimated_cost for s in stages), 6),
+                duration_ms=duration_ms,
+                error_message=error_msg[:1000],
             )
-            session.add(usage)
+            session.add(execution)
+            await session.commit()
+            if not (isinstance(exc, TaloxException) and exc.code == "AI_PROVIDER_ERROR"):
+                budget_manager.record_failure(str(tenant_id), error_msg)
+            raise
 
         total_tokens = sum(s.tokens_used for s in stages)
         total_cost = round(sum(s.estimated_cost for s in stages), 6)

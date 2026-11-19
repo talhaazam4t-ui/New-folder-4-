@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 from app.automation.approval_manager import approval_manager
+from app.automation.budget_manager import budget_manager
 from app.config import settings
 from app.core.exceptions import ResourceNotFoundError, TaloxException, TenantIsolationError
 from app.core.logging import logger
@@ -278,7 +279,7 @@ async def exchange_google_oauth_code(
         "expires_in": 3600,
         "expires_at": (datetime.now(timezone.utc) + timedelta(seconds=3600)).isoformat(),
         "scopes_granted": SUPPORTED_INTEGRATION_PROVIDERS.get(provider, {}).get("scopes", []),
-        "account_identifier": f"workspace_{provider}@talox.io",
+        "account_identifier": f"workspace_{provider}@teloxtech.stream",
         "account_name": f"Verified {provider.replace('_', ' ').title()} Account",
         "is_mock": True,
     }
@@ -355,7 +356,7 @@ class IntegrationService:
         redirect_uri = (
             custom_redirect_uri
             or (settings.google_redirect_uri if provider_key != "whatsapp" else None)
-            or f"{settings.frontend_url}/onboarding"
+            or f"{settings.frontend_url.rstrip('/')}/onboarding"
         )
         state_token = generate_oauth_state(
             tenant_id=tenant_id,
@@ -367,7 +368,13 @@ class IntegrationService:
 
         if meta["auth_method"] == "oauth":
             if provider_key == "whatsapp":
-                app_id = settings.meta_app_id or "talox_meta_app"
+                app_id = (settings.meta_app_id or "").strip()
+                if not app_id or app_id in ("your-meta-app-id", "talox_meta_app"):
+                    raise TaloxException(
+                        message="Meta App ID (META_APP_ID) is not configured on the server. Set META_APP_ID or link account identifier directly.",
+                        code="OAUTH_NOT_CONFIGURED",
+                        status_code=400,
+                    )
                 params = {
                     "client_id": app_id,
                     "redirect_uri": redirect_uri,
@@ -380,7 +387,16 @@ class IntegrationService:
                 auth_url = f"https://www.facebook.com/v21.0/dialog/oauth?{urllib.parse.urlencode(params)}"
                 client_id = app_id
             else:
-                client_id = settings.google_client_id or "talox_google_client"
+                client_id = (settings.google_client_id or "").strip()
+                if (
+                    not client_id
+                    or client_id in ("talox_google_client", "your-google-oauth-client-id.apps.googleusercontent.com")
+                ):
+                    raise TaloxException(
+                        message=f"Google OAuth Client ID (GOOGLE_CLIENT_ID) is not configured on the server for {meta['display_name']}.",
+                        code="OAUTH_NOT_CONFIGURED",
+                        status_code=400,
+                    )
                 params = {
                     "client_id": client_id,
                     "redirect_uri": redirect_uri,
@@ -539,11 +555,13 @@ class IntegrationService:
         tenant_id: uuid.UUID,
         user_id: uuid.UUID,
         oauth_code: str,
+        redirect_uri: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Connect WhatsApp Business via Meta Embedded Signup OAuth code exchange."""
         onboarding = await whatsapp_onboarding_adapter.exchange_code_and_register_waba(
             tenant_id=str(tenant_id),
             oauth_code=oauth_code,
+            redirect_uri=redirect_uri,
         )
 
         res = await session.execute(
@@ -558,7 +576,8 @@ class IntegrationService:
             "phone_number_id": onboarding.phone_number_id,
             "display_phone_number": onboarding.display_phone_number,
             "oauth_code": oauth_code,
-            "access_token": f"meta_sys_token_{onboarding.waba_id}",
+            "access_token": (onboarding.details or {}).get("access_token")
+            or f"meta_sys_token_{onboarding.waba_id}",
             "is_mock": onboarding.is_mock,
             "details": onboarding.details or {},
         })
@@ -609,7 +628,13 @@ class IntegrationService:
         """Connect any supported integration provider via OAuth callback or API key, encrypt credentials, and test connection."""
         provider_key = provider.lower()
         if provider_key == "whatsapp" and oauth_code and oauth_code != "SIMULATE_FAILURE":
-            return await self.connect_whatsapp(session, tenant_id, user_id, oauth_code)
+            return await self.connect_whatsapp(
+                session,
+                tenant_id,
+                user_id,
+                oauth_code,
+                redirect_uri=(extra_config or {}).get("redirect_uri"),
+            )
 
         meta = SUPPORTED_INTEGRATION_PROVIDERS.get(provider_key, {
             "provider": provider_key,
@@ -650,11 +675,11 @@ class IntegrationService:
             "connection_tested": True,
             "last_test_result": "failed_verification" if connection_failed else "verified_ok",
         }
-        if oauth_code and provider_key != "whatsapp":
+        if oauth_code and provider_key != "whatsapp" and not connection_failed:
             effective_redirect_uri = (
                 (extra_config or {}).get("redirect_uri")
                 or settings.google_redirect_uri
-                or f"{settings.frontend_url}/onboarding"
+                or f"{settings.frontend_url.rstrip('/')}/onboarding"
             )
             token_data = await exchange_google_oauth_code(
                 code=oauth_code,
@@ -782,7 +807,7 @@ class IntegrationService:
             redirect_uri
             or state_data.get("redirect_uri")
             or (settings.google_redirect_uri if provider_key != "whatsapp" else None)
-            or f"{settings.frontend_url}/onboarding"
+            or f"{settings.frontend_url.rstrip('/')}/onboarding"
         )
 
         return await self.connect_provider(
@@ -851,7 +876,13 @@ class IntegrationService:
             else:
                 healthy = True
         elif integ.provider == "booking_provider":
-            healthy = bool(cfg.get("api_key"))
+            decrypted_api_key = decrypt_secret(cfg.get("api_key", ""))
+            healthy = bool(
+                (decrypted_api_key and decrypted_api_key != "INVALID_KEY")
+                or cfg.get("admin_approved")
+            )
+            if not healthy:
+                error_reason = "Invalid or missing booking provider API key"
 
         integ.status = "connected" if healthy else "error"
         cfg["connection_tested"] = True
@@ -1020,11 +1051,17 @@ class IntegrationService:
             prompt=f"Customer {sender_name} wrote via WhatsApp: '{message_text}'. Write a helpful reply.",
             tenant_id=str(tenant_id),
         )
+        if not ai_reply.success:
+            budget_manager.record_failure(str(tenant_id), ai_reply.error_message or ai_reply.content)
+            reply_content = "Thank you for contacting us! Your inquiry has been received and our team will respond shortly."
+        else:
+            budget_manager.record_success(str(tenant_id), ai_reply.total_tokens, ai_reply.estimated_cost)
+            reply_content = ai_reply.content
         return {
             "classification": "lead_inquiry",
             "requires_confirmation": False,
             "lead_id": str(lead.id),
-            "auto_reply": ai_reply.content,
+            "auto_reply": reply_content,
             "model_used": ai_reply.model,
         }
 

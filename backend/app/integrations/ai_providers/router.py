@@ -15,6 +15,7 @@ Integrates:
 3. Offline / mock fallback when running without live API keys.
 """
 
+import os
 from typing import Any, Dict, Optional
 
 import httpx
@@ -36,6 +37,7 @@ class AIExecutionResult(BaseModel):
     total_tokens: int = 0
     estimated_cost: float = 0.0
     is_mock: bool = False
+    error_message: Optional[str] = None
     raw_response: Optional[Dict[str, Any]] = None
 
 
@@ -93,7 +95,12 @@ async def route_and_execute_ai_task(
 
     # 2. Select target model
     target_model = select_model_for_task(task_type)
-    resolved_api_key = settings.deepseek_api_key or settings.ai_api_key
+    resolved_api_key = (
+        settings.deepseek_api_key
+        or os.environ.get("DEEPSEEK_API_KEY")
+        or settings.ai_api_key
+        or ""
+    ).strip()
 
     is_live_key_present = bool(
         resolved_api_key
@@ -118,15 +125,16 @@ async def route_and_execute_ai_task(
         "Content-Type": "application/json",
     }
 
-    # For deepseek-reasoner, temperature and system instructions should be carefully passed
-    # deepseek-reasoner supports standard messages, returns reasoning_content in choice.message
+    # deepseek-reasoner counts chain-of-thought reasoning tokens toward max_tokens
+    effective_max_tokens = max(max_tokens, 4096) if "reasoner" in target_model else max_tokens
+
     payload: Dict[str, Any] = {
         "model": target_model,
         "messages": [
             {"role": "system", "content": clean_system},
             {"role": "user", "content": clean_prompt},
         ],
-        "max_tokens": max_tokens,
+        "max_tokens": effective_max_tokens,
     }
 
     # deepseek-chat supports temperature customization
@@ -135,7 +143,7 @@ async def route_and_execute_ai_task(
 
     try:
         base_url = settings.deepseek_base_url.rstrip("/")
-        async with httpx.AsyncClient(timeout=45.0) as client:
+        async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(
                 f"{base_url}/chat/completions",
                 headers=headers,
@@ -144,10 +152,15 @@ async def route_and_execute_ai_task(
             response.raise_for_status()
             data = response.json()
 
-            choice = data.get("choices", [{}])[0]
-            message_obj = choice.get("message", {})
-            content = message_obj.get("content") or ""
+            choices = data.get("choices") or []
+            if not choices:
+                raise ValueError("DeepSeek API returned an empty choices array")
+            choice = choices[0]
+            message_obj = choice.get("message") or {}
+            content = (message_obj.get("content") or "").strip()
             reasoning_content = message_obj.get("reasoning_content")
+            if not content and reasoning_content:
+                content = reasoning_content
 
             usage = data.get("usage", {})
             prompt_tokens = usage.get("prompt_tokens", len(clean_prompt) // 4)
@@ -174,15 +187,19 @@ async def route_and_execute_ai_task(
 
     except Exception as exc:
         logger.error(
-            "DeepSeek API call failed, falling back to safe offline response",
+            "DeepSeek API call failed",
             error=str(exc),
             task_type=task_type,
             model=target_model,
         )
-        # Graceful fallback to mock response with error indicator
-        mock_result = _execute_mock_ai_task(task_type, target_model, clean_prompt)
-        mock_result.content = f"[AI Service Alert: {str(exc)}] {mock_result.content}"
-        return mock_result
+        return AIExecutionResult(
+            success=False,
+            model=target_model,
+            task_type=task_type,
+            content=f"[AI Service Error: {str(exc)}]",
+            is_mock=False,
+            error_message=str(exc),
+        )
 
 
 def _execute_mock_ai_task(task_type: str, model: str, prompt: str) -> AIExecutionResult:

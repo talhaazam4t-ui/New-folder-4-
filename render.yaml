@@ -16,3 +16,49 @@ services:
         value: 10000
       - key: HOST
         value: 0.0.0.0
+      - key: APP_SECRET_KEY
+        sync: false
+      - key: SUPER_ADMIN_EMAILS
+        value: '["talhazam4@gmail.com","talhaazam4t@gmail.com","talazam40@gmail.com"]'
+      - key: FRONTEND_URL
+        sync: false
+      - key: BACKEND_URL
+        sync: false
+      - key: ALLOWED_ORIGINS
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_JWT_SECRET
+        sync: false
+      - key: SUPABASE_DATABASE_URL
+        sync: false
+      - key: AI_PROVIDER
+        value: deepseek
+      - key: DEEPSEEK_API_KEY
+        sync: false
+      - key: DEEPSEEK_BASE_URL
+        value: https://api.deepseek.com
+      - key: AI_DEFAULT_FAST_MODEL
+        value: deepseek-chat
+      - key: AI_DEFAULT_REASONING_MODEL
+        value: deepseek-reasoner
+      - key: WHATSAPP_PROVIDER
+        value: mock
+      - key: WHATSAPP_VERIFY_TOKEN
+        value: talox_verify_token
+      - key: WHATSAPP_APP_SECRET
+        sync: false
+      - key: META_APP_ID
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_REDIRECT_URI
+        sync: false
+      - key: PAYMENT_PROVIDER
+        value: manual

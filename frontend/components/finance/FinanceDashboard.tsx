@@ -10,8 +10,8 @@ import { RentSchedulesTable } from "./RentSchedulesTable";
 import { AccountsGrid } from "./AccountsGrid";
 import { LogTransactionModal, NewRentScheduleModal, NewAccountModal } from "./Modals";
 import { FinancialAccount, FinancialSummary, FinancialTransaction, RentSchedule } from "./types";
-import { apiRequest } from "@/lib/api";
-import { getActiveTenant } from "@/lib/auth";
+import { apiFetchResponse, apiRequest } from "@/lib/api";
+import { getActiveTenant, getAuthToken } from "@/lib/auth";
 import {
   TrendingUp,
   Receipt,
@@ -56,8 +56,16 @@ export function FinanceDashboard() {
 
       // Check module status
       const statusRes = await apiRequest<{ active: boolean; status: "ACTIVE" | "DISABLED" }>("/api/v1/finance/status");
-      const isActive = statusRes.data?.active ?? true;
+      const isActive = statusRes.data?.active ?? (statusRes.error ? false : true);
       setModuleStatus(isActive ? "ACTIVE" : "DISABLED");
+
+      if (!isActive) {
+        setSummary(null);
+        setAccounts([]);
+        setTransactions([]);
+        setRentSchedules([]);
+        return;
+      }
 
       // Load parallel endpoints
       const [sumRes, accRes, txRes, rentRes] = await Promise.all([
@@ -87,6 +95,16 @@ export function FinanceDashboard() {
   }, []);
 
   useEffect(() => {
+    const token = getAuthToken();
+    if (!token) {
+      window.location.href = "/login";
+      return;
+    }
+    const activeT = getActiveTenant();
+    if (!activeT?.id) {
+      window.location.href = "/onboarding";
+      return;
+    }
     loadData();
   }, [loadData]);
 
@@ -98,7 +116,7 @@ export function FinanceDashboard() {
         body: JSON.stringify({ status: "paid" }),
       });
 
-      if (res.success || res.data) {
+      if (!res.error && (res.id || res.data?.id || res.success)) {
         showToast("Transaction marked as Paid & ledger reconciled");
         loadData();
       } else {
@@ -117,7 +135,7 @@ export function FinanceDashboard() {
         body: JSON.stringify(data),
       });
 
-      if (res.success || res.data) {
+      if (!res.error && (res.id || res.data?.id || res.success)) {
         showToast("Transaction logged and account balance reconciled");
         loadData();
       } else {
@@ -136,7 +154,7 @@ export function FinanceDashboard() {
         body: JSON.stringify(data),
       });
 
-      if (res.success || res.data) {
+      if (!res.error && (res.id || res.data?.id || res.success)) {
         showToast("New property lease schedule registered");
         loadData();
       } else {
@@ -155,7 +173,7 @@ export function FinanceDashboard() {
         body: JSON.stringify(data),
       });
 
-      if (res.success || res.data) {
+      if (!res.error && (res.id || res.data?.id || res.success)) {
         showToast("Financial account & vault established");
         loadData();
       } else {
@@ -174,7 +192,11 @@ export function FinanceDashboard() {
         "/api/v1/finance/whatsapp/reminders",
         { method: "POST" }
       );
-      const dispatched = res.data?.reminders_dispatched ?? 0;
+      if (res.error || res.success === false) {
+        showToast(res.error?.message || "Failed to dispatch reminders", "error");
+        return;
+      }
+      const dispatched = res.reminders_dispatched ?? res.data?.reminders_dispatched ?? 0;
       showToast(`Scanned leases: dispatched ${dispatched} automated WhatsApp reminder(s)`);
       loadData();
     } catch (err: any) {
@@ -184,11 +206,44 @@ export function FinanceDashboard() {
     }
   };
 
-  // Handle Export CSV
-  const handleExportCSV = () => {
-    const tenantId = tenant?.id || "active";
-    window.open(`/api/v1/finance/export/csv`, "_blank");
-    showToast("Downloading financial CSV reconciliation statement");
+  // Handle Export CSV (Authenticated fetch + Blob download)
+  const handleExportCSV = async () => {
+    const token = getAuthToken();
+    const tenantId = tenant?.id || getActiveTenant()?.id;
+    if (!token || !tenantId) {
+      showToast("Active session and workspace required to export CSV", "error");
+      return;
+    }
+
+    try {
+      const res = await apiFetchResponse("/api/v1/finance/export/csv", {
+        method: "GET",
+      });
+      if (!res.ok) {
+        let msg = `CSV export failed (${res.status})`;
+        try {
+          const errJson = await res.json();
+          msg = errJson?.error?.message || errJson?.detail || msg;
+        } catch {
+          // ignore non-JSON error body
+        }
+        showToast(msg, "error");
+        return;
+      }
+
+      const blob = await res.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = blobUrl;
+      link.download = `financial_ledger_${tenantId}_${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(blobUrl);
+      showToast("Financial CSV reconciliation statement downloaded");
+    } catch (err: any) {
+      showToast(err.message || "Failed to download CSV export", "error");
+    }
   };
 
   return (
@@ -196,7 +251,7 @@ export function FinanceDashboard() {
       <Navbar />
 
       <div className="flex flex-1">
-        <Sidebar currentPath="/business" />
+        <Sidebar currentPath="/finance" />
 
         <main className="flex-1 p-6 md:p-8 space-y-6 max-w-7xl mx-auto w-full">
           {/* Header & Status Banner */}
@@ -252,11 +307,14 @@ export function FinanceDashboard() {
               <AlertCircle className="h-4 w-4 text-amber-400 mt-0.5 shrink-0" />
               <div>
                 <p className="font-semibold text-amber-300">
-                  Business Financial Tracking Module is Currently Paused
+                  Business Financial Tracking Module is Currently Paused / Unsubscribed
                 </p>
                 <p className="text-amber-200/80 mt-0.5">
-                  The Super Administrator has toggled this module to DISABLED for your account. Please contact
-                  Platform Operations to re-activate full ledger capabilities.
+                  Activate the Business Financial Tracking &amp; Ledger service in{" "}
+                  <a href="/billing" className="underline font-semibold text-amber-200 hover:text-white">
+                    Services &amp; Billing
+                  </a>{" "}
+                  or contact Platform Operations to enable full ledger capabilities.
                 </p>
               </div>
             </div>

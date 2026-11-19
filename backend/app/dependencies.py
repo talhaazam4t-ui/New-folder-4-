@@ -4,7 +4,6 @@
 import uuid
 from typing import Optional
 
-from app.config import settings
 from app.core.exceptions import PermissionDeniedError, TenantIsolationError
 from app.core.permissions import has_role_permission
 from app.core.security import decode_access_token
@@ -46,6 +45,7 @@ async def get_current_user(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"code": "MALFORMED_TOKEN", "message": "Token missing subject claim"},
+            headers={"WWW-Authenticate": "Bearer"},
         )
 
     try:
@@ -54,6 +54,7 @@ async def get_current_user(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"code": "INVALID_USER_ID", "message": "Subject claim is not a valid UUID"},
+            headers={"WWW-Authenticate": "Bearer"},
         )
 
     query = select(Profile).where(Profile.id == user_uuid)
@@ -64,6 +65,7 @@ async def get_current_user(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"code": "USER_NOT_FOUND", "message": "User profile not found"},
+            headers={"WWW-Authenticate": "Bearer"},
         )
 
     return profile
@@ -122,6 +124,15 @@ async def get_current_tenant(
     membership = result.scalar_one_or_none()
 
     if not membership:
+        if await auth_service.is_platform_super_admin(session, current_user):
+            return TenantContext(
+                tenant_id=tenant_uuid,
+                user_id=current_user.id,
+                role="super_admin",
+                status="active",
+                email=current_user.email,
+                full_name=current_user.full_name,
+            )
         raise TenantIsolationError(
             f"Access denied: User does not have authorized membership in tenant '{x_tenant_id}'"
         )
@@ -158,13 +169,7 @@ def require_platform_role(*allowed_roles: str):
         current_user: Profile = Depends(get_current_user),
         session: AsyncSession = Depends(get_db),
     ) -> Profile:
-        is_sole_super = await auth_service.is_platform_super_admin(session, current_user)
-        if is_sole_super:
-            return current_user
-
-        user_email = (current_user.email or "").strip().lower()
-        sole_admins = {e.strip().lower() for e in settings.super_admin_emails}
-        if "super_admin" in target_roles and user_email in sole_admins:
+        if "super_admin" in target_roles and await auth_service.is_platform_super_admin(session, current_user):
             return current_user
 
         raise PermissionDeniedError(

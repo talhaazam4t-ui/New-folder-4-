@@ -27,6 +27,12 @@ from app.database.models.automation import (
 )
 from app.database.models.billing import Invoice, Payment
 from app.database.models.business import BusinessMetric, BusinessRecord
+from app.database.models.finance import (
+    FinancialAccount,
+    FinancialAuditLog,
+    FinancialTransaction,
+    RentSchedule,
+)
 from app.database.models.marketing import Lead, MarketingCampaign, MarketingMetric
 from app.database.models.service import ServiceSubscription
 from app.database.models.tenant import Profile, Tenant, TenantMember
@@ -335,6 +341,10 @@ class TenantService:
             MarketingMetric,
             MarketingCampaign,
             Lead,
+            FinancialAuditLog,
+            FinancialTransaction,
+            RentSchedule,
+            FinancialAccount,
             BusinessMetric,
             BusinessRecord,
             Invoice,

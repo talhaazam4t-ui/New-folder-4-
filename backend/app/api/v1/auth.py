@@ -1,6 +1,7 @@
 """Authentication API Endpoints.
 """
 
+from app.core.rate_limit import limiter
 from app.database.models.tenant import Profile
 from app.database.supabase import get_db
 from app.dependencies import get_current_user
@@ -11,28 +12,32 @@ from app.schemas.auth import (
     UserRegisterRequest,
 )
 from app.services.auth_service import auth_service
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
 @router.post("/register", status_code=status.HTTP_201_CREATED, response_model=TokenResponse)
+@limiter.limit("20/minute")
 async def register(
-    request: UserRegisterRequest,
+    request: Request,
+    payload: UserRegisterRequest,
     session: AsyncSession = Depends(get_db),
 ):
     """Register a new user account."""
-    return await auth_service.register_user(session, request)
+    return await auth_service.register_user(session, payload)
 
 
 @router.post("/login", response_model=TokenResponse)
+@limiter.limit("20/minute")
 async def login(
-    request: UserLoginRequest,
+    request: Request,
+    payload: UserLoginRequest,
     session: AsyncSession = Depends(get_db),
 ):
     """Log in with email and password to receive JWT access token."""
-    return await auth_service.login_user(session, request)
+    return await auth_service.login_user(session, payload)
 
 
 @router.get("/me", response_model=UserProfileResponse)

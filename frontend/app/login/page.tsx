@@ -8,6 +8,8 @@ import {
   setActiveTenant,
   getAuthToken,
   getCurrentUser,
+  getActiveTenant,
+  clearSession,
   isSoleAdminEmail,
   isSuperAdminUser,
   SUPPORT_WHATSAPP_NUMBER,
@@ -23,19 +25,70 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [autoRedirecting, setAutoRedirecting] = useState(false);
 
-  // Client Session Persistence Check: If already remembered, auto-redirect directly
+  // Client Session Persistence Check: validate token against /auth/me before redirecting
   useEffect(() => {
     const token = getAuthToken();
     const user = getCurrentUser();
+    if (!token || !user) return;
 
-    if (token && user) {
-      setAutoRedirecting(true);
-      if (isSuperAdminUser() || isSoleAdminEmail(user.email)) {
-        window.location.href = "/admin";
-      } else {
+    let cancelled = false;
+    setAutoRedirecting(true);
+
+    (async () => {
+      try {
+        const meRes = await apiRequest("/api/v1/auth/me");
+        if (cancelled) return;
+
+        const meEmail = meRes.email || meRes.data?.email;
+        if (!meEmail || meRes.error) {
+          clearSession();
+          setAutoRedirecting(false);
+          return;
+        }
+
+        const isAdmin =
+          Boolean(meRes.is_super_admin ?? meRes.data?.is_super_admin) ||
+          isSuperAdminUser() ||
+          isSoleAdminEmail(meEmail);
+
+        if (isAdmin) {
+          window.location.href = "/admin";
+          return;
+        }
+
+        if (!getActiveTenant()) {
+          const tenantsRes = await apiRequest("/api/v1/tenants");
+          if (tenantsRes.error) {
+            setAutoRedirecting(false);
+            setError(tenantsRes.error.message || "Failed to load workspace list.");
+            return;
+          }
+          const list = Array.isArray(tenantsRes)
+            ? tenantsRes
+            : Array.isArray(tenantsRes.data)
+              ? tenantsRes.data
+              : [];
+          if (list.length > 0) {
+            setActiveTenant(list[0], Boolean(user.rememberMe ?? true));
+            window.location.href = "/dashboard";
+          } else {
+            window.location.href = "/onboarding";
+          }
+          return;
+        }
+
         window.location.href = "/dashboard";
+      } catch {
+        if (!cancelled) {
+          clearSession();
+          setAutoRedirecting(false);
+        }
       }
-    }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -86,6 +139,11 @@ export default function LoginPage() {
       const tenantsRes = await apiRequest("/api/v1/tenants", {
         headers: { Authorization: `Bearer ${token}` },
       });
+
+      if (tenantsRes.error) {
+        setError(tenantsRes.error.message || "Failed to load client workspaces. Please try again.");
+        return;
+      }
 
       const list = Array.isArray(tenantsRes)
         ? tenantsRes

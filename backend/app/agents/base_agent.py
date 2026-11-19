@@ -12,7 +12,7 @@ import uuid
 from typing import Any, Dict, Optional, Set
 
 from app.automation.budget_manager import budget_manager
-from app.core.exceptions import PermissionDeniedError
+from app.core.exceptions import PermissionDeniedError, TaloxException
 from app.core.logging import logger
 from app.integrations.ai_providers.router import route_and_execute_ai_task
 from app.schemas.agent import AgentStageResult
@@ -81,6 +81,15 @@ class BaseAgent:
             ),
             timeout=self.timeout_seconds,
         )
+
+        if not ai_result.success:
+            err_msg = ai_result.error_message or ai_result.content
+            budget_manager.record_failure(str(tenant_id), err_msg)
+            raise TaloxException(
+                message=f"Agent '{self.name}' AI call failed: {err_msg}",
+                code="AI_PROVIDER_ERROR",
+                status_code=502,
+            )
 
         return AgentStageResult(
             agent_name=self.name,

@@ -7,6 +7,7 @@ from app.database.models.tenant import Profile
 from app.database.supabase import get_db
 from app.dependencies import get_current_user
 from app.schemas.auth import UserProfileResponse
+from app.services.auth_service import auth_service
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,13 +21,18 @@ class UserProfileUpdateRequest(BaseModel):
 
 
 @router.get("/me", response_model=UserProfileResponse)
-async def get_my_profile(current_user: Profile = Depends(get_current_user)):
+async def get_my_profile(
+    current_user: Profile = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+):
     """Retrieve the authenticated user's profile."""
+    is_super = await auth_service.is_platform_super_admin(session, current_user)
     return UserProfileResponse(
         id=current_user.id,
         email=current_user.email,
         full_name=current_user.full_name,
         phone=current_user.phone,
+        is_super_admin=is_super,
     )
 
 
@@ -43,9 +49,11 @@ async def update_my_profile(
         current_user.phone = request.phone
     await session.commit()
     await session.refresh(current_user)
+    is_super = await auth_service.is_platform_super_admin(session, current_user)
     return UserProfileResponse(
         id=current_user.id,
         email=current_user.email,
         full_name=current_user.full_name,
         phone=current_user.phone,
+        is_super_admin=is_super,
     )

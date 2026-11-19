@@ -42,10 +42,12 @@ export function ClientServicesChatbot() {
     },
   ]);
 
-  // Load custom Gemini API key from localStorage if saved
+  // Load custom optional AI API key from localStorage if saved
   useEffect(() => {
     if (typeof window !== "undefined") {
-      const savedKey = localStorage.getItem("teloxtech_gemini_api_key");
+      const savedKey =
+        localStorage.getItem("teloxtech_ai_api_key") ||
+        localStorage.getItem("teloxtech_gemini_api_key");
       if (savedKey) {
         setApiKey(savedKey);
       }
@@ -55,7 +57,7 @@ export function ClientServicesChatbot() {
   const handleSaveApiKey = (newKey: string) => {
     setApiKey(newKey);
     if (typeof window !== "undefined") {
-      localStorage.setItem("teloxtech_gemini_api_key", newKey);
+      localStorage.setItem("teloxtech_ai_api_key", newKey);
     }
   };
 
@@ -95,33 +97,44 @@ export function ClientServicesChatbot() {
     setIsTyping(true);
 
     try {
-      // Prepare message history for Gemini Flash-Lite endpoint
+      // Prepare message history for DeepSeek AI Assistant endpoint
       const payloadMessages = nextMessages.map((m) => ({
         role: m.sender === "user" ? "user" : "assistant",
         content: m.text,
       }));
 
+      const trimmedKey = apiKey.trim();
+      const targetModel = trimmedKey.startsWith("AIza")
+        ? "gemini-2.5-flash-lite"
+        : "deepseek-chat";
+
       const res = await apiRequest("/api/v1/assistant/chat", {
         method: "POST",
         body: JSON.stringify({
           messages: payloadMessages,
-          api_key: apiKey.trim() || undefined,
-          model: "gemini-2.5-flash-lite",
+          api_key: trimmedKey || undefined,
+          model: targetModel,
         }),
       });
 
-      if (res.data) {
+      const chatReply = res.reply ?? res.data?.reply;
+      const actionUrl = res.action_url ?? res.data?.action_url;
+      const actionLabel = res.action_label ?? res.data?.action_label;
+      const serviceName = res.service_name ?? res.data?.service_name;
+      const serviceSlug = res.service_slug ?? res.data?.service_slug;
+
+      if (chatReply) {
         setMessages((prev) => [
           ...prev,
           {
             id: `bot-${Date.now()}`,
             sender: "bot",
-            text: res.data.reply,
+            text: chatReply,
             timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-            actionUrl: res.data.action_url,
-            actionLabel: res.data.action_label,
-            serviceName: res.data.service_name,
-            serviceSlug: res.data.service_slug,
+            actionUrl,
+            actionLabel,
+            serviceName,
+            serviceSlug,
           },
         ]);
       } else {
@@ -195,7 +208,7 @@ export function ClientServicesChatbot() {
                 <div className="flex items-center gap-1.5 mt-0.5">
                   <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
                   <span className="text-[10px] text-slate-400 font-medium">
-                    AI Sales Concierge • Gemini Flash-Lite
+                    AI Sales Concierge • DeepSeek AI
                   </span>
                 </div>
               </div>
@@ -207,7 +220,7 @@ export function ClientServicesChatbot() {
                 className={`p-1 rounded transition ${
                   apiKey ? "text-emerald-400 hover:text-emerald-300" : "text-slate-400 hover:text-slate-200"
                 } hover:bg-slate-800`}
-                title="Configure Gemini Flash-Lite API Key"
+                title="Configure Optional AI API Key"
               >
                 <Key className="h-3.5 w-3.5" />
               </button>
@@ -221,18 +234,18 @@ export function ClientServicesChatbot() {
             </div>
           </div>
 
-          {/* Optional Gemini Flash-Lite API Key Drawer */}
+          {/* Optional AI API Key Drawer */}
           {showApiKeySetting && (
             <div className="p-2.5 bg-slate-950/95 border-b border-slate-800 text-[11px] space-y-1.5 animate-in fade-in duration-150 shrink-0">
               <div className="flex items-center justify-between">
-                <span className="font-semibold text-slate-300">Gemini Flash-Lite API Key</span>
-                <span className="text-[9px] text-emerald-400 font-mono">gemini-2.5-flash-lite</span>
+                <span className="font-semibold text-slate-300">Custom AI API Key (Optional)</span>
+                <span className="text-[9px] text-emerald-400 font-mono">deepseek-chat</span>
               </div>
               <input
                 type="password"
                 value={apiKey}
                 onChange={(e) => handleSaveApiKey(e.target.value)}
-                placeholder="Paste your Gemini API key (optional)..."
+                placeholder="Paste DeepSeek (sk-...) or Gemini key (optional)..."
                 className="w-full rounded bg-slate-900 border border-slate-700 px-2 py-1 text-[11px] text-white focus:outline-none focus:border-emerald-500 font-mono placeholder-slate-600"
               />
             </div>

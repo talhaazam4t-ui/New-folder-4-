@@ -86,6 +86,7 @@ export default function SettingsPage() {
             }),
           });
           if (cbRes.success && cbRes.data) {
+            sessionStorage.removeItem("talox_oauth_return_to");
             setStatusMessage(`${cbRes.data.display_name || "Service"} connected and verified via OAuth 2.0!`);
           } else {
             setErrorMessage(cbRes.error?.message || cbRes.message || "Failed to complete token exchange.");
@@ -111,6 +112,9 @@ export default function SettingsPage() {
         `/api/v1/integrations/oauth/${provider}/authorize?return_to=/settings`
       );
       if (authInfo.success && authInfo.data?.authorization_url) {
+        if (typeof window !== "undefined") {
+          sessionStorage.setItem("talox_oauth_return_to", "/settings");
+        }
         window.location.href = authInfo.data.authorization_url;
       } else {
         setErrorMessage(authInfo.error?.message || `Failed to initiate OAuth for ${provider}`);
@@ -148,6 +152,7 @@ export default function SettingsPage() {
   const handleSimulateInbound = async (e: React.FormEvent) => {
     e.preventDefault();
     setStatusMessage(null);
+    setErrorMessage(null);
     const res = await apiRequest("/api/v1/integrations/whatsapp/simulate", {
       method: "POST",
       body: JSON.stringify({
@@ -156,15 +161,22 @@ export default function SettingsPage() {
         message_text: simMessage,
       }),
     });
-    if (res.data) {
+    if (!res.error && res.data) {
       setSimResult(res.data);
       setStatusMessage("Processed inbound WhatsApp webhook message.");
       loadSettingsWorkspace();
+    } else {
+      setErrorMessage(res.error?.message || "Failed to process inbound WhatsApp event.");
     }
   };
 
   const handleMarkRead = async (id: string) => {
-    await apiRequest(`/api/v1/notifications/${id}/read`, { method: "PATCH" });
+    setErrorMessage(null);
+    const res = await apiRequest(`/api/v1/notifications/${id}/read`, { method: "PATCH" });
+    if (res.error || res.success === false) {
+      setErrorMessage(res.error?.message || "Failed to mark notification as read.");
+      return;
+    }
     loadSettingsWorkspace();
   };
 
@@ -174,6 +186,7 @@ export default function SettingsPage() {
     const tenantId = tenant?.id;
     if (!tenantId) return;
     setStatusMessage(null);
+    setErrorMessage(null);
     const res = await apiRequest(`/api/v1/tenants/${tenantId}`, {
       method: "DELETE",
       body: JSON.stringify({
@@ -185,7 +198,7 @@ export default function SettingsPage() {
       clearSession();
       window.location.href = "/login";
     } else {
-      setStatusMessage(res.error?.message || "Account deletion failed: verify company handle.");
+      setErrorMessage(res.error?.message || "Account deletion failed: verify company handle.");
     }
   };
 
@@ -193,7 +206,7 @@ export default function SettingsPage() {
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
       <Navbar />
       <div className="flex flex-1">
-        <Sidebar />
+        <Sidebar currentPath="/settings" />
         <main className="flex-1 p-8 space-y-8 overflow-y-auto">
           <div>
             <h1 className="text-2xl font-bold text-white">Integrations, WhatsApp & Notifications</h1>
@@ -297,7 +310,7 @@ export default function SettingsPage() {
                           }`}
                         >
                           {isConnected ? <Link2 className="h-3 w-3" /> : <ExternalLink className="h-3 w-3" />}
-                          <span>{isConnected ? "Reconnect" : "Connect"}</span>
+                          <span>{isConnected || isError ? "Reconnect" : "Connect"}</span>
                         </button>
                       </div>
                     </div>

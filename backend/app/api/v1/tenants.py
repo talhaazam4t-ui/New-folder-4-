@@ -4,6 +4,7 @@
 import uuid
 from typing import Any, Dict, List
 
+from app.core.exceptions import TenantIsolationError
 from app.database.models.agent import TenantAgent
 from app.database.models.automation import AuditLog
 from app.database.models.business import BusinessRecord
@@ -39,6 +40,9 @@ async def get_tenant_overview(
 
     Strictly isolated to `tenant_id` and free of internal AI prompts, credentials, or operational controls.
     """
+    if tenant_id != context.tenant_id:
+        raise TenantIsolationError("Access denied: path tenant_id does not match X-Tenant-ID context")
+
     # Fetch tenant record
     t_res = await session.execute(select(Tenant).where(Tenant.id == tenant_id))
     tenant = t_res.scalar_one_or_none()
@@ -219,6 +223,9 @@ async def update_tenant_details(
     session: AsyncSession = Depends(get_db),
 ):
     """Update tenant workspace name, selected industry, or onboarding settings."""
+    if tenant_id != context.tenant_id:
+        raise TenantIsolationError("Access denied: path tenant_id does not match X-Tenant-ID context")
+
     t_res = await session.execute(select(Tenant).where(Tenant.id == tenant_id))
     tenant = t_res.scalar_one_or_none()
     if not tenant:
@@ -309,6 +316,9 @@ async def add_tenant_member(
     session: AsyncSession = Depends(get_db),
 ):
     """Invite or assign a registered user to a tenant workspace with a specific role."""
+    if tenant_id != context.tenant_id:
+        raise TenantIsolationError("Access denied: path tenant_id does not match X-Tenant-ID context")
+
     return await tenant_service.add_tenant_member(
         session=session,
         tenant_id=tenant_id,
@@ -324,6 +334,9 @@ async def list_tenant_members(
     session: AsyncSession = Depends(get_db),
 ):
     """List all members of a tenant workspace."""
+    if tenant_id != context.tenant_id:
+        raise TenantIsolationError("Access denied: path tenant_id does not match X-Tenant-ID context")
+
     return await tenant_service.list_tenant_members(
         session=session,
         tenant_id=tenant_id,

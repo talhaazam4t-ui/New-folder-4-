@@ -1,6 +1,10 @@
+import hashlib
+import hmac
+import json
 import uuid
 
 import pytest
+from app.config import settings
 from app.database.supabase import get_session_factory
 from app.main import app
 from app.services.billing_service import billing_service
@@ -8,7 +12,12 @@ from httpx import ASGITransport, AsyncClient
 
 
 @pytest.mark.asyncio
-async def test_complete_service_subscription_and_payment_flow():
+async def test_complete_service_subscription_and_payment_flow(monkeypatch):
+    monkeypatch.setattr(
+        settings,
+        "super_admin_emails",
+        [*settings.super_admin_emails, "billing.client@enterprise.com"],
+    )
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         # 1. Register owner & create tenant workspace
@@ -85,12 +94,17 @@ async def test_complete_service_subscription_and_payment_flow():
         assert invoice["status"] == "issued"
         invoice_id = invoice["id"]
 
-        # 7. Settle the invoice
+        # 7. Settle the invoice (bank transfer starts pending_confirmation until Super Admin confirms)
         pay_res = await client.post(f"/api/v1/payments/invoices/{invoice_id}/pay", headers=tenant_headers)
         assert pay_res.status_code == 200
         pay_data = pay_res.json()
         assert pay_data["amount"] == 79.0
-        assert pay_data["status"] == "completed"
+        assert pay_data["status"] == "pending_confirmation"
+        payment_id = pay_data["id"]
+
+        confirm_res = await client.post(f"/api/v1/admin/payments/{payment_id}/confirm", headers=headers)
+        assert confirm_res.status_code == 200
+        assert confirm_res.json()["data"]["status"] == "completed"
 
         # 8. Re-query invoices to confirm status is now 'paid'
         invoices_check = await client.get("/api/v1/payments/invoices", headers=tenant_headers)
@@ -106,14 +120,88 @@ async def test_complete_service_subscription_and_payment_flow():
 
 
 @pytest.mark.asyncio
-async def test_payment_webhook_signature_verification():
+async def test_payment_webhook_signature_verification(monkeypatch):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        # 1. Valid webhook call
-        res_ok = await client.post(
+        # 1. Manual payment provider rejects automated webhooks
+        monkeypatch.setattr(settings, "payment_provider", "manual")
+        res_manual = await client.post(
             "/api/v1/payments/webhook",
             content=b'{"event": "payment.succeeded"}',
             headers={"Stripe-Signature": "valid_test_signature"},
         )
+        assert res_manual.status_code == 400
+
+        # 2. Stripe mode in dev/test without secret accepts valid_test_signature and rejects invalid
+        monkeypatch.setattr(settings, "payment_provider", "stripe")
+        monkeypatch.setattr(settings, "payment_webhook_secret", None)
+        res_bad = await client.post(
+            "/api/v1/payments/webhook",
+            content=b'{"type": "payment_intent.succeeded"}',
+            headers={"Stripe-Signature": "bad_signature"},
+        )
+        assert res_bad.status_code == 400
+
+        res_ok = await client.post(
+            "/api/v1/payments/webhook",
+            content=b'{"type": "payment_intent.succeeded"}',
+            headers={"Stripe-Signature": "valid_test_signature"},
+        )
         assert res_ok.status_code == 200
         assert res_ok.json()["success"] is True
+
+        # 3. Stripe mode with configured webhook secret enforces real HMAC-SHA256 & idempotent reconciliation
+        secret = "whsec_test_secret_12345"
+        monkeypatch.setattr(settings, "payment_webhook_secret", secret)
+
+        reg = await client.post("/api/v1/auth/register", json={
+            "email": "stripe.tenant@enterprise.com",
+            "password": "Password123!",
+            "full_name": "Stripe Tenant",
+        })
+        token = reg.json()["access_token"]
+        t_res = await client.post("/api/v1/tenants", json={
+            "name": "Stripe Reconcile Corp",
+            "slug": "stripe-reconcile-corp",
+            "industry": "Financing",
+        }, headers={"Authorization": f"Bearer {token}"})
+        tenant_id = t_res.json()["id"]
+
+        event_body = json.dumps({
+            "type": "payment_intent.succeeded",
+            "data": {
+                "object": {
+                    "id": "pi_real_hmac_001",
+                    "amount_received": 19900,
+                    "currency": "usd",
+                    "metadata": {"tenant_id": tenant_id},
+                }
+            },
+        }).encode("utf-8")
+        ts = "1700000000"
+        sig_hex = hmac.new(secret.encode("utf-8"), f"{ts}.".encode("utf-8") + event_body, hashlib.sha256).hexdigest()
+        sig_header = f"t={ts},v1={sig_hex}"
+
+        res_tampered = await client.post(
+            "/api/v1/payments/webhook",
+            content=event_body,
+            headers={"Stripe-Signature": f"t={ts},v1=deadbeef"},
+        )
+        assert res_tampered.status_code == 400
+
+        res_hmac = await client.post(
+            "/api/v1/payments/webhook",
+            content=event_body,
+            headers={"Stripe-Signature": sig_header},
+        )
+        assert res_hmac.status_code == 200
+        assert res_hmac.json()["reconciled"] is True
+
+        # Duplicate event delivery is idempotent
+        res_dup = await client.post(
+            "/api/v1/payments/webhook",
+            content=event_body,
+            headers={"Stripe-Signature": sig_header},
+        )
+        assert res_dup.status_code == 200
+        assert res_dup.json()["idempotent"] is True

@@ -10,6 +10,7 @@ Configures:
 
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any, cast
 
 from app.api.router import api_v1_router
 from app.config import settings
@@ -18,11 +19,14 @@ from app.core.logging import logger, setup_logging
 from app.core.rate_limit import limiter
 from app.database.supabase import init_db
 from fastapi import FastAPI, HTTPException, Request, status
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.responses import Response
 
 
 @asynccontextmanager
@@ -55,8 +59,12 @@ app = FastAPI(
 )
 
 # Attach SlowAPI State and Exception Handler
+async def rate_limit_exceeded_handler(request: Request, exc: Exception) -> Response:
+    return _rate_limit_exceeded_handler(request, cast(RateLimitExceeded, exc))
+
+
 app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
 
 # CORS Configuration
 app.add_middleware(
@@ -101,6 +109,55 @@ async def talox_exception_handler(request: Request, exc: TaloxException):
     )
 
 
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    """Normalize FastAPI/Starlette HTTPException responses into the standard error envelope."""
+    detail = exc.detail
+    details: Any
+    if isinstance(detail, dict):
+        code = str(detail.get("code") or f"HTTP_{exc.status_code}")
+        message = str(detail.get("message") or detail)
+        details = detail.get("details") or {}
+    else:
+        code = f"HTTP_{exc.status_code}"
+        message = str(detail or "HTTP error")
+        details = {}
+
+    return JSONResponse(
+        status_code=exc.status_code,
+        headers=getattr(exc, "headers", None),
+        content={
+            "success": False,
+            "error": {
+                "code": code,
+                "message": message,
+                "details": details,
+            },
+        },
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Normalize Pydantic/FastAPI 422 validation errors into the standard error envelope."""
+    errors = exc.errors()
+    summary = "; ".join(
+        f"{'.'.join(str(part) for part in err.get('loc', []))}: {err.get('msg', 'Invalid value')}"
+        for err in errors
+    )
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={
+            "success": False,
+            "error": {
+                "code": "VALIDATION_ERROR",
+                "message": summary or "Request validation failed",
+                "details": errors,
+            },
+        },
+    )
+
+
 @app.exception_handler(Exception)
 async def generic_exception_handler(request: Request, exc: Exception):
     """Handle unexpected server errors without leaking internals."""
@@ -118,8 +175,30 @@ async def generic_exception_handler(request: Request, exc: Exception):
     )
 
 
+_MISSING_ASSET_EXTENSIONS = {
+    ".js",
+    ".css",
+    ".map",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".svg",
+    ".ico",
+    ".webp",
+    ".woff",
+    ".woff2",
+    ".ttf",
+    ".eot",
+    ".txt",
+    ".xml",
+    ".json",
+    ".webmanifest",
+}
+
+
 # System Health Check & Frontend Delivery Endpoints
-@app.get("/", tags=["Frontend"])
+@app.api_route("/", methods=["GET", "HEAD"], tags=["Frontend"])
 async def root():
     """Root platform endpoint: serves frontend index.html if built, otherwise API discovery JSON."""
     if STATIC_DIR:
@@ -138,13 +217,13 @@ async def root():
     }
 
 
-@app.get("/health", tags=["Health"])
+@app.api_route("/health", methods=["GET", "HEAD"], tags=["Health"])
 async def platform_health():
     """Alternative health check endpoint for Render and container probes."""
     return await health_check()
 
 
-@app.get("/api/v1/health", tags=["Health"])
+@app.api_route("/api/v1/health", methods=["GET", "HEAD"], tags=["Health"])
 async def health_check():
     """Health check for load balancers and container probes."""
     return {
@@ -174,36 +253,53 @@ async def rate_limited_agent_demo(request: Request):
     }
 
 
-@app.get("/{full_path:path}", include_in_schema=False)
+@app.api_route("/{full_path:path}", methods=["GET", "HEAD"], include_in_schema=False)
 async def serve_spa_and_static(full_path: str):
     """Serve client-side routes and static assets, preserving API routes and Swagger docs."""
     clean_path = full_path.strip("/")
     if (
         clean_path.startswith("api/")
         or clean_path == "api"
+        or clean_path.startswith("_next/")
+        or clean_path == "_next"
         or clean_path in ("docs", "redoc", "openapi.json", "health")
     ):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Endpoint not found")
 
     if STATIC_DIR:
+        static_root = STATIC_DIR.resolve()
+        try:
+            direct_file = (static_root / clean_path).resolve()
+        except Exception:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Static asset not found")
+
+        if not direct_file.is_relative_to(static_root):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Static asset not found")
+
         # 1. Exact file match (e.g. favicon.ico, 404.html, index.txt)
-        direct_file = STATIC_DIR / clean_path
         if direct_file.is_file():
             return FileResponse(direct_file)
 
         # 2. Directory index match (e.g. login -> login/index.html)
-        dir_index = STATIC_DIR / clean_path / "index.html"
-        if dir_index.is_file():
+        dir_index = (direct_file / "index.html").resolve()
+        if dir_index.is_relative_to(static_root) and dir_index.is_file():
             return FileResponse(dir_index)
 
         # 3. HTML file match (e.g. login -> login.html)
-        html_file = STATIC_DIR / f"{clean_path}.html"
-        if html_file.is_file():
+        html_file = (static_root / f"{clean_path}.html").resolve()
+        if html_file.is_relative_to(static_root) and html_file.is_file():
             return FileResponse(html_file)
 
-        # 4. Fallback to root index.html for client-side SPA routing
-        index_file = STATIC_DIR / "index.html"
-        if index_file.is_file():
-            return FileResponse(index_file)
+        # 4. Missing asset extension should always return 404 (never index.html)
+        if Path(clean_path).suffix.lower() in _MISSING_ASSET_EXTENSIONS:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Static asset not found")
+
+        # 5. Unknown non-route paths: serve Next.js exported 404.html with 404 status
+        not_found_html = static_root / "404.html"
+        if not_found_html.is_file():
+            return FileResponse(not_found_html, status_code=status.HTTP_404_NOT_FOUND)
+        not_found_dir = static_root / "404" / "index.html"
+        if not_found_dir.is_file():
+            return FileResponse(not_found_dir, status_code=status.HTTP_404_NOT_FOUND)
 
     raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Static assets not found")

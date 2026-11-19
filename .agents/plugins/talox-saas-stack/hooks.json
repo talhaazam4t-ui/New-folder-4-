@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ./scripts/verify-stack.mjs"
+            "command": "node .agents/plugins/talox-saas-stack/scripts/verify-stack.mjs"
           }
         ]
       }
@@ -14,7 +14,7 @@
     "Stop": [
       {
         "type": "command",
-        "command": "node ./scripts/verify-stack.mjs"
+        "command": "node .agents/plugins/talox-saas-stack/scripts/verify-stack.mjs"
       }
     ]
   }

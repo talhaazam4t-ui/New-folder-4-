@@ -43,8 +43,9 @@ export default function RegisterPage() {
 
       const token = res.access_token || res.data?.access_token;
       const userId = res.user_id || res.data?.user_id;
+      const isSuperAdmin = Boolean(res.is_super_admin ?? res.data?.is_super_admin);
 
-      // Automatically persist client session so they remain remembered across subsequent visits
+      // Automatically persist session so they remain remembered across subsequent visits
       setAuthToken(token, true);
       setCurrentUser(
         {
@@ -52,14 +53,14 @@ export default function RegisterPage() {
           email: email.trim().toLowerCase(),
           fullName: fullName.trim(),
           token,
-          isSuperAdmin: false,
+          isSuperAdmin,
           rememberMe: true,
         },
         true
       );
 
-      // Clients route strictly to client onboarding / client portal
-      window.location.href = "/onboarding";
+      // Route Super Admin to /admin, clients to /onboarding
+      window.location.href = isSuperAdmin ? "/admin" : "/onboarding";
     } catch (err: any) {
       setError(err.message || "Failed to register. Please try again.");
     } finally {

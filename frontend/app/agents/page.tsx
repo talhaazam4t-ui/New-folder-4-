@@ -1,10 +1,10 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { Navbar } from "../../components/shared/Navbar";
-import { Sidebar } from "../../components/shared/Sidebar";
+import { AdminNavbar } from "../../components/admin/AdminNavbar";
+import { AdminSidebar } from "../../components/admin/AdminSidebar";
 import { apiRequest } from "../../lib/api";
-import { getActiveTenant, getAuthToken, isSuperAdminUser } from "../../lib/auth";
+import { clearActiveTenant, getActiveTenant, getAuthToken, isSuperAdminUser, setActiveTenant } from "../../lib/auth";
 
 interface AgentItem {
   name: string;
@@ -48,6 +48,8 @@ interface ExecutionItem {
 }
 
 export default function AgentsPage() {
+  const [tenants, setTenants] = useState<Array<{ id: string; name: string; slug: string; industry?: string }>>([]);
+  const [selectedTenantId, setSelectedTenantId] = useState<string>("");
   const [agents, setAgents] = useState<AgentItem[]>([]);
   const [approvals, setApprovals] = useState<ApprovalItem[]>([]);
   const [executions, setExecutions] = useState<ExecutionItem[]>([]);
@@ -57,20 +59,27 @@ export default function AgentsPage() {
   const [stages, setStages] = useState<StageResult[]>([]);
   const [finalOutput, setFinalOutput] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
 
-  const loadAgentWorkspace = async () => {
+  const loadAgentWorkspace = async (tenantIdOverride?: string) => {
+    const tId = tenantIdOverride || selectedTenantId || getActiveTenant()?.id;
+    if (!tId) return;
+
+    const reqHeaders = { "X-Tenant-ID": tId };
     const [agentsRes, approvalsRes, execsRes] = await Promise.all([
-      apiRequest("/api/v1/agents"),
-      apiRequest("/api/v1/approvals?status=pending"),
-      apiRequest("/api/v1/agents/executions?limit=25"),
+      apiRequest("/api/v1/agents", { headers: reqHeaders }),
+      apiRequest("/api/v1/approvals?status=pending", { headers: reqHeaders }),
+      apiRequest("/api/v1/agents/executions?limit=25", { headers: reqHeaders }),
     ]);
 
     if (Array.isArray(agentsRes)) setAgents(agentsRes);
     else if (agentsRes.data) setAgents(agentsRes.data);
+    else if (agentsRes.error) setErrorMessage(agentsRes.error.message);
 
     if (Array.isArray(approvalsRes)) setApprovals(approvalsRes);
     else if (approvalsRes.data) setApprovals(approvalsRes.data);
+    else if (approvalsRes.error) setErrorMessage(approvalsRes.error.message);
 
     if (Array.isArray(execsRes)) setExecutions(execsRes);
     else if (execsRes.data) setExecutions(execsRes.data);
@@ -86,36 +95,79 @@ export default function AgentsPage() {
       window.location.href = "/dashboard";
       return;
     }
-    if (!getActiveTenant()) {
-      window.location.href = "/onboarding";
-      return;
-    }
-    loadAgentWorkspace();
+
+    (async () => {
+      let currentTenant = getActiveTenant();
+      const tenantsRes = await apiRequest("/api/v1/admin/tenants");
+      const list = Array.isArray(tenantsRes?.data) ? tenantsRes.data : [];
+      setTenants(list);
+
+      const isValidStoredTenant =
+        Boolean(currentTenant?.id) &&
+        (list.length === 0 || list.some((t: any) => t.id === currentTenant!.id));
+
+      if (!isValidStoredTenant) {
+        if (list.length > 0) {
+          currentTenant = list[0];
+          setActiveTenant(list[0], false);
+        } else {
+          clearActiveTenant();
+          currentTenant = null;
+        }
+      }
+
+      if (currentTenant?.id) {
+        setSelectedTenantId(currentTenant.id);
+        await loadAgentWorkspace(currentTenant.id);
+      } else {
+        setErrorMessage("No client workspaces registered yet. Create or onboard a tenant first.");
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const handleSwitchTenant = async (tenantId: string) => {
+    setSelectedTenantId(tenantId);
+    setErrorMessage(null);
+    setStatusMessage(null);
+    const chosen = tenants.find((t) => t.id === tenantId);
+    if (chosen) {
+      setActiveTenant(chosen, false);
+    }
+    await loadAgentWorkspace(tenantId);
+  };
 
   const handleToggleAgent = async (agent: AgentItem) => {
     setStatusMessage(null);
-    await apiRequest(`/api/v1/agents/${agent.name}/configure`, {
+    setErrorMessage(null);
+    const res = await apiRequest(`/api/v1/agents/${agent.name}/configure`, {
       method: "POST",
+      headers: selectedTenantId ? { "X-Tenant-ID": selectedTenantId } : undefined,
       body: JSON.stringify({
         enabled: !agent.enabled_for_tenant,
         execution_limit: agent.execution_limit,
         budget_limit: agent.budget_limit,
       }),
     });
-    setStatusMessage(`Updated configuration for ${agent.name}`);
-    loadAgentWorkspace();
+    if (!res.error && (res.name || res.data?.name || res.success)) {
+      setStatusMessage(`Updated configuration for ${agent.name}`);
+      loadAgentWorkspace();
+    } else {
+      setErrorMessage(res.error?.message || `Failed to update configuration for ${agent.name}.`);
+    }
   };
 
   const handleOrchestrate = async (e: React.FormEvent) => {
     e.preventDefault();
     setRunning(true);
     setStatusMessage(null);
+    setErrorMessage(null);
     setStages([]);
     setFinalOutput(null);
 
     const res = await apiRequest("/api/v1/agents/orchestrate", {
       method: "POST",
+      headers: selectedTenantId ? { "X-Tenant-ID": selectedTenantId } : undefined,
       body: JSON.stringify({
         objective,
         agent_name: selectedAgent,
@@ -125,7 +177,7 @@ export default function AgentsPage() {
 
     setRunning(false);
     const payload = res.data || res;
-    if (payload && payload.status) {
+    if (!res.error && payload && payload.status) {
       setStages(payload.stages || []);
       setFinalOutput(payload.final_output || null);
       if (payload.requires_approval) {
@@ -135,35 +187,66 @@ export default function AgentsPage() {
       }
       loadAgentWorkspace();
     } else {
-      setStatusMessage(res.error?.message || "Agent orchestration failed.");
+      setErrorMessage(res.error?.message || "Agent orchestration failed.");
     }
   };
 
   const handleDecision = async (approvalId: string, decision: "approve" | "reject") => {
-    await apiRequest(`/api/v1/approvals/${approvalId}/${decision}`, {
+    setStatusMessage(null);
+    setErrorMessage(null);
+    const res = await apiRequest(`/api/v1/approvals/${approvalId}/${decision}`, {
       method: "POST",
+      headers: selectedTenantId ? { "X-Tenant-ID": selectedTenantId } : undefined,
       body: JSON.stringify({ reason: `Reviewed via Agent Governance Console (${decision})` }),
     });
-    setStatusMessage(`Approval request ${decision}d.`);
-    loadAgentWorkspace();
+    if (!res.error && (res.success || res.id || res.data?.id)) {
+      setStatusMessage(`Approval request ${decision}d.`);
+      loadAgentWorkspace();
+    } else {
+      setErrorMessage(res.error?.message || `Failed to ${decision} approval request.`);
+    }
   };
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
-      <Navbar />
+      <AdminNavbar />
       <div className="flex flex-1">
-        <Sidebar />
+        <AdminSidebar currentPath="/agents" activeTab="" />
         <main className="flex-1 p-8 space-y-8 overflow-y-auto">
-          <div>
-            <h1 className="text-2xl font-bold text-white">AI Agent Orchestration & Governance</h1>
-            <p className="text-slate-400 text-sm mt-1">
-              Bounded multi-agent hierarchy (Planner → Researcher → Executor → Reviewer) with strict tool permissions and human approval gates.
-            </p>
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+            <div>
+              <h1 className="text-2xl font-bold text-white">AI Agent Orchestration & Governance</h1>
+              <p className="text-slate-400 text-sm mt-1">
+                Bounded multi-agent hierarchy (Planner → Researcher → Executor → Reviewer) with strict tool permissions and human approval gates.
+              </p>
+            </div>
+            {tenants.length > 0 && (
+              <div className="flex items-center gap-2 rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-xs">
+                <span className="text-slate-400">Workspace:</span>
+                <select
+                  value={selectedTenantId}
+                  onChange={(e) => handleSwitchTenant(e.target.value)}
+                  className="bg-transparent font-semibold text-emerald-400 focus:outline-none"
+                >
+                  {tenants.map((t) => (
+                    <option key={t.id} value={t.id} className="bg-slate-900 text-white">
+                      {t.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
           </div>
 
           {statusMessage && (
             <div className="p-4 rounded-lg bg-indigo-950/60 border border-indigo-700 text-indigo-200 text-sm">
               {statusMessage}
+            </div>
+          )}
+
+          {errorMessage && (
+            <div className="p-4 rounded-lg bg-red-950/60 border border-red-700 text-red-200 text-sm">
+              {errorMessage}
             </div>
           )}
 

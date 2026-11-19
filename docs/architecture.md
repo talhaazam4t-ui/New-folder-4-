@@ -7,7 +7,7 @@ Talox Tech Stream is a modular, production-oriented, multi-tenant SaaS platform 
 Key architectural pillars:
 - **Zero Visual Tools (No n8n):** 100% custom Python automation engine using asyncio, APScheduler, and database-backed task queues.
 - **Strict Multi-Tenant Isolation:** Supabase PostgreSQL with Row Level Security (RLS) on all tenant-owned tables and server-side tenant context validation.
-- **OpenRouter Smart Model Routing:** Automatic tiering between cost-efficient models (`google/gemini-flash-1.5` / `openai/gpt-4o-mini`) and deep reasoning models (`anthropic/claude-3.5-sonnet`).
+- **DeepSeek Smart Model Routing:** Automatic tiering via DeepSeek API (`https://api.deepseek.com`) between `deepseek-chat` (fast/structured workloads) and `deepseek-reasoner` (complex reasoning/audits), with offline mock fallback.
 - **Cost Protection & Circuit Breaker:** SlowAPI rate limiting, tenant token quotas, and automated circuit breaking after consecutive failures to prevent runaway billing.
 - **Meta Embedded Signup:** Frictionless self-service WhatsApp Business onboarding.
 - **Data Privacy & GDPR Right-to-be-Forgotten:** Pre-AI PII and financial sanitization pipeline + atomic cascading account deletion.
@@ -19,16 +19,19 @@ Key architectural pillars:
 ```text
 +-----------------------------------------------------------------------------------+
 |                                  CLIENT LAYER                                     |
-|  Next.js 14 (App Router) + TypeScript + Tailwind CSS + Lucide React + Recharts     |
+|  Next.js 14 (App Router, static export) + TypeScript + Tailwind CSS +             |
+|  TanStack Query + Lucide React + Recharts (served via FastAPI /app/static)        |
 |  - Client Multi-Tenant Dashboard (Overview, Business Tracking, WhatsApp, Billing) |
 |  - Owner Admin Console (Tenants, Global Revenue, Agent Controls, Approvals)       |
 +-----------------------------------------------------------------------------------+
-                                        | (HTTPS / REST / WebSockets)
+                                        | (Same-origin HTTPS / REST)
                                         v
 +-----------------------------------------------------------------------------------+
 |                                  API GATEWAY                                      |
-|  FastAPI + SlowAPI Rate Limiting + CORS + Standard JSON Envelope                  |
-|  /api/v1/auth, /api/v1/tenants, /api/v1/business, /api/v1/marketing, /admin      |
+|  FastAPI + SlowAPI Rate Limiting + CORS + Static Export Hosting + JSON Envelope   |
+|  /api/v1/auth, /api/v1/tenants, /api/v1/business, /api/v1/finance,                |
+|  /api/v1/marketing, /api/v1/agents, /api/v1/approvals, /api/v1/integrations,      |
+|  /api/v1/assistant, /api/v1/admin, /api/v1/health                                 |
 +-----------------------------------------------------------------------------------+
                                         |
          +------------------------------+-------------------------------+
@@ -36,9 +39,10 @@ Key architectural pillars:
 +-----------------------------------+          +------------------------------------+
 |     CORE PLATFORM SERVICES        |          |      CUSTOM PYTHON AUTOMATION      |
 | - TenantService (Lifecycle/Purge) |          | - Runtime Engine (asyncio)         |
-| - BusinessService (Double-entry)  |          | - BudgetManager & Circuit Breaker  |
-| - BillingService (Subscriptions)  |          | - ApprovalManager (Human-in-loop)  |
-| - Security (PII Sanitization)     |          | - EventBus & Scheduler             |
+| - BusinessService & FinanceService|          | - BudgetManager & Circuit Breaker  |
+|   (Immutable Ledger / Rent)       |          | - ApprovalManager (Human-in-loop)  |
+| - BillingService (Subscriptions)  |          | - EventBus & Scheduler             |
+| - Security (PII Sanitization)     |          |                                    |
 +-----------------------------------+          +------------------------------------+
          |                                                              |
          |                                                              v
@@ -53,10 +57,10 @@ Key architectural pillars:
                                 v                               v
 +-----------------------------------+          +------------------------------------+
 |          DATABASE TIER            |          |         INTEGRATION TIER           |
-|  Supabase PostgreSQL              |          | - OpenRouter (Smart AI Routing)    |
+|  Supabase PostgreSQL (eu-west-1)  |          | - DeepSeek API (Smart AI Routing)  |
 |  - Row Level Security (RLS)       |          | - Meta WhatsApp Embedded Signup    |
 |  - Tenant-isolated tables         |          | - Webhook Signature Verification   |
-|  - Cascade Deletes & Audit Trails |          | - Payment Rails (Stripe/Manual)    |
+|  - Cascade Deletes & Audit Trails |          | - Payment Rails (Manual / Mock)    |
 +-----------------------------------+          +------------------------------------+
 ```
 
@@ -94,11 +98,11 @@ Incoming Task
     │
     ▼
 [Complexity Classifier]
-    ├── Simple / High Volume  ───► google/gemini-flash-1.5 ($0.075 / 1M tokens)
-    └── Reasoning / Audit     ───► anthropic/claude-3.5-sonnet ($3.00 / 1M tokens)
+    ├── Simple / High Volume  ───► deepseek-chat ($0.14 in / $0.28 out per 1M tokens)
+    └── Reasoning / Audit     ───► deepseek-reasoner ($0.55 in / $2.19 out per 1M tokens)
     │
     ▼
-[OpenRouter Gateway]
+[DeepSeek API Gateway (api.deepseek.com)]
     │
     ▼
 [Record Usage & Costs] ───► Update tenant daily tokens & audit ledger
@@ -113,3 +117,12 @@ Incoming Task
 3. **Sensitive Action Gates:** Financial refunds, campaign publishing, and record deletions require human approvals through the `ApprovalManager`.
 4. **Data Redaction:** The `sanitize_ai_prompt` filter runs ahead of any prompt dispatch to prevent privacy leaks.
 5. **Cascading Data Purge:** Tenant termination executes an atomic purge across all child tables with audit confirmation.
+
+---
+
+## 6. Runtime & Hosting Topology
+
+- **DNS & Edge Routing:** Cloudflare manages authoritative DNS for `teloxtech.stream` in DNS-only (unproxied) mode, pointing apex `A` records to Render edge IPs and `www.teloxtech.stream` `CNAME` to Render (`new-folder-4-hp6h.onrender.com`).
+- **Unified Container (`Dockerfile`):** Stage 1 (`node:20-alpine`) exports the Next.js static SPA (`frontend/out`) with `NEXT_PUBLIC_BACKEND_URL=""`; Stage 3 (`python:3.12-slim`) runs Uvicorn/FastAPI on `$PORT` (default `10000`), serving `/app/static` and `/api/v1/*` from one origin.
+- **Hosting Platforms:** **Render** (`render.yaml`, primary live host for `https://teloxtech.stream` with Render-managed TLS) and **Railway** (`railway.toml`, secondary host `talox-tech-stream-production.up.railway.app`).
+- **Database:** **Supabase** PostgreSQL (`pmmduhflikdvddzpgwsi`, `eu-west-1`) accessed via async SQLAlchemy (`SUPABASE_DATABASE_URL`) and Supabase SDK.
