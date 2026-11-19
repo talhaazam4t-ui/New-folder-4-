@@ -38,7 +38,6 @@ from app.services.auth_service import auth_service
 from app.services.billing_service import billing_service, normalize_industry
 from app.services.marketing_service import marketing_service
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
