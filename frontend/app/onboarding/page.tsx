@@ -723,7 +723,9 @@ export default function OnboardingPage() {
                       <div>
                         <p className="text-sm font-bold">{ind}</p>
                         <p className="text-[11px] text-slate-400">
-                          {(catalogByIndustry[ind] || []).length} tailored AI service packages
+                          {(catalogByIndustry[ind] || []).length > 0
+                            ? `${(catalogByIndustry[ind] || []).length} tailored AI service packages`
+                            : "Tailored AI service packages"}
                         </p>
                       </div>
                     </div>
@@ -767,7 +769,10 @@ export default function OnboardingPage() {
                   onClick={() => setStep(3)}
                   className="flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-500 transition"
                 >
-                  <span>Proceed to Connect Integrations ({requiredIntegrations.length})</span>
+                  <span>
+                    Continue with {subscribedServiceIds.length} selected service
+                    {subscribedServiceIds.length === 1 ? "" : "s"}
+                  </span>
                   <ArrowRight className="h-4 w-4" />
                 </button>
               )}

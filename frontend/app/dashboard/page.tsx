@@ -300,7 +300,9 @@ export default function ClientDashboardPage() {
                       : "bg-amber-100 text-amber-800"
                   }`}
                 >
-                  {isApproved
+                  {loading && !overview
+                    ? "Loading workspace status..."
+                    : isApproved
                     ? "Active — Delivering Outcomes"
                     : isNotified
                     ? "Payment Transfer Submitted — Verification In Progress"
