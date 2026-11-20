@@ -127,6 +127,13 @@ def normalize_industry(industry: Optional[str]) -> str:
     return INDUSTRY_ALIASES.get(cleaned.lower(), cleaned)
 
 
+LEGACY_SERVICE_SLUGS = {
+    "business-finance",
+    "whatsapp-automation",
+    "marketing-growth",
+}
+
+
 class BillingService:
     """Manages monetization, subscriptions, and financial invoices."""
 
@@ -199,7 +206,17 @@ class BillingService:
         if category:
             query = query.where(Service.category == category)
         res = await session.execute(query.order_by(Service.name))
-        services = list(res.scalars().all())
+        services = [
+            srv
+            for srv in res.scalars().all()
+            if not (
+                srv.slug in LEGACY_SERVICE_SLUGS
+                and (
+                    not (srv.configuration_schema or {}).get("industries")
+                    or not (srv.configuration_schema or {}).get("packages")
+                )
+            )
+        ]
 
         if industry:
             norm_ind = normalize_industry(industry)
@@ -709,6 +726,8 @@ class BillingService:
         if notes:
             curr_settings["payment_approval_notes"] = notes
         tenant.settings = curr_settings
+        if tenant.status in ("pending_approval", "unpaid"):
+            tenant.status = "active"
 
         # Reconcile all pending payments
         pay_res = await session.execute(

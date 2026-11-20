@@ -144,5 +144,5 @@ class SalesChatbotMessageResponse(BaseModel):
     detected_price: Optional[float] = None
     hot_lead: bool = False
     alert_message: Optional[str] = None
-    whatsapp_url: str = "https://wa.me/923398701000"
+    whatsapp_url: str = "https://wa.me/923238300330"
     onboarding_transition_url: Optional[str] = None

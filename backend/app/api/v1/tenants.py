@@ -2,6 +2,7 @@
 """
 
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 from app.core.exceptions import TenantIsolationError
@@ -21,14 +22,33 @@ from app.schemas.tenant import (
     TenantResponse,
     TenantUpdateRequest,
 )
+from app.services.auth_service import auth_service
 from app.services.billing_service import COMPANY_BANK_DETAILS, billing_service, normalize_industry
 from app.services.integration_service import integration_service
-from app.services.tenant_service import tenant_service
+from app.services.tenant_service import PROTECTED_TENANT_SETTING_KEYS, tenant_service
 from fastapi import APIRouter, Depends, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter(prefix="/tenants", tags=["Tenants"])
+
+SERVICE_MODULE_MAP: Dict[str, List[str]] = {
+    "business-financial-tracking": ["financial_ledger", "revenue_reports"],
+    "business-finance": ["financial_ledger", "revenue_reports"],
+    "ai-marketing-growth": ["marketing_growth", "lead_funnel", "outreach_campaigns"],
+    "marketing-growth": ["marketing_growth", "lead_funnel", "outreach_campaigns"],
+    "whatsapp-business-concierge": ["whatsapp_concierge", "appointments"],
+    "whatsapp-automation": ["whatsapp_concierge", "appointments"],
+    "multi-agent-orchestration": ["multi_agent_orchestration"],
+    "lead-crm-qualification": ["lead_crm", "lead_funnel"],
+    "executive-analytics-compliance": ["executive_analytics_compliance", "revenue_reports"],
+}
+
+
+def _ensure_utc(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 
 @router.get("/{tenant_id}/overview")
@@ -132,9 +152,14 @@ async def get_tenant_overview(
     active_agents = agents_res.scalar() or 0
 
     # 6. Subscriptions, Packages & Payment Approval Status
+    now = datetime.now(timezone.utc)
     onboarding_summary = await integration_service.get_onboarding_requirements(session, tenant_id)
     subscriptions = await billing_service.get_tenant_subscriptions(session, tenant_id)
-    active_subs = [s for s in subscriptions if s.status == "active"]
+    active_subs = [
+        s
+        for s in subscriptions
+        if s.status == "active" and (s.expires_at is None or _ensure_utc(s.expires_at) >= now)
+    ]
     monthly_spend = sum(float(s.price) for s in active_subs)
     current_package = (
         active_subs[0].plan_name.replace("_", " ").title()
@@ -144,18 +169,19 @@ async def get_tenant_overview(
 
     t_settings = dict(tenant.settings or {}) if tenant else {}
     raw_payment_approved = t_settings.get("payment_approved")
-    if raw_payment_approved is False:
-        payment_approved = False
-        completed_pay = await session.execute(
-            select(Payment).where(Payment.tenant_id == tenant_id, Payment.status == "completed").limit(1)
-        )
-        if completed_pay.scalar_one_or_none():
-            payment_approved = True
-    elif raw_payment_approved is True:
+    completed_pay = await session.execute(
+        select(Payment).where(Payment.tenant_id == tenant_id, Payment.status == "completed").limit(1)
+    )
+    has_completed_payment = completed_pay.scalar_one_or_none() is not None
+
+    if raw_payment_approved is True:
+        payment_approved = True
+    elif has_completed_payment:
+        payment_approved = True
+    elif raw_payment_approved is None and tenant is not None and tenant.status == "active":
         payment_approved = True
     else:
-        # Default to True for legacy/unscoped records without explicit onboarding payment lock
-        payment_approved = True
+        payment_approved = False
 
     payment_notified = bool(t_settings.get("payment_notified", False))
     payment_reference = t_settings.get("payment_reference", None)
@@ -203,18 +229,14 @@ async def get_tenant_overview(
         })
 
     # Service-specific modules calculation based exclusively on client chosen services
-    enabled_modules = []
-    if is_payment_approved:
-        has_concierge = any("concierge" in s or "whatsapp" in s or "booking" in s for s in service_slugs)
-        has_lead_gen = any("lead" in s or "outreach" in s or "marketing" in s for s in service_slugs)
-        has_finance = any("finance" in s or "ledger" in s or "invoice" in s for s in service_slugs)
-
-        if has_concierge or not service_slugs:
-            enabled_modules.extend(["whatsapp_concierge", "appointments"])
-        if has_lead_gen or not service_slugs:
-            enabled_modules.extend(["lead_funnel", "outreach_campaigns"])
-        if has_finance or not service_slugs:
-            enabled_modules.extend(["financial_ledger", "revenue_reports"])
+    enabled_modules: List[str] = []
+    if is_payment_approved and service_slugs:
+        seen_modules = set()
+        for slug_val in service_slugs:
+            for mod in SERVICE_MODULE_MAP.get(slug_val, []):
+                if mod not in seen_modules:
+                    seen_modules.add(mod)
+                    enabled_modules.append(mod)
 
     # 7. Recent Client-Safe Activity Feed
     audit_res = await session.execute(
@@ -311,8 +333,19 @@ async def update_tenant_details(
     if request.industry is not None:
         tenant.industry = normalize_industry(request.industry)
     if request.settings is not None:
+        profile_res = await session.execute(select(Profile).where(Profile.id == context.user_id))
+        caller_profile = profile_res.scalar_one_or_none()
+        is_super = (
+            await auth_service.is_platform_super_admin(session, caller_profile)
+            if caller_profile
+            else False
+        )
+        incoming_settings = dict(request.settings)
+        if not is_super:
+            for key in PROTECTED_TENANT_SETTING_KEYS:
+                incoming_settings.pop(key, None)
         merged = dict(tenant.settings or {})
-        merged.update(request.settings)
+        merged.update(incoming_settings)
         tenant.settings = merged
 
     await session.commit()
@@ -336,8 +369,14 @@ async def create_tenant(
     session: AsyncSession = Depends(get_db),
 ):
     """Create a new tenant workspace and assign the authenticated user as Owner."""
+    is_super = await auth_service.is_platform_super_admin(session, current_user)
     request.industry = normalize_industry(request.industry)
-    return await tenant_service.create_tenant(session, current_user.id, request)
+    return await tenant_service.create_tenant(
+        session,
+        current_user.id,
+        request,
+        is_super_admin=is_super,
+    )
 
 
 @router.get("", response_model=List[TenantResponse])

@@ -8,14 +8,13 @@ import { apiRequest } from "@/lib/api";
 import { getActiveTenant, getAuthToken } from "@/lib/auth";
 import {
   CreditCard,
-  DollarSign,
   Receipt,
   CheckCircle,
-  Clock,
   Layers,
   ArrowRight,
-  ShieldCheck,
-  Zap,
+  AlertCircle,
+  RefreshCw,
+  XCircle,
 } from "lucide-react";
 
 interface ServiceItem {
@@ -67,12 +66,17 @@ export default function BillingPage() {
   const [subscriptions, setSubscriptions] = useState<SubscriptionItem[]>([]);
   const [invoices, setInvoices] = useState<InvoiceItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+  const [selectedPackages, setSelectedPackages] = useState<Record<string, string>>({});
+  const [cancelingSubId, setCancelingSubId] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [actionError, setActionError] = useState<boolean>(false);
 
   const fetchBillingData = async () => {
     const tenant = getActiveTenant();
     const indParam = tenant?.industry ? `&industry=${encodeURIComponent(tenant.industry)}` : "";
+    setFetchError(null);
+    setLoading(true);
     try {
       const [servicesRes, subsRes, invoicesRes] = await Promise.all([
         apiRequest<ServiceItem[]>(`/api/v1/services?ensure_seeded=true${indParam}`),
@@ -80,14 +84,44 @@ export default function BillingPage() {
         apiRequest<InvoiceItem[]>("/api/v1/payments/invoices"),
       ]);
 
-      if (Array.isArray(servicesRes)) setServices(servicesRes);
-      else if (servicesRes.data) setServices(servicesRes.data);
+      const errors: string[] = [];
+      if (servicesRes && !Array.isArray(servicesRes) && servicesRes.error) {
+        errors.push(servicesRes.error.message || "Failed to load services");
+      }
+      if (subsRes && !Array.isArray(subsRes) && subsRes.error) {
+        errors.push(subsRes.error.message || "Failed to load subscriptions");
+      }
+      if (invoicesRes && !Array.isArray(invoicesRes) && invoicesRes.error) {
+        errors.push(invoicesRes.error.message || "Failed to load invoices");
+      }
 
-      if (Array.isArray(subsRes)) setSubscriptions(subsRes);
-      else if (subsRes.data) setSubscriptions(subsRes.data);
+      if (errors.length > 0) {
+        setFetchError(errors.join(" • "));
+      }
+
+      if (Array.isArray(servicesRes)) setServices(servicesRes);
+      else if (Array.isArray(servicesRes.data)) setServices(servicesRes.data);
+
+      const loadedSubs: SubscriptionItem[] = Array.isArray(subsRes)
+        ? subsRes
+        : Array.isArray(subsRes.data)
+          ? subsRes.data
+          : [];
+      setSubscriptions(loadedSubs);
+      setSelectedPackages((prev) => {
+        const next = { ...prev };
+        for (const sub of loadedSubs) {
+          if (sub.status === "active" && !next[sub.service_id]) {
+            next[sub.service_id] = (sub.plan_name || "starter").toLowerCase();
+          }
+        }
+        return next;
+      });
 
       if (Array.isArray(invoicesRes)) setInvoices(invoicesRes);
-      else if (invoicesRes.data) setInvoices(invoicesRes.data);
+      else if (Array.isArray(invoicesRes.data)) setInvoices(invoicesRes.data);
+    } catch (err: any) {
+      setFetchError(err?.message || "Failed to load billing data. Please retry.");
     } finally {
       setLoading(false);
     }
@@ -122,11 +156,35 @@ export default function BillingPage() {
 
     if (!res.error && (res.id || res.data?.id)) {
       setActionError(false);
-      setActionMessage(`Subscribed to ${serviceName}! Invoice generated.`);
+      setActionMessage(`Subscribed to ${serviceName} (${planName.toUpperCase()} tier)! Invoice generated.`);
       fetchBillingData();
     } else {
       setActionError(true);
       setActionMessage(res.error?.message || "Failed to subscribe.");
+    }
+  };
+
+  const handleCancelSubscription = async (subscriptionId: string, serviceName: string) => {
+    setActionError(false);
+    setCancelingSubId(subscriptionId);
+    setActionMessage(`Canceling subscription for ${serviceName}...`);
+    try {
+      const res = await apiRequest(`/api/v1/services/subscriptions/${subscriptionId}/cancel`, {
+        method: "POST",
+      });
+      if (!res.error && (res.id || res.data?.id || res.status === "canceled")) {
+        setActionError(false);
+        setActionMessage(`Subscription for "${serviceName}" has been canceled.`);
+        await fetchBillingData();
+      } else {
+        setActionError(true);
+        setActionMessage(res.error?.message || `Failed to cancel "${serviceName}".`);
+      }
+    } catch (err: any) {
+      setActionError(true);
+      setActionMessage(err?.message || "Failed to cancel subscription.");
+    } finally {
+      setCancelingSubId(null);
     }
   };
 
@@ -170,11 +228,11 @@ export default function BillingPage() {
       <div className="flex flex-1">
         <Sidebar currentPath="/billing" />
 
-        <main className="flex-1 p-6 sm:p-8 space-y-8 max-w-7xl mx-auto w-full">
+        <main className="flex-1 min-w-0 p-4 sm:p-6 md:p-8 space-y-8 max-w-7xl mx-auto w-full">
           {/* Header */}
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-slate-200 pb-6">
             <div>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
                   Subscription & Billing
                 </h1>
@@ -187,6 +245,24 @@ export default function BillingPage() {
               </p>
             </div>
           </div>
+
+          {fetchError && (
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-xs text-red-800">
+              <div className="flex items-center gap-2">
+                <AlertCircle className="h-4 w-4 shrink-0 text-red-600" />
+                <span>{fetchError}</span>
+              </div>
+              <button
+                type="button"
+                onClick={fetchBillingData}
+                disabled={loading}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-red-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-red-500 disabled:opacity-50 transition self-start sm:self-auto"
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
+                <span>Retry</span>
+              </button>
+            </div>
+          )}
 
           {actionMessage && (
             <div
@@ -237,10 +313,26 @@ export default function BillingPage() {
               </p>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
               {services.map((srv) => {
-                const isSubscribed = subscriptions.some(
+                const activeSub = subscriptions.find(
                   (s) => s.service_id === srv.id && s.status === "active"
+                );
+                const isSubscribed = Boolean(activeSub);
+                const packages = srv.configuration_schema?.packages || [];
+                const defaultPlan = (
+                  activeSub?.plan_name ||
+                  packages[0]?.plan_name ||
+                  "starter"
+                ).toLowerCase();
+                const chosenPlan = (selectedPackages[srv.id] || defaultPlan).toLowerCase();
+                const activePkg =
+                  packages.find((p) => p.plan_name.toLowerCase() === chosenPlan) ||
+                  packages[0];
+                const resolvedPrice =
+                  activePkg?.price ?? srv.configuration_schema?.base_price ?? 99;
+                const tierChanged = Boolean(
+                  activeSub && chosenPlan !== (activeSub.plan_name || "").toLowerCase()
                 );
 
                 return (
@@ -256,41 +348,102 @@ export default function BillingPage() {
                         {isSubscribed && (
                           <span className="flex items-center gap-1 text-[11px] font-bold text-emerald-600">
                             <CheckCircle className="h-3.5 w-3.5" />
-                            Active
+                            Active ({activeSub?.plan_name})
                           </span>
                         )}
                       </div>
 
                       <h3 className="text-base font-bold text-slate-900">{srv.name}</h3>
                       <p className="text-xs text-slate-600 leading-relaxed">{srv.description}</p>
+
+                      {packages.length > 0 && (
+                        <div className="pt-2 space-y-2">
+                          <label className="block text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                            Select Package Tier
+                          </label>
+                          <div className="grid grid-cols-3 gap-1.5">
+                            {packages.map((pkg) => {
+                              const isChosen = pkg.plan_name.toLowerCase() === chosenPlan;
+                              return (
+                                <button
+                                  key={pkg.plan_name}
+                                  type="button"
+                                  onClick={() =>
+                                    setSelectedPackages((prev) => ({
+                                      ...prev,
+                                      [srv.id]: pkg.plan_name.toLowerCase(),
+                                    }))
+                                  }
+                                  className={`rounded-lg border px-2 py-1.5 text-center text-[11px] transition ${
+                                    isChosen
+                                      ? "border-emerald-600 bg-emerald-50 text-emerald-900 font-bold"
+                                      : "border-slate-200 bg-slate-50 text-slate-600 hover:border-slate-300"
+                                  }`}
+                                >
+                                  <div className="capitalize">{pkg.plan_name}</div>
+                                  <div className="font-mono text-emerald-700">${pkg.price}</div>
+                                </button>
+                              );
+                            })}
+                          </div>
+
+                          {activePkg?.features && activePkg.features.length > 0 && (
+                            <ul className="rounded-lg bg-slate-50 border border-slate-100 p-2.5 space-y-1 text-[11px] text-slate-600">
+                              {activePkg.features.slice(0, 3).map((feat) => (
+                                <li key={feat} className="flex items-start gap-1.5">
+                                  <CheckCircle className="h-3 w-3 text-emerald-600 shrink-0 mt-0.5" />
+                                  <span>{feat}</span>
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+                      )}
                     </div>
 
-                    <div className="mt-6 pt-4 border-t border-slate-100 flex items-center justify-between">
+                    <div className="mt-6 pt-4 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2">
                       <div>
                         <span className="text-xl font-extrabold text-slate-900">
-                          ${srv.configuration_schema?.packages?.[0]?.price ?? srv.configuration_schema?.base_price ?? 99}
+                          ${resolvedPrice}
                         </span>
                         <span className="text-xs text-slate-400"> / month</span>
                       </div>
 
-                      {isSubscribed ? (
-                        <button
-                          disabled
-                          className="rounded-lg bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700 border border-emerald-200 cursor-default"
-                        >
-                          Subscribed
-                        </button>
+                      {isSubscribed && activeSub ? (
+                        <div className="flex flex-wrap items-center gap-2">
+                          {tierChanged ? (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleSubscribe(srv.id, srv.name, resolvedPrice, chosenPlan)
+                              }
+                              className="flex items-center gap-1 rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-800 transition"
+                            >
+                              <span>Switch Tier</span>
+                              <ArrowRight className="h-3 w-3" />
+                            </button>
+                          ) : (
+                            <span className="rounded-lg bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700 border border-emerald-200">
+                              Subscribed
+                            </span>
+                          )}
+                          <button
+                            type="button"
+                            disabled={cancelingSubId === activeSub.id}
+                            onClick={() => handleCancelSubscription(activeSub.id, srv.name)}
+                            className="flex items-center gap-1 rounded-lg border border-red-200 bg-red-50 px-2.5 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-100 disabled:opacity-50 transition"
+                          >
+                            <XCircle className="h-3.5 w-3.5" />
+                            <span>
+                              {cancelingSubId === activeSub.id ? "Canceling..." : "Cancel Subscription"}
+                            </span>
+                          </button>
+                        </div>
                       ) : (
                         <button
+                          type="button"
                           onClick={() =>
-                            handleSubscribe(
-                              srv.id,
-                              srv.name,
-                              srv.configuration_schema?.packages?.[0]?.price ??
-                                srv.configuration_schema?.base_price ??
-                                99,
-                              srv.configuration_schema?.packages?.[0]?.plan_name ?? "starter"
-                            )
+                            handleSubscribe(srv.id, srv.name, resolvedPrice, chosenPlan)
                           }
                           className="flex items-center gap-1 rounded-lg bg-slate-900 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-slate-800 transition"
                         >

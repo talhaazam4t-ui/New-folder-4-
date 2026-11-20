@@ -52,9 +52,12 @@ export function getAuthToken(): string | null {
 export function setAuthToken(token: string, persist = true): void {
   if (typeof window === "undefined") return;
   if (persist) {
+    sessionStorage.removeItem(TOKEN_KEY);
     localStorage.setItem(TOKEN_KEY, token);
     localStorage.setItem(PERSISTENCE_KEY, "true");
   } else {
+    localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(PERSISTENCE_KEY);
     sessionStorage.setItem(TOKEN_KEY, token);
   }
 }
@@ -78,9 +81,12 @@ export function setCurrentUser(user: UserSession, persist = true): void {
     savedAt: Date.now(),
   });
   if (persist) {
+    sessionStorage.removeItem(USER_KEY);
     localStorage.setItem(USER_KEY, serialized);
     localStorage.setItem(PERSISTENCE_KEY, "true");
   } else {
+    localStorage.removeItem(USER_KEY);
+    localStorage.removeItem(PERSISTENCE_KEY);
     sessionStorage.setItem(USER_KEY, serialized);
   }
 }
@@ -118,8 +124,10 @@ export function setActiveTenant(tenant: ActiveTenant, persist = true): void {
   if (typeof window === "undefined") return;
   const serialized = JSON.stringify(tenant);
   if (persist) {
+    sessionStorage.removeItem(TENANT_KEY);
     localStorage.setItem(TENANT_KEY, serialized);
   } else {
+    localStorage.removeItem(TENANT_KEY);
     sessionStorage.setItem(TENANT_KEY, serialized);
   }
 }

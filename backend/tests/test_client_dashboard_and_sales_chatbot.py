@@ -187,8 +187,9 @@ async def test_public_sales_chatbot_capabilities_and_intent_trigger():
         assert chat_res1.status_code == 200
         data1 = chat_res1.json()
         assert data1["detected_industry"] in ["Dental Clinics", "Cosmetic & Aesthetic Surgery"]
+        assert data1["detected_service_slug"] == "whatsapp-business-concierge"
         assert "reply" in data1
-        assert "+92 339 8701000" in data1["whatsapp_url"] or "+92 339 8701000" in data1["reply"]
+        assert "923238300330" in data1["whatsapp_url"] or "+92 323 8300330" in data1["reply"]
 
         # 2. Trigger buying intent and human assistance
         chat_res2 = await client.post("/api/v1/marketing/chatbot/message", json={
@@ -198,7 +199,20 @@ async def test_public_sales_chatbot_capabilities_and_intent_trigger():
         data2 = chat_res2.json()
         assert data2["hot_lead"] is True
         assert data2["alert_message"] == "A hot lead is ready to chat with you right now!"
-        assert data2["whatsapp_url"] == "https://wa.me/923398701000"
+        assert data2["whatsapp_url"] == "https://wa.me/923238300330"
         assert data2["onboarding_transition_url"] is not None
         assert "/register?" in data2["onboarding_transition_url"]
         assert "package=growth" in data2["onboarding_transition_url"]
+
+        # 3. Verify canonical hyphenated slugs for finance and marketing queries
+        chat_fin = await client.post("/api/v1/marketing/chatbot/message", json={
+            "message": "We need financial ledger and rent invoice tracking",
+        })
+        assert chat_fin.status_code == 200
+        assert chat_fin.json()["detected_service_slug"] == "business-financial-tracking"
+
+        chat_mkt = await client.post("/api/v1/marketing/chatbot/message", json={
+            "message": "We want Google Maps lead outreach and growth marketing",
+        })
+        assert chat_mkt.status_code == 200
+        assert chat_mkt.json()["detected_service_slug"] == "ai-marketing-growth"

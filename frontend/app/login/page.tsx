@@ -114,6 +114,9 @@ export default function LoginPage() {
       const isSoleAdmin = isSoleAdminEmail(email);
       const isSuperAdmin = Boolean(res.is_super_admin ?? res.data?.is_super_admin) || isSoleAdmin;
 
+      // Clear any prior session before writing new credentials
+      clearSession();
+
       // Persist session securely for client persistence across visits
       setAuthToken(token, rememberMe);
       setCurrentUser(
@@ -207,7 +210,7 @@ export default function LoginPage() {
                 required
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="client@company.com or talhazam4@gmail.com"
+                placeholder="you@company.com"
                 className="w-full rounded-lg border border-slate-800 bg-slate-900 py-2.5 pl-10 pr-3 text-sm text-white placeholder-slate-500 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
               />
             </div>

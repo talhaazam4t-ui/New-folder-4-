@@ -42,6 +42,20 @@ TELOXTECH MANAGED SERVICE CATALOG:
    - Ideal For: Enterprises wanting full-funnel hands-off automation.
    - Plans: Starter ($199/mo), Growth ($399/mo), Enterprise ($799/mo).
 
+5. Lead CRM & AI Qualification Engine (Slug: "lead-crm-qualification", Dashboard URL: "/onboarding?service=lead-crm-qualification")
+   - Value: Centralized lead CRM pipeline with automated AI qualification scoring (0-100%), follow-up sequencing, and appointment booking sync.
+   - Ideal For: Sales teams, Clinics, Real Estate brokers, and Financing firms managing inbound & outbound funnels.
+   - Plans: Starter ($149/mo), Growth ($299/mo), Enterprise ($599/mo).
+
+6. Executive Analytics & Compliance Vault (Slug: "executive-analytics-compliance", Dashboard URL: "/onboarding?service=executive-analytics-compliance")
+   - Value: Cross-engine executive KPI dashboards, AI cost/token governance telemetry, automated digests, and audit-ready compliance exports.
+   - Ideal For: Executives, Regulated Clinics, Financial firms, and Operations Leaders.
+   - Plans: Starter ($99/mo), Growth ($199/mo), Enterprise ($399/mo).
+
+SUPPORTED INDUSTRIES:
+- 4 Core Industry Verticals: Financing, Clinics / Hospitals, Real Estate / Property, and E-Commerce.
+- Custom industry workflows are also supported and configured during onboarding.
+
 CONVERSATIONAL OBJECTIVES:
 1. Role & Tone: Polite, proactive, confident, and business-focused.
 2. Lead Qualification: Inquire naturally about their company name, industry, current bottlenecks, and goals to capture their profile.
@@ -435,7 +449,19 @@ class AssistantService:
             lead["phone"] = phone_match.group(0).strip()
 
         lower_conv = full_conversation.lower()
-        if any(w in lower_conv for w in ("real estate", "rent", "tenant", "property", "lease", "landlord", "finance", "ledger", "invoice")):
+        if any(w in lower_conv for w in ("analytic", "compliance", "audit", "kpi", "gdpr", "pii", "executive report")):
+            lead["business_type"] = lead["business_type"] or "Financing"
+            lead["service_needed"] = "Executive Analytics & Compliance Vault"
+            lead["service_slug"] = "executive-analytics-compliance"
+        elif any(w in lower_conv for w in ("orchestrat", "multi-agent", "multi agent", "end-to-end", "end to end")):
+            lead["business_type"] = lead["business_type"] or "Financing"
+            lead["service_needed"] = "Multi-Agent Task Orchestration Suite"
+            lead["service_slug"] = "multi-agent-orchestration"
+        elif any(w in lower_conv for w in ("crm", "qualif", "scoring", "funnel", "pipeline")):
+            lead["business_type"] = lead["business_type"] or "Financing"
+            lead["service_needed"] = "Lead CRM & AI Qualification Engine"
+            lead["service_slug"] = "lead-crm-qualification"
+        elif any(w in lower_conv for w in ("real estate", "rent", "tenant", "property", "lease", "landlord", "finance", "ledger", "invoice")):
             lead["business_type"] = lead["business_type"] or "Real Estate / Property"
             lead["service_needed"] = "Business Financial Tracking & Ledger"
             lead["service_slug"] = "business-financial-tracking"
@@ -444,7 +470,7 @@ class AssistantService:
             lead["service_needed"] = "WhatsApp Business Concierge & Webhook Sync"
             lead["service_slug"] = "whatsapp-business-concierge"
         elif any(w in lower_conv for w in ("lead", "outreach", "maps", "b2b", "marketing", "clients", "sales", "growth")):
-            lead["business_type"] = lead["business_type"] or "B2B Sales & Agency"
+            lead["business_type"] = lead["business_type"] or "Financing"
             lead["service_needed"] = "AI Marketing & Growth Automation"
             lead["service_slug"] = "ai-marketing-growth"
         elif any(w in lower_conv for w in ("ecommerce", "store", "retail", "orders", "shop")):
@@ -459,6 +485,51 @@ class AssistantService:
     ) -> tuple[str, Optional[str], Optional[str], Optional[str], Optional[str]]:
         """Intelligent, conversational sales concierge rules engine."""
         last_msg = messages[-1].content.lower() if messages else ""
+
+        # 0a. Executive Analytics & Compliance
+        if any(w in last_msg for w in ("analytic", "compliance", "audit", "kpi", "gdpr", "pii", "executive")):
+            reply = (
+                "Our **Executive Analytics & Compliance Vault** (Starter $99/mo, Growth $199/mo, Enterprise $399/mo) "
+                "unifies your financial KPIs, AI cost/token governance, automated executive digests, and audit-ready exports. "
+                "Would you like to configure this package in your workspace?"
+            )
+            return (
+                reply,
+                "/onboarding?service=executive-analytics-compliance",
+                "👉 Proceed to Client Service Dashboard: Executive Analytics & Compliance Vault",
+                "executive-analytics-compliance",
+                "Executive Analytics & Compliance Vault",
+            )
+
+        # 0b. Multi-Agent Task Orchestration
+        if any(w in last_msg for w in ("orchestrat", "multi-agent", "multi agent", "workflow", "end-to-end")):
+            reply = (
+                "Our **Multi-Agent Task Orchestration Suite** (Starter $199/mo, Growth $399/mo, Enterprise $799/mo) "
+                "coordinates research, planning, execution, and human-in-the-loop approvals across your operations. "
+                "Shall I take you to onboarding to activate it?"
+            )
+            return (
+                reply,
+                "/onboarding?service=multi-agent-orchestration",
+                "👉 Proceed to Client Service Dashboard: Multi-Agent Task Orchestration Suite",
+                "multi-agent-orchestration",
+                "Multi-Agent Task Orchestration Suite",
+            )
+
+        # 0c. Lead CRM & AI Qualification
+        if any(w in last_msg for w in ("crm", "qualif", "scoring", "funnel", "pipeline")):
+            reply = (
+                "Our **Lead CRM & AI Qualification Engine** (Starter $149/mo, Growth $299/mo, Enterprise $599/mo) "
+                "scores incoming prospects (0-100%), automates personalized follow-ups, and syncs booked consultations. "
+                "Let's open onboarding to set up your CRM pipeline."
+            )
+            return (
+                reply,
+                "/onboarding?service=lead-crm-qualification",
+                "👉 Proceed to Client Service Dashboard: Lead CRM & AI Qualification Engine",
+                "lead-crm-qualification",
+                "Lead CRM & AI Qualification Engine",
+            )
 
         # 1. Rent Tracking / Financial Management
         if any(w in last_msg for w in ("rent", "finance", "ledger", "landlord", "tenant", "bookkeeping", "invoice")):
@@ -510,13 +581,15 @@ class AssistantService:
         if any(w in last_msg for w in ("ready", "proceed", "start", "sign up", "register", "onboard", "dashboard", "yes", "package")):
             service_needed = lead.get("service_needed") or "Business Financial Tracking & Ledger"
             service_slug = lead.get("service_slug") or "business-financial-tracking"
-            target_url = "/onboarding"
-            if service_slug == "business-financial-tracking":
-                target_url = "/finance"
-            elif service_slug == "whatsapp-business-concierge":
-                target_url = "/onboarding?service=whatsapp-business-concierge"
-            elif service_slug == "ai-marketing-growth":
-                target_url = "/marketing"
+            slug_url_map = {
+                "business-financial-tracking": "/finance",
+                "whatsapp-business-concierge": "/onboarding?service=whatsapp-business-concierge",
+                "ai-marketing-growth": "/marketing",
+                "multi-agent-orchestration": "/onboarding?service=multi-agent-orchestration",
+                "lead-crm-qualification": "/onboarding?service=lead-crm-qualification",
+                "executive-analytics-compliance": "/onboarding?service=executive-analytics-compliance",
+            }
+            target_url = slug_url_map.get(service_slug, f"/onboarding?service={service_slug}")
 
             reply = (
                 f"Fantastic! Based on our discussion, **{service_needed}** is the ideal solution to automate your operations. "
@@ -533,8 +606,9 @@ class AssistantService:
         # 5. Pricing / Cost inquiries
         if any(w in last_msg for w in ("price", "cost", "how much", "rate", "fee", "plans")):
             reply = (
-                "Our managed AI services start at just **$99/month** (Starter) for full financial tracking, and **$129–$199/month** "
-                "for 24/7 WhatsApp concierge, Google Maps lead generation, or multi-agent orchestration. Every tier is done-for-you with dedicated engineering support. "
+                "Our managed AI services start at **$99/month** (Starter) for Financial Tracking or Executive Analytics & Compliance, "
+                "**$129/month** for WhatsApp Business Concierge, **$149/month** for AI Marketing & Growth or Lead CRM & Qualification, "
+                "and **$199/month** for Multi-Agent Orchestration across our 4 core industries (Financing, Clinics / Hospitals, Real Estate / Property, E-Commerce) plus custom setups. "
                 "What specific service would you like to set up for your business?"
             )
             return (
@@ -547,9 +621,11 @@ class AssistantService:
 
         # 6. Default Discovery Turn
         reply = (
-            "I'd be glad to help! At Teloxtech, we eliminate manual business overhead through managed AI automations — "
-            "including automated **Rent & Financial Tracking**, **24/7 WhatsApp AI Concierge**, and **Google Maps Lead Growth**. "
-            "Could you share a little about your business or the biggest manual task you'd like us to take off your plate?"
+            "I'd be glad to help! At Teloxtech, we offer 6 managed AI services across 4 core industries "
+            "(Financing, Clinics / Hospitals, Real Estate / Property, and E-Commerce) plus custom industry setups — "
+            "covering **Financial Tracking**, **WhatsApp Concierge**, **AI Marketing & Growth**, **Lead CRM Qualification**, "
+            "**Multi-Agent Orchestration**, and **Executive Analytics & Compliance**. "
+            "Could you share a little about your business or the biggest manual task you'd like us to automate?"
         )
         return reply, None, None, None, None
 

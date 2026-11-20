@@ -8,16 +8,19 @@ Configures:
 5. API v1 routing and system health checks.
 """
 
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, cast
 
 from app.api.router import api_v1_router
+from app.automation.scheduler import automation_scheduler
+from app.automation.workers.task_worker import background_task_worker
 from app.config import settings
 from app.core.exceptions import TaloxException
 from app.core.logging import logger, setup_logging
 from app.core.rate_limit import limiter
-from app.database.supabase import init_db
+from app.database.supabase import get_session_factory, init_db
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,8 +28,29 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import Response
+
+
+async def _run_pending_task_queue_tick() -> None:
+    """Periodic worker wrapper to process pending automation tasks."""
+    try:
+        factory = get_session_factory()
+        async with factory() as session:
+            await background_task_worker.process_pending_queue(session)
+    except Exception as exc:
+        logger.error("Background pending task queue tick failed", error=str(exc))
+
+
+async def _run_stale_approval_expiration_tick() -> None:
+    """Periodic worker wrapper to expire stale pending approvals."""
+    try:
+        factory = get_session_factory()
+        async with factory() as session:
+            await background_task_worker.expire_stale_approvals(session)
+    except Exception as exc:
+        logger.error("Background stale approval expiration tick failed", error=str(exc))
 
 
 @asynccontextmanager
@@ -45,7 +69,22 @@ async def lifespan(app: FastAPI):
         await init_db()
     except Exception as exc:
         logger.error("Failed to initialize database tables", error=str(exc))
+
+    automation_scheduler.start()
+    if settings.app_env != "test" and not os.environ.get("PYTEST_CURRENT_TEST"):
+        automation_scheduler.schedule_interval_job(
+            job_id="background_pending_task_queue",
+            func=_run_pending_task_queue_tick,
+            seconds=30,
+        )
+        automation_scheduler.schedule_interval_job(
+            job_id="background_stale_approval_expiration",
+            func=_run_stale_approval_expiration_tick,
+            seconds=60,
+        )
+
     yield
+    automation_scheduler.shutdown()
     logger.info("Talox Tech Stream shutting down cleanly")
 
 
@@ -65,6 +104,9 @@ async def rate_limit_exceeded_handler(request: Request, exc: Exception) -> Respo
 
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
+
+# Rate Limiting Middleware (registered before CORSMiddleware so CORS wraps 429 responses)
+app.add_middleware(SlowAPIMiddleware)
 
 # CORS Configuration
 app.add_middleware(

@@ -263,8 +263,8 @@ async def sales_chatbot_message(
 ):
     """Public & in-app AI Sales & Support Chatbot for Pre-Registration Visitors and Dashboard Assistance.
 
-    - Guides visitors through 27 industries and package tiers.
-    - Provides WhatsApp contact (+92 339 8701000) for human assistance.
+    - Guides visitors through our 4 core industries (+ custom industry setups) and package tiers.
+    - Provides WhatsApp contact (+92 323 8300330 / 03238300330) for human assistance.
     - Intent Trigger: detects hot buying intent / human request and logs trigger alert.
     - Seamless Transition: returns pre-loaded URL (/register?industry=...&package=...) to avoid repeating onboarding.
     """

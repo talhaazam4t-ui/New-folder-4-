@@ -197,7 +197,7 @@ export default function MarketingPage() {
       <Navbar />
       <div className="flex flex-1">
         <Sidebar currentPath="/marketing" />
-        <main className="flex-1 p-8 space-y-8 overflow-y-auto">
+        <main className="flex-1 min-w-0 p-4 sm:p-6 md:p-8 space-y-8 overflow-y-auto">
           <div>
             <h1 className="text-2xl font-bold text-white">Marketing, Campaigns & Lead CRM</h1>
             <p className="text-slate-400 text-sm mt-1">

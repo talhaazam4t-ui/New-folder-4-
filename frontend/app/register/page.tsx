@@ -4,12 +4,16 @@ import React, { Suspense, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { apiRequest } from "@/lib/api";
 import { setAuthToken, setCurrentUser, setActiveTenant } from "@/lib/auth";
+import { normalizeServiceSlug, getCanonicalServiceMeta } from "@/lib/services";
 import { Lock, Mail, User, Phone, ArrowRight, AlertCircle, Sparkles, CheckCircle2 } from "lucide-react";
 
 function RegisterForm() {
   const searchParams = useSearchParams();
   const preSelectedIndustry = searchParams.get("industry") || "";
   const preSelectedService = searchParams.get("service") || "";
+  const normalizedPreSelectedService =
+    normalizeServiceSlug(preSelectedService) || preSelectedService;
+  const preSelectedServiceMeta = getCanonicalServiceMeta(normalizedPreSelectedService);
   const preSelectedPackage = searchParams.get("package") || searchParams.get("plan") || "";
   const preSelectedPrice = searchParams.get("price") ? parseFloat(searchParams.get("price")!) : null;
 
@@ -67,6 +71,10 @@ function RegisterForm() {
         return;
       }
 
+      if (normalizedPreSelectedService && typeof window !== "undefined") {
+        localStorage.setItem("teloxtech_preselected_service", normalizedPreSelectedService);
+      }
+
       // If user came through Chatbot with pre-selected industry and package, auto-provision and jump straight to Dashboard
       if (preSelectedIndustry) {
         try {
@@ -78,7 +86,7 @@ function RegisterForm() {
               slug: tenantSlug,
               industry: preSelectedIndustry,
               settings: {
-                onboarding_completed: true,
+                onboarding_completed: false,
                 automation_active: false,
                 payment_approved: false,
                 theme: "emerald",
@@ -91,45 +99,66 @@ function RegisterForm() {
             setActiveTenant(tenant);
 
             // Fetch catalog for this industry to subscribe the desired service
-            const catRes = await apiRequest<{ services: any[] }>(
+            const catRes = await apiRequest<any>(
               `/api/v1/services?industry=${encodeURIComponent(preSelectedIndustry)}&ensure_seeded=true`
             );
-            const servicesList = Array.isArray(catRes.data)
-              ? catRes.data
-              : Array.isArray((catRes as any).services)
-                ? (catRes as any).services
-                : [];
+            const servicesList = Array.isArray(catRes)
+              ? catRes
+              : Array.isArray(catRes.data)
+                ? catRes.data
+                : Array.isArray(catRes.services)
+                  ? catRes.services
+                  : [];
 
             if (servicesList.length > 0) {
               const targetService =
-                servicesList.find((s: any) => s.slug === preSelectedService) ||
-                (servicesList.length >= 3 ? servicesList[2] : servicesList[0]);
+                servicesList.find(
+                  (s: any) =>
+                    normalizeServiceSlug(s.slug) === normalizedPreSelectedService ||
+                    s.slug === preSelectedService
+                ) || servicesList[0];
 
               if (targetService?.id) {
+                const chosenPlan = (preSelectedPackage || "growth").toLowerCase();
+                const packages = targetService.configuration_schema?.packages || [];
+                const matchingPkg =
+                  packages.find((p: any) => p.plan_name?.toLowerCase() === chosenPlan) ||
+                  packages[0];
+                const resolvedPrice =
+                  preSelectedPrice !== null && !Number.isNaN(preSelectedPrice)
+                    ? preSelectedPrice
+                    : matchingPkg?.price ??
+                      targetService.configuration_schema?.base_price ??
+                      249.0;
+
                 await apiRequest("/api/v1/services/subscribe", {
                   method: "POST",
                   body: JSON.stringify({
                     service_id: targetService.id,
-                    plan_name: preSelectedPackage || "growth",
-                    price: preSelectedPrice || 249.0,
+                    plan_name: matchingPkg?.plan_name || chosenPlan,
+                    price: resolvedPrice,
                     billing_interval: "monthly",
                   }),
                 });
               }
             }
 
-            // Seamless transition: jump straight to Dashboard!
+            // Seamless transition: jump straight to Dashboard or Onboarding with service
             window.location.href = "/dashboard";
             return;
           }
         } catch {
-          // If auto-provision fails, fall back to onboarding
-          window.location.href = "/onboarding";
+          // If auto-provision fails, fall back to onboarding preserving ?service
+          window.location.href = normalizedPreSelectedService
+            ? `/onboarding?service=${encodeURIComponent(normalizedPreSelectedService)}`
+            : "/onboarding";
           return;
         }
       }
 
-      window.location.href = "/onboarding";
+      window.location.href = normalizedPreSelectedService
+        ? `/onboarding?service=${encodeURIComponent(normalizedPreSelectedService)}`
+        : "/onboarding";
     } catch (err: any) {
       setError(err.message || "Failed to register. Please try again.");
     } finally {
@@ -150,11 +179,19 @@ function RegisterForm() {
           Done-For-You Managed AI Automation Services
         </p>
 
-        {preSelectedIndustry && (
+        {(preSelectedIndustry || normalizedPreSelectedService) && (
           <div className="mt-3 flex items-center justify-center gap-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-xs text-emerald-300">
-            <Sparkles className="h-3.5 w-3.5" />
+            <Sparkles className="h-3.5 w-3.5 shrink-0" />
             <span>
-              Pre-loaded: <strong>{preSelectedIndustry}</strong>{" "}
+              Pre-loaded:{" "}
+              <strong>
+                {preSelectedIndustry ||
+                  preSelectedServiceMeta?.name ||
+                  normalizedPreSelectedService}
+              </strong>
+              {preSelectedIndustry && normalizedPreSelectedService && (
+                <> • {preSelectedServiceMeta?.shortName || normalizedPreSelectedService}</>
+              )}{" "}
               {preSelectedPackage && `(${preSelectedPackage.toUpperCase()} Tier)`}
             </span>
           </div>

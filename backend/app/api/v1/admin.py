@@ -314,6 +314,11 @@ async def update_tenant_status(
 
     old_status = tenant.status
     tenant.status = request.status
+    cfg = dict(tenant.settings or {})
+    is_active = request.status == "active"
+    cfg["payment_approved"] = is_active
+    cfg["automation_approved_by_owner"] = is_active
+    tenant.settings = cfg
     action_tag = (
         "admin.tenant.activated_and_payment_confirmed"
         if request.status == "active"
@@ -465,6 +470,8 @@ async def admin_provision_tenant(
         settings={
             "onboarding_completed": True,
             "automation_active": (tenant_status == "active"),
+            "payment_approved": (tenant_status == "active"),
+            "automation_approved_by_owner": (tenant_status == "active"),
             "plan_name": request.plan_name,
             "theme": "emerald",
         },

@@ -4,7 +4,6 @@ import React, { useEffect, useState } from "react";
 import { Navbar } from "@/components/shared/Navbar";
 import { Sidebar } from "@/components/shared/Sidebar";
 import { StatCard } from "@/components/dashboard/StatCard";
-import { SalesChatbot } from "@/components/chatbot/SalesChatbot";
 import { apiRequest } from "@/lib/api";
 import { getActiveTenant, getAuthToken } from "@/lib/auth";
 import {
@@ -17,7 +16,6 @@ import {
   Layers,
   Briefcase,
   Activity,
-  Link2,
   FileBarChart,
   CreditCard,
   Sparkles,
@@ -27,8 +25,7 @@ import {
   Building2,
   Send,
   Clock,
-  ShieldCheck,
-  AlertTriangle,
+  RefreshCw,
 } from "lucide-react";
 
 interface OverviewPayload {
@@ -123,6 +120,7 @@ interface OverviewPayload {
 export default function ClientDashboardPage() {
   const [overview, setOverview] = useState<OverviewPayload | null>(null);
   const [loading, setLoading] = useState(true);
+  const [overviewError, setOverviewError] = useState<string | null>(null);
 
   // 1-Click Copy States for Bank Account & IBAN
   const [copiedAccount, setCopiedAccount] = useState(false);
@@ -143,11 +141,21 @@ export default function ClientDashboardPage() {
       return;
     }
 
+    setOverviewError(null);
+    setLoading(true);
     try {
       const res = await apiRequest<OverviewPayload>(`/api/v1/tenants/${tenant.id}/overview`);
       if (res.data) {
         setOverview(res.data);
+      } else {
+        setOverviewError(
+          res.error?.message || "Failed to load workspace performance overview."
+        );
       }
+    } catch (err: any) {
+      setOverviewError(
+        err?.message || "Failed to communicate with performance overview API."
+      );
     } finally {
       setLoading(false);
     }
@@ -231,12 +239,25 @@ export default function ClientDashboardPage() {
   };
 
   const enabledModules = overview?.enabled_modules || [];
+  const hasPurchasedServices = (overview?.purchased_services?.length ?? 0) > 0;
+  const showAllByDefault = enabledModules.length === 0 && !hasPurchasedServices;
   const showConciergeModules =
-    !isApproved || enabledModules.includes("whatsapp_concierge") || enabledModules.length === 0;
+    !isApproved ||
+    showAllByDefault ||
+    enabledModules.includes("whatsapp_concierge") ||
+    enabledModules.includes("multi_agent_orchestration");
   const showLeadModules =
-    !isApproved || enabledModules.includes("lead_funnel") || enabledModules.length === 0;
+    !isApproved ||
+    showAllByDefault ||
+    enabledModules.includes("lead_crm") ||
+    enabledModules.includes("marketing_growth") ||
+    enabledModules.includes("lead_funnel") ||
+    enabledModules.includes("multi_agent_orchestration");
   const showFinancialModules =
-    !isApproved || enabledModules.includes("financial_ledger") || enabledModules.length === 0;
+    !isApproved ||
+    showAllByDefault ||
+    enabledModules.includes("financial_ledger") ||
+    enabledModules.includes("executive_analytics_compliance");
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col">
@@ -245,7 +266,24 @@ export default function ClientDashboardPage() {
       <div className="flex flex-1">
         <Sidebar currentPath="/dashboard" />
 
-        <main className="flex-1 p-6 sm:p-8 space-y-8 max-w-7xl mx-auto w-full">
+        <main className="flex-1 min-w-0 p-4 sm:p-6 md:p-8 space-y-8 max-w-7xl mx-auto w-full">
+          {overviewError && (
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-xs text-red-800">
+              <div className="flex items-center gap-2">
+                <AlertCircle className="h-4 w-4 shrink-0 text-red-600" />
+                <span>{overviewError}</span>
+              </div>
+              <button
+                type="button"
+                onClick={loadClientPerformance}
+                disabled={loading}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-red-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-red-500 disabled:opacity-50 transition self-start sm:self-auto"
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
+                <span>Retry</span>
+              </button>
+            </div>
+          )}
           {/* Header Banner: Managed Service Status & Selected Industry */}
           <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 border-b border-slate-200 pb-6">
             <div>
@@ -883,9 +921,6 @@ export default function ClientDashboardPage() {
               </div>
             </>
           )}
-
-          {/* PERSISTENT AI SALES & SUPPORT CHATBOT */}
-          <SalesChatbot />
         </main>
       </div>
     </div>

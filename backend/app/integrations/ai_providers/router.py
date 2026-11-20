@@ -210,10 +210,10 @@ def _execute_mock_ai_task(task_type: str, model: str, prompt: str) -> AIExecutio
         mock_content = "Thank you for contacting us. Your message has been received and recorded."
     elif "sales" in task_type or "chatbot" in task_type:
         mock_content = (
-            "Welcome to Talox Tech Stream! We provide Done-For-You Managed AI Automation across 27 industries "
-            "(including Clinics & Hospitals, Dental Clinics, Financing, Real Estate, and E-Commerce). "
+            "Welcome to Talox Tech Stream! We provide Done-For-You Managed AI Automation across 4 core industries "
+            "(Financing, Clinics / Hospitals, Real Estate / Property, and E-Commerce) plus custom industry setups. "
             "Our packages range from Starter ($99/mo) to Growth ($249/mo) and Enterprise ($499/mo). "
-            "You can claim your package immediately or message our live team on WhatsApp at +92 339 8701000."
+            "You can claim your package immediately or message our live team on WhatsApp at +92 323 8300330."
         )
     elif "transaction" in task_type:
         mock_content = '{"amount": 50000, "currency": "PKR", "type": "rent", "confirmed": true}'

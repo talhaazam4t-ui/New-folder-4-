@@ -253,7 +253,7 @@ export function FinanceDashboard() {
       <div className="flex flex-1">
         <Sidebar currentPath="/finance" />
 
-        <main className="flex-1 p-6 md:p-8 space-y-6 max-w-7xl mx-auto w-full">
+        <main className="flex-1 min-w-0 p-4 sm:p-6 md:p-8 space-y-6 max-w-7xl mx-auto w-full">
           {/* Header & Status Banner */}
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-2 border-b border-slate-800/80">
             <div>

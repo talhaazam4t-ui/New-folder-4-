@@ -1007,12 +1007,18 @@ class MarketingService:
             detected_plan = request.current_package.lower()
             detected_price = 99.0 if "starter" in detected_plan else (499.0 if "enterprise" in detected_plan else 249.0)
 
-        # 3. Detect Service Slug
-        detected_service = "whatsapp_ai_concierge"
-        if any(w in msg_lower for w in ["lead", "outreach", "maps", "scraping", "prospect"]):
-            detected_service = "lead_generation_engine"
-        elif any(w in msg_lower for w in ["finance", "ledger", "invoice", "bank", "tax", "accounting"]):
-            detected_service = "automated_financial_ledger"
+        # 3. Detect Service Slug (canonical hyphenated catalog slugs)
+        detected_service = "whatsapp-business-concierge"
+        if any(w in msg_lower for w in ["analytic", "compliance", "audit", "kpi", "gdpr"]):
+            detected_service = "executive-analytics-compliance"
+        elif any(w in msg_lower for w in ["orchestrat", "multi-agent", "multi agent"]):
+            detected_service = "multi-agent-orchestration"
+        elif any(w in msg_lower for w in ["crm", "qualif", "scoring", "funnel"]):
+            detected_service = "lead-crm-qualification"
+        elif any(w in msg_lower for w in ["lead", "outreach", "maps", "scraping", "prospect", "marketing", "growth"]):
+            detected_service = "ai-marketing-growth"
+        elif any(w in msg_lower for w in ["finance", "ledger", "invoice", "bank", "tax", "accounting", "rent"]):
+            detected_service = "business-financial-tracking"
 
         # 4. Intent Trigger Detection (High Buying Intent or Human Help)
         intent_keywords = [
@@ -1057,11 +1063,12 @@ class MarketingService:
         # 7. Generate Consultant Reply via AI Router
         prompt = (
             f"You are the official AI Sales Consultant for Talox Tech Stream, presenting Done-For-You Managed AI Automation.\n"
+            f"Supported Core Industries: Financing, Clinics / Hospitals, Real Estate / Property, and E-Commerce (plus custom industry setups during onboarding).\n"
             f"User message: {request.message}\n"
-            f"Context: Industry: {detected_industry}, Package: {detected_plan.capitalize()} (${detected_price}/mo).\n"
-            f"Direct WhatsApp Contact: +92 339 8701000 (https://wa.me/923398701000).\n"
+            f"Context: Industry: {detected_industry}, Service: {detected_service}, Package: {detected_plan.capitalize()} (${detected_price}/mo).\n"
+            f"Direct WhatsApp Contact: +92 323 8300330 (https://wa.me/923238300330).\n"
             f"Official Bank: Faysal Bank, Account: Talha Azam, No: 3398701000005292, IBAN: PK97FAYS3398701000005292.\n"
-            f"Guidelines: Be engaging, concise, and helpful. If they want human assistance, provide WhatsApp +92 339 8701000. "
+            f"Guidelines: Be engaging, concise, and helpful. If they want human assistance, provide WhatsApp +92 323 8300330. "
             f"If they are interested in a package, explain the benefits for {detected_industry} and encourage them to launch their dashboard."
         )
 
@@ -1076,13 +1083,13 @@ class MarketingService:
                 reply = (
                     f"Hello! I would be thrilled to assist you with our Done-For-You AI Automation for {detected_industry}. "
                     f"Our {detected_plan.capitalize()} plan (${detected_price:.0f}/mo) includes dedicated 24/7 AI agents tailored specifically to your business workflows. "
-                    f"You can launch your dashboard right now with this package, or connect with our human sales team immediately on WhatsApp at +92 339 8701000."
+                    f"You can launch your dashboard right now with this package, or connect with our human sales team immediately on WhatsApp at +92 323 8300330."
                 )
         except Exception:
             reply = (
                 f"Hello! I'd be glad to help you set up AI Automation for {detected_industry}. "
                 f"Our {detected_plan.capitalize()} plan (${detected_price:.0f}/mo) delivers automated lead capture, WhatsApp concierge, and calendar bookings. "
-                f"You can also chat directly with our executive team on WhatsApp at +92 339 8701000."
+                f"You can also chat directly with our executive team on WhatsApp at +92 323 8300330."
             )
 
         return SalesChatbotMessageResponse(
@@ -1093,7 +1100,7 @@ class MarketingService:
             detected_price=detected_price,
             hot_lead=hot_lead,
             alert_message=alert_msg,
-            whatsapp_url="https://wa.me/923398701000",
+            whatsapp_url="https://wa.me/923238300330",
             onboarding_transition_url=onboarding_transition_url,
         )
 

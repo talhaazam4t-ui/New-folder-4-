@@ -580,7 +580,7 @@ export default function AdminDashboardPage() {
           onTabChange={handleSidebarTabChange}
         />
 
-        <main className="flex-1 p-6 sm:p-8 space-y-8 max-w-7xl mx-auto w-full">
+        <main className="flex-1 min-w-0 p-4 sm:p-6 md:p-8 space-y-8 max-w-7xl mx-auto w-full">
           {/* Header Banner */}
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-slate-800 pb-6">
             <div>

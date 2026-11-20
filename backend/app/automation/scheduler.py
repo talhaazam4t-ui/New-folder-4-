@@ -16,10 +16,14 @@ class AutomationScheduler:
     def __init__(self):
         self._scheduler = AsyncIOScheduler(timezone="UTC")
         self._started = False
+        self._has_shutdown = False
 
     def start(self) -> None:
         """Start the async scheduler if not already running."""
         if not self._started:
+            if self._scheduler.running or self._has_shutdown:
+                self._scheduler = AsyncIOScheduler(timezone="UTC")
+            self._has_shutdown = False
             self._scheduler.start()
             self._started = True
             logger.info("Custom Python AutomationScheduler started")
@@ -27,8 +31,12 @@ class AutomationScheduler:
     def shutdown(self) -> None:
         """Gracefully stop the scheduler."""
         if self._started:
-            self._scheduler.shutdown(wait=False)
+            try:
+                self._scheduler.shutdown(wait=False)
+            except Exception:
+                pass
             self._started = False
+            self._has_shutdown = True
             logger.info("Custom Python AutomationScheduler stopped")
 
     def schedule_interval_job(

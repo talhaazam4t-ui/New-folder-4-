@@ -156,25 +156,26 @@ def verify_oauth_state(state_token: str) -> Dict[str, Any]:
     except JWTError:
         pass
 
-    # 2. Resilient fallback for legacy / test format: talox_{tenant_id}_{nonce}
-    if state_token.startswith("talox_"):
-        parts = state_token.split("_")
-        if len(parts) >= 2:
+    if settings.app_env in ("development", "test"):
+        # 2. Resilient fallback for legacy / test format: talox_{tenant_id}_{nonce}
+        if state_token.startswith("talox_"):
+            parts = state_token.split("_")
+            if len(parts) >= 2:
+                return {
+                    "tenant_id": parts[1],
+                    "user_id": None,
+                    "provider": None,
+                    "return_to": "/onboarding",
+                }
+
+        # 3. If mock state from test suite (e.g. oauth_state_...)
+        if "oauth_state" in state_token or "mock" in state_token or "test" in state_token:
             return {
-                "tenant_id": parts[1],
+                "tenant_id": None,
                 "user_id": None,
                 "provider": None,
                 "return_to": "/onboarding",
             }
-
-    # 3. If mock state from test suite (e.g. oauth_state_...)
-    if "oauth_state" in state_token or "mock" in state_token or "test" in state_token:
-        return {
-            "tenant_id": None,
-            "user_id": None,
-            "provider": None,
-            "return_to": "/onboarding",
-        }
 
     raise TaloxException(
         message="Invalid or expired OAuth state parameter. Please retry initiating connection.",
@@ -453,10 +454,17 @@ class IntegrationService:
         )
         sub_rows = sub_res.all()
 
+        now = datetime.now(timezone.utc)
         required_providers_ordered: List[str] = []
         purchased_services: List[Dict[str, Any]] = []
 
         for sub, srv in sub_rows:
+            if sub.expires_at is not None:
+                exp = sub.expires_at
+                if exp.tzinfo is None:
+                    exp = exp.replace(tzinfo=timezone.utc)
+                if exp < now:
+                    continue
             schema = srv.configuration_schema or {}
             ind_profile = (schema.get("industry_profiles") or {}).get(industry, {})
             srv_reqs = ind_profile.get(
@@ -514,8 +522,9 @@ class IntegrationService:
         )
         t_settings = dict(tenant.settings or {})
         owner_approved = bool(t_settings.get("automation_approved_by_owner", True))
+        payment_approved = bool(t_settings.get("payment_approved", tenant.status == "active"))
         automation_active = bool(
-            all_connected and owner_approved and tenant.status in ("active", "pending_approval")
+            all_connected and owner_approved and payment_approved and tenant.status == "active"
         )
 
         return {

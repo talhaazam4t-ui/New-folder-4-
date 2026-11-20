@@ -1,8 +1,16 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { apiRequest } from "@/lib/api";
-import { getActiveTenant, getAuthToken, setActiveTenant } from "@/lib/auth";
+import {
+  getActiveTenant,
+  getAuthToken,
+  setActiveTenant,
+  SUPPORT_WHATSAPP_NUMBER,
+  SUPPORT_WHATSAPP_LINK,
+} from "@/lib/auth";
+import { normalizeServiceSlug, getCanonicalServiceMeta } from "@/lib/services";
+import { SupportRequestModal } from "@/components/shared/SupportRequestModal";
 import {
   Building2,
   Sparkles,
@@ -17,6 +25,9 @@ import {
   Lock,
   RefreshCw,
   ExternalLink,
+  Trash2,
+  LifeBuoy,
+  MessageSquare,
 } from "lucide-react";
 
 interface PackageTier {
@@ -76,21 +87,67 @@ export default function OnboardingPage() {
 
   // Step 2: Selected Services & Package Tier
   const [selectedPackages, setSelectedPackages] = useState<Record<string, string>>({});
-  const [subscribedServiceIds, setSubscribedServiceIds] = useState<string[]>([]);
+  const [subscribedMap, setSubscribedMap] = useState<
+    Record<string, { subscriptionId: string; planName: string }>
+  >({});
+  const subscribedServiceIds = Object.keys(subscribedMap);
 
   // Step 3: Required Integrations
   const [requiredIntegrations, setRequiredIntegrations] = useState<RequiredIntegrationItem[]>([]);
   const [automationActive, setAutomationActive] = useState(false);
   const [apiKeysInput, setApiKeysInput] = useState<Record<string, string>>({});
   const [accountIdsInput, setAccountIdsInput] = useState<Record<string, string>>({});
+  const [webhookUrlsInput, setWebhookUrlsInput] = useState<Record<string, string>>({});
   const [verifyingProvider, setVerifyingProvider] = useState<string | null>(null);
+  const [oauthUnavailableByProvider, setOauthUnavailableByProvider] = useState<
+    Record<string, string>
+  >({});
+
+  // Support Modal State
+  const [supportModalOpen, setSupportModalOpen] = useState(false);
+  const [supportDefaults, setSupportDefaults] = useState<{
+    subject: string;
+    category: string;
+    message: string;
+    provider?: string;
+  }>({
+    subject: "",
+    category: "integration_setup",
+    message: "",
+  });
 
   const [error, setError] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [preselectedService, setPreselectedService] = useState<string | null>(null);
 
-  const loadCatalogAndExistingState = async () => {
+  const syncOnboardingRequirements = useCallback((reqData: any) => {
+    const nextMap: Record<string, { subscriptionId: string; planName: string }> = {};
+    const purchased = Array.isArray(reqData?.purchased_services) ? reqData.purchased_services : [];
+    for (const p of purchased) {
+      if (p?.service_id && p?.subscription_id) {
+        nextMap[p.service_id] = {
+          subscriptionId: p.subscription_id,
+          planName: (p.plan_name || "starter").toLowerCase(),
+        };
+      }
+    }
+    setSubscribedMap(nextMap);
+    setSelectedPackages((prev) => {
+      const merged = { ...prev };
+      for (const [serviceId, sub] of Object.entries(nextMap)) {
+        if (!merged[serviceId]) {
+          merged[serviceId] = sub.planName;
+        }
+      }
+      return merged;
+    });
+    setRequiredIntegrations(reqData?.required_integrations || []);
+    setAutomationActive(Boolean(reqData?.automation_active));
+    return Object.keys(nextMap);
+  }, []);
+
+  const loadCatalogAndExistingState = useCallback(async () => {
     // Read pre-selected service from URL or chatbot consultation
     if (typeof window !== "undefined") {
       const urlParams = new URLSearchParams(window.location.search);
@@ -99,18 +156,7 @@ export default function OnboardingPage() {
       const chosenService = svcParam || savedPreselected;
       if (chosenService) {
         const lower = chosenService.toLowerCase();
-        const slugAliases: Record<string, string> = {
-          whatsapp: "whatsapp-business-concierge",
-          "whatsapp-conversational-ai": "whatsapp-business-concierge",
-          "whatsapp-24-7-concierge": "whatsapp-business-concierge",
-          orchestration: "multi-agent-orchestration",
-          finance: "business-financial-tracking",
-          "business-finance": "business-financial-tracking",
-          marketing: "ai-marketing-growth",
-          "lead-generation-outreach": "ai-marketing-growth",
-          "lead-generation-growth": "ai-marketing-growth",
-        };
-        const normalizedSlug = slugAliases[lower] || chosenService;
+        const normalizedSlug = normalizeServiceSlug(chosenService) || chosenService;
         setPreselectedService(normalizedSlug);
 
         if (lower.includes("clinic") || lower.includes("patient") || lower.includes("hospital") || lower.includes("doctor")) {
@@ -147,12 +193,7 @@ export default function OnboardingPage() {
         if (reqData.selected_industry) {
           setIndustry(reqData.selected_industry);
         }
-        const subIds = (reqData.purchased_services || []).map(
-          (p: { service_id: string }) => p.service_id
-        );
-        setSubscribedServiceIds(subIds);
-        setRequiredIntegrations(reqData.required_integrations || []);
-        setAutomationActive(Boolean(reqData.automation_active));
+        const subIds = syncOnboardingRequirements(reqData);
 
         if (subIds.length > 0) {
           setStep(3);
@@ -161,7 +202,7 @@ export default function OnboardingPage() {
         }
       }
     }
-  };
+  }, [syncOnboardingRequirements]);
 
   useEffect(() => {
     const token = getAuthToken();
@@ -254,7 +295,7 @@ export default function OnboardingPage() {
     };
 
     checkOAuthCallback();
-  }, []);
+  }, [loadCatalogAndExistingState]);
 
   const handleNameChange = (val: string) => {
     setName(val);
@@ -325,11 +366,24 @@ export default function OnboardingPage() {
   const handleSubscribeService = async (srv: IndustryServiceItem) => {
     setError(null);
     setStatusMessage(null);
-    setLoading(true);
 
-    const chosenPlanName = selectedPackages[srv.id] || srv.packages?.[0]?.plan_name || "starter";
+    const existingSub = subscribedMap[srv.id];
+    const chosenPlanName = (
+      selectedPackages[srv.id] ||
+      srv.packages?.[0]?.plan_name ||
+      "starter"
+    ).toLowerCase();
+
+    if (existingSub && existingSub.planName === chosenPlanName) {
+      setStatusMessage(
+        `"${srv.name}" (${chosenPlanName.toUpperCase()}) is already selected.`
+      );
+      return;
+    }
+
+    setLoading(true);
     const pkg =
-      srv.packages?.find((p) => p.plan_name === chosenPlanName) || {
+      srv.packages?.find((p) => p.plan_name.toLowerCase() === chosenPlanName) || {
         plan_name: chosenPlanName,
         price: srv.base_price || 99.0,
         billing_interval: "monthly",
@@ -347,16 +401,14 @@ export default function OnboardingPage() {
       });
 
       if (res.id || res.data?.id) {
-        setStatusMessage(`Selected "${srv.name}" (${pkg.plan_name.toUpperCase()} package).`);
+        setStatusMessage(
+          existingSub
+            ? `Updated "${srv.name}" to ${pkg.plan_name.toUpperCase()} tier.`
+            : `Selected "${srv.name}" (${pkg.plan_name.toUpperCase()} package).`
+        );
         const reqRes = await apiRequest("/api/v1/integrations/onboarding-requirements");
         if (reqRes.data) {
-          setSubscribedServiceIds(
-            (reqRes.data.purchased_services || []).map(
-              (p: { service_id: string }) => p.service_id
-            )
-          );
-          setRequiredIntegrations(reqRes.data.required_integrations || []);
-          setAutomationActive(Boolean(reqRes.data.automation_active));
+          syncOnboardingRequirements(reqRes.data);
         }
       } else {
         setError(res.error?.message || "Could not activate service package.");
@@ -366,6 +418,45 @@ export default function OnboardingPage() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleDeselectService = async (srv: IndustryServiceItem) => {
+    const existingSub = subscribedMap[srv.id];
+    if (!existingSub?.subscriptionId) return;
+
+    setError(null);
+    setStatusMessage(null);
+    setLoading(true);
+
+    try {
+      const res = await apiRequest(
+        `/api/v1/services/subscriptions/${existingSub.subscriptionId}/cancel`,
+        { method: "POST" }
+      );
+      if (!res.error && (res.id || res.data?.id || res.status === "canceled")) {
+        setStatusMessage(`Removed "${srv.name}" from your selected services.`);
+        const reqRes = await apiRequest("/api/v1/integrations/onboarding-requirements");
+        if (reqRes.data) {
+          syncOnboardingRequirements(reqRes.data);
+        }
+      } else {
+        setError(res.error?.message || `Failed to remove "${srv.name}".`);
+      }
+    } catch (err: any) {
+      setError(err.message || `An error occurred removing "${srv.name}".`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const openSupportForProvider = (provider: string, displayName: string) => {
+    setSupportDefaults({
+      subject: `Assisted Setup Request: ${displayName}`,
+      category: "integration_setup",
+      message: `Please assist with configuring ${displayName} (${provider}) for my workspace "${name || slug || "Workspace"}".`,
+      provider,
+    });
+    setSupportModalOpen(true);
   };
 
   const handleConnectIntegration = async (reqItem: RequiredIntegrationItem) => {
@@ -382,10 +473,18 @@ export default function OnboardingPage() {
         );
 
         if (!oauthInfo.success || !oauthInfo.data?.authorization_url) {
-          setError(
-            oauthInfo.error?.message ||
-              `Failed to generate authorization URL for ${reqItem.display_name}.`
-          );
+          setStatusMessage(null);
+          if (oauthInfo.error?.code === "OAUTH_NOT_CONFIGURED") {
+            setOauthUnavailableByProvider((prev) => ({
+              ...prev,
+              [reqItem.provider]: reqItem.display_name,
+            }));
+          } else {
+            setError(
+              oauthInfo.error?.message ||
+                `Failed to generate authorization URL for ${reqItem.display_name}.`
+            );
+          }
           return;
         }
 
@@ -405,6 +504,8 @@ export default function OnboardingPage() {
         }
       } else {
         const apiKey = (apiKeysInput[reqItem.provider] || "").trim();
+        const accountId = (accountIdsInput[reqItem.provider] || "").trim();
+        const webhookUrl = (webhookUrlsInput[reqItem.provider] || "").trim();
         if (!apiKey) {
           setError(`Please enter a valid API Key for ${reqItem.display_name} before connecting.`);
           setLoading(false);
@@ -415,7 +516,8 @@ export default function OnboardingPage() {
           body: JSON.stringify({
             api_key: apiKey,
             account_identifier:
-              accountIdsInput[reqItem.provider] || `${slug || "workspace"}-${reqItem.provider}`,
+              accountId || `${slug || "workspace"}-${reqItem.provider}`,
+            configuration: webhookUrl ? { webhook_url: webhookUrl } : undefined,
           }),
         });
 
@@ -432,8 +534,7 @@ export default function OnboardingPage() {
 
         const reqRes = await apiRequest("/api/v1/integrations/onboarding-requirements");
         if (reqRes.data) {
-          setRequiredIntegrations(reqRes.data.required_integrations || []);
-          setAutomationActive(Boolean(reqRes.data.automation_active));
+          syncOnboardingRequirements(reqRes.data);
         }
       }
     } catch (err: any) {
@@ -466,8 +567,7 @@ export default function OnboardingPage() {
 
       const reqRes = await apiRequest("/api/v1/integrations/onboarding-requirements");
       if (reqRes.data) {
-        setRequiredIntegrations(reqRes.data.required_integrations || []);
-        setAutomationActive(Boolean(reqRes.data.automation_active));
+        syncOnboardingRequirements(reqRes.data);
       }
     } catch (err: any) {
       setError(err.message || `Failed to verify connection for ${reqItem.display_name}.`);
@@ -479,8 +579,8 @@ export default function OnboardingPage() {
   const currentIndustryServices = catalogByIndustry[industry] || [];
 
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center bg-slate-900 px-4 py-12 text-slate-100">
-      <div className="w-full max-w-4xl space-y-8 rounded-2xl border border-slate-800 bg-slate-950 p-8 shadow-2xl">
+    <div className="flex min-h-screen flex-col items-center justify-center bg-slate-900 px-4 py-8 sm:py-12 text-slate-100">
+      <div className="w-full max-w-4xl space-y-8 rounded-2xl border border-slate-800 bg-slate-950 p-4 sm:p-8 shadow-2xl">
         {/* Header & Step Progress */}
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-slate-800 pb-6">
           <div className="flex items-center gap-3">
@@ -540,7 +640,8 @@ export default function OnboardingPage() {
           <div className="flex items-center gap-2 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-xs text-emerald-300">
             <Sparkles className="h-4 w-4 shrink-0 text-emerald-400" />
             <span>
-              Pre-selected service from your Teloxtech Assistant consultation: <strong>{preselectedService}</strong>
+              Pre-selected service:{" "}
+              <strong>{getCanonicalServiceMeta(preselectedService)?.name || preselectedService}</strong>
             </span>
           </div>
         )}
@@ -674,17 +775,25 @@ export default function OnboardingPage() {
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {currentIndustryServices.map((srv) => {
-                const isSelected = subscribedServiceIds.includes(srv.id);
+                const activeSub = subscribedMap[srv.id];
+                const isSelected = Boolean(activeSub);
+                const normalizedSrvSlug = normalizeServiceSlug(srv.slug);
                 const isPreselectedMatch =
                   Boolean(preselectedService) &&
-                  (srv.slug.toLowerCase() === preselectedService!.toLowerCase() ||
+                  ((normalizedSrvSlug && normalizedSrvSlug === preselectedService) ||
+                    srv.slug.toLowerCase() === preselectedService!.toLowerCase() ||
                     srv.slug.toLowerCase().includes(preselectedService!.toLowerCase()) ||
-                    srv.name.toLowerCase().includes(preselectedService!.toLowerCase()) ||
-                    preselectedService!.toLowerCase().includes(srv.name.toLowerCase()));
-                const chosenPlan =
-                  selectedPackages[srv.id] || srv.packages?.[0]?.plan_name || "starter";
+                    srv.name.toLowerCase().includes(preselectedService!.toLowerCase()));
+                const chosenPlan = (
+                  selectedPackages[srv.id] ||
+                  activeSub?.planName ||
+                  srv.packages?.[0]?.plan_name ||
+                  "starter"
+                ).toLowerCase();
                 const activePkg =
-                  srv.packages?.find((p) => p.plan_name === chosenPlan) || srv.packages?.[0];
+                  srv.packages?.find((p) => p.plan_name.toLowerCase() === chosenPlan) ||
+                  srv.packages?.[0];
+                const tierChanged = Boolean(activeSub && chosenPlan !== activeSub.planName);
 
                 return (
                   <div
@@ -778,9 +887,25 @@ export default function OnboardingPage() {
                           </span>
                         ))}
                       </div>
+
+                      {srv.onboarding_requirements && srv.onboarding_requirements.length > 0 && (
+                        <div className="rounded-lg bg-slate-950/60 border border-slate-800/70 p-2.5 space-y-1">
+                          <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                            Onboarding Checklist
+                          </p>
+                          <ul className="space-y-1 text-[11px] text-slate-300">
+                            {srv.onboarding_requirements.map((reqText) => (
+                              <li key={reqText} className="flex items-start gap-1.5">
+                                <CheckCircle2 className="h-3 w-3 text-emerald-400 shrink-0 mt-0.5" />
+                                <span>{reqText}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
                     </div>
 
-                    <div className="mt-4 pt-3 border-t border-slate-800 flex items-center justify-between">
+                    <div className="mt-4 pt-3 border-t border-slate-800 flex flex-wrap items-center justify-between gap-2">
                       <div>
                         <span className="text-lg font-extrabold text-white">
                           ${activePkg ? activePkg.price : srv.base_price}
@@ -788,19 +913,40 @@ export default function OnboardingPage() {
                         <span className="text-xs text-slate-400"> / month</span>
                       </div>
 
-                      <button
-                        type="button"
-                        disabled={loading}
-                        onClick={() => handleSubscribeService(srv)}
-                        className={`flex items-center gap-1.5 rounded-lg px-4 py-2 text-xs font-semibold transition ${
-                          isSelected
-                            ? "bg-slate-800 text-emerald-400 hover:bg-slate-700"
-                            : "bg-emerald-600 text-white hover:bg-emerald-500"
-                        }`}
-                      >
-                        <Layers className="h-3.5 w-3.5" />
-                        <span>{isSelected ? "Update Package" : "Select Service"}</span>
-                      </button>
+                      <div className="flex items-center gap-2">
+                        {isSelected && (
+                          <button
+                            type="button"
+                            disabled={loading}
+                            onClick={() => handleDeselectService(srv)}
+                            className="flex items-center gap-1 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs font-semibold text-red-300 hover:bg-red-500/20 disabled:opacity-50 transition"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                            <span>Remove</span>
+                          </button>
+                        )}
+
+                        {isSelected && !tierChanged ? (
+                          <span className="flex items-center gap-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500/15 px-3.5 py-2 text-xs font-semibold text-emerald-300">
+                            <CheckCircle2 className="h-3.5 w-3.5" />
+                            <span>Selected ({activeSub?.planName})</span>
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            disabled={loading}
+                            onClick={() => handleSubscribeService(srv)}
+                            className={`flex items-center gap-1.5 rounded-lg px-4 py-2 text-xs font-semibold transition ${
+                              isSelected
+                                ? "bg-slate-800 text-emerald-400 hover:bg-slate-700"
+                                : "bg-emerald-600 text-white hover:bg-emerald-500"
+                            }`}
+                          >
+                            <Layers className="h-3.5 w-3.5" />
+                            <span>{isSelected ? "Update Tier" : "Select Service"}</span>
+                          </button>
+                        )}
+                      </div>
                     </div>
                   </div>
                 );
@@ -839,124 +985,193 @@ export default function OnboardingPage() {
             <div className="space-y-3">
               {requiredIntegrations.map((reqItem) => {
                 const isConnected = reqItem.status === "connected";
+                const isOAuthUnavailable = Boolean(oauthUnavailableByProvider[reqItem.provider]);
                 return (
                   <div
                     key={reqItem.provider}
-                    className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 rounded-xl border border-slate-800 bg-slate-900/90 p-5"
+                    className="rounded-xl border border-slate-800 bg-slate-900/90 p-5 space-y-4"
                   >
-                    <div className="space-y-1 max-w-xl">
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-bold text-white">
-                          {reqItem.display_name}
-                        </span>
-                        <span className="rounded bg-slate-800 px-2 py-0.5 text-[10px] font-mono uppercase text-slate-400">
-                          {reqItem.auth_method === "oauth" ? "OAuth 2.0" : "API Key Vault"}
-                        </span>
-                        <span
-                          className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${
-                            isConnected
-                              ? "bg-emerald-500/20 text-emerald-400"
-                              : reqItem.status === "error"
-                                ? "bg-red-500/20 text-red-400"
-                                : "bg-slate-800 text-slate-400"
-                          }`}
-                        >
-                          {isConnected
-                            ? "Connected"
-                            : reqItem.status === "error"
-                              ? "Connection Failed"
-                              : "Disconnected"}
-                        </span>
-                      </div>
-                      <p className="text-xs text-slate-400">{reqItem.description}</p>
-                      {reqItem.external_account_id && (
-                        <p className="text-[11px] font-mono text-emerald-400">
-                          Linked Account: {reqItem.external_account_id}
-                        </p>
-                      )}
-                    </div>
-
-                    <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-                      {reqItem.auth_method === "api_key" && (
-                        <input
-                          type="password"
-                          placeholder={isConnected ? "Paste new API Key to reconnect" : "Paste API Key"}
-                          value={apiKeysInput[reqItem.provider] || ""}
-                          onChange={(e) =>
-                            setApiKeysInput((prev) => ({
-                              ...prev,
-                              [reqItem.provider]: e.target.value,
-                            }))
-                          }
-                          className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white"
-                        />
-                      )}
-
-                      {isConnected ? (
-                        <div className="flex items-center gap-2">
-                          <button
-                            type="button"
-                            disabled={loading || verifyingProvider === reqItem.provider}
-                            onClick={() => handleVerifyConnection(reqItem)}
-                            className="flex items-center justify-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-700 disabled:opacity-50 transition"
-                            title="Test live connection and token freshness"
+                    <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+                      <div className="space-y-1 max-w-xl">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-sm font-bold text-white">
+                            {reqItem.display_name}
+                          </span>
+                          <span className="rounded bg-slate-800 px-2 py-0.5 text-[10px] font-mono uppercase text-slate-400">
+                            {reqItem.auth_method === "oauth" ? "OAuth 2.0" : "API Key Vault"}
+                          </span>
+                          <span
+                            className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${
+                              isConnected
+                                ? "bg-emerald-500/20 text-emerald-400"
+                                : reqItem.status === "error"
+                                  ? "bg-red-500/20 text-red-400"
+                                  : "bg-slate-800 text-slate-400"
+                            }`}
                           >
-                            <RefreshCw
-                              className={`h-3.5 w-3.5 ${
-                                verifyingProvider === reqItem.provider ? "animate-spin text-emerald-400" : ""
-                              }`}
+                            {isConnected
+                              ? "Connected"
+                              : reqItem.status === "error"
+                                ? "Connection Failed"
+                                : "Disconnected"}
+                          </span>
+                        </div>
+                        <p className="text-xs text-slate-400">{reqItem.description}</p>
+                        {reqItem.external_account_id && (
+                          <p className="text-[11px] font-mono text-emerald-400">
+                            Linked Account: {reqItem.external_account_id}
+                          </p>
+                        )}
+                      </div>
+
+                      <div className="flex flex-col gap-2 w-full lg:w-auto lg:min-w-[280px]">
+                        {reqItem.auth_method === "api_key" && (
+                          <div className="grid grid-cols-1 gap-2">
+                            <input
+                              type="text"
+                              placeholder="Account Identifier / Booking Handle (e.g. clinic-cal-01)"
+                              value={accountIdsInput[reqItem.provider] || ""}
+                              onChange={(e) =>
+                                setAccountIdsInput((prev) => ({
+                                  ...prev,
+                                  [reqItem.provider]: e.target.value,
+                                }))
+                              }
+                              className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white placeholder-slate-500 focus:border-emerald-500 focus:outline-none"
                             />
-                            <span>
-                              {verifyingProvider === reqItem.provider
-                                ? "Verifying..."
-                                : "Verify Live"}
-                            </span>
-                          </button>
+                            <input
+                              type="url"
+                              placeholder="Webhook Callback URL (optional)"
+                              value={webhookUrlsInput[reqItem.provider] || ""}
+                              onChange={(e) =>
+                                setWebhookUrlsInput((prev) => ({
+                                  ...prev,
+                                  [reqItem.provider]: e.target.value,
+                                }))
+                              }
+                              className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white placeholder-slate-500 focus:border-emerald-500 focus:outline-none"
+                            />
+                            <input
+                              type="password"
+                              placeholder={
+                                isConnected ? "Paste new API Key to reconnect" : "Paste API Key *"
+                              }
+                              value={apiKeysInput[reqItem.provider] || ""}
+                              onChange={(e) =>
+                                setApiKeysInput((prev) => ({
+                                  ...prev,
+                                  [reqItem.provider]: e.target.value,
+                                }))
+                              }
+                              className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white placeholder-slate-500 focus:border-emerald-500 focus:outline-none"
+                            />
+                          </div>
+                        )}
+
+                        {isConnected ? (
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              disabled={loading || verifyingProvider === reqItem.provider}
+                              onClick={() => handleVerifyConnection(reqItem)}
+                              className="flex-1 flex items-center justify-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-700 disabled:opacity-50 transition"
+                              title="Test live connection and token freshness"
+                            >
+                              <RefreshCw
+                                className={`h-3.5 w-3.5 ${
+                                  verifyingProvider === reqItem.provider ? "animate-spin text-emerald-400" : ""
+                                }`}
+                              />
+                              <span>
+                                {verifyingProvider === reqItem.provider
+                                  ? "Verifying..."
+                                  : "Verify Live"}
+                              </span>
+                            </button>
+                            <button
+                              type="button"
+                              disabled={loading}
+                              onClick={() => handleConnectIntegration(reqItem)}
+                              className="flex-1 flex items-center justify-center gap-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-xs font-semibold text-emerald-300 hover:bg-emerald-500/20 disabled:opacity-50 transition"
+                              title="Re-authenticate with provider"
+                            >
+                              <Link2 className="h-3.5 w-3.5" />
+                              <span>Reconnect</span>
+                            </button>
+                          </div>
+                        ) : (
                           <button
                             type="button"
                             disabled={loading}
                             onClick={() => handleConnectIntegration(reqItem)}
-                            className="flex items-center justify-center gap-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-xs font-semibold text-emerald-300 hover:bg-emerald-500/20 disabled:opacity-50 transition"
-                            title="Re-authenticate with OAuth provider"
+                            className="flex items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 py-2.5 text-xs font-semibold text-white hover:bg-emerald-500 disabled:opacity-50 transition"
                           >
-                            <Link2 className="h-3.5 w-3.5" />
-                            <span>Reconnect</span>
+                            {reqItem.auth_method === "oauth" ? (
+                              <ExternalLink className="h-3.5 w-3.5" />
+                            ) : (
+                              <Lock className="h-3.5 w-3.5" />
+                            )}
+                            <span>
+                              {reqItem.auth_method === "oauth"
+                                ? `Authorize ${reqItem.display_name}`
+                                : "Save & Connect"}
+                            </span>
                           </button>
-                        </div>
-                      ) : (
-                        <button
-                          type="button"
-                          disabled={loading}
-                          onClick={() => handleConnectIntegration(reqItem)}
-                          className="flex items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 py-2.5 text-xs font-semibold text-white hover:bg-emerald-500 disabled:opacity-50 transition"
-                        >
-                          {reqItem.auth_method === "oauth" ? (
-                            <ExternalLink className="h-3.5 w-3.5" />
-                          ) : (
-                            <Lock className="h-3.5 w-3.5" />
-                          )}
-                          <span>
-                            {reqItem.auth_method === "oauth"
-                              ? `Authorize ${reqItem.display_name}`
-                              : "Save & Connect"}
-                          </span>
-                        </button>
-                      )}
+                        )}
+                      </div>
                     </div>
+
+                    {isOAuthUnavailable && (
+                      <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 space-y-2.5 text-xs">
+                        <p className="font-bold text-amber-300">
+                          One-Click OAuth Setup Not Enabled Yet — Sandbox &amp; Assisted Setup Available
+                        </p>
+                        <p className="text-slate-300 leading-relaxed">
+                          Direct {reqItem.display_name} OAuth sign-in is not yet configured on this server environment.
+                          Your workspace remains safe in Sandbox Mode, and our engineering team can connect your account for you.
+                        </p>
+                        <div className="flex flex-wrap items-center gap-2 pt-1">
+                          <button
+                            type="button"
+                            onClick={() => openSupportForProvider(reqItem.provider, reqItem.display_name)}
+                            className="inline-flex items-center gap-1.5 rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-bold text-slate-950 hover:bg-amber-400 transition"
+                          >
+                            <LifeBuoy className="h-3.5 w-3.5" />
+                            <span>Request Setup Support</span>
+                          </button>
+                          <a
+                            href={SUPPORT_WHATSAPP_LINK}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-300 hover:bg-emerald-500/20 transition"
+                          >
+                            <MessageSquare className="h-3.5 w-3.5" />
+                            <span>WhatsApp: {SUPPORT_WHATSAPP_NUMBER}</span>
+                          </a>
+                          <a
+                            href="/dashboard"
+                            className="inline-flex items-center gap-1 rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-slate-800 transition"
+                          >
+                            <span>Continue to Dashboard</span>
+                            <ArrowRight className="h-3 w-3" />
+                          </a>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 );
               })}
             </div>
 
-            <div className="flex items-center justify-between pt-4 border-t border-slate-800">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-4 border-t border-slate-800">
               <div className="flex items-center gap-2 text-xs text-slate-400">
-                <ShieldCheck className="h-4 w-4 text-emerald-400" />
+                <ShieldCheck className="h-4 w-4 text-emerald-400 shrink-0" />
                 <span>Zero secrets stored in browser. Encrypted with AES-128-Fernet at rest.</span>
               </div>
 
               <a
                 href="/dashboard"
-                className="flex items-center gap-2 rounded-lg bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-emerald-500 transition"
+                className="flex items-center justify-center gap-2 rounded-lg bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-emerald-500 transition"
               >
                 <span>Open Client Performance Dashboard</span>
                 <ArrowRight className="h-4 w-4" />
@@ -965,6 +1180,15 @@ export default function OnboardingPage() {
           </div>
         )}
       </div>
+
+      <SupportRequestModal
+        isOpen={supportModalOpen}
+        onClose={() => setSupportModalOpen(false)}
+        defaultSubject={supportDefaults.subject}
+        defaultCategory={supportDefaults.category}
+        defaultMessage={supportDefaults.message}
+        defaultProvider={supportDefaults.provider}
+      />
     </div>
   );
 }

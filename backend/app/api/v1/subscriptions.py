@@ -4,15 +4,17 @@
 import uuid
 from typing import List, Optional
 
-from app.core.exceptions import ResourceNotFoundError
+from app.core.exceptions import PermissionDeniedError, ResourceNotFoundError, TaloxException
 from app.core.tenant_context import TenantContext
-from app.database.models.service import ServiceSubscription
+from app.database.models.service import Service, ServiceSubscription
+from app.database.models.tenant import Profile
 from app.database.supabase import get_db
 from app.dependencies import require_permission
 from app.schemas.service import (
     SubscriptionCreateRequest,
     SubscriptionResponse,
 )
+from app.services.auth_service import auth_service
 from app.services.billing_service import billing_service
 from fastapi import APIRouter, Depends, status
 from pydantic import BaseModel
@@ -20,6 +22,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter(prefix="/subscriptions", tags=["Subscriptions"])
+
+ALLOWED_SUBSCRIPTION_STATUSES = {"active", "canceled", "paused"}
 
 
 class SubscriptionUpdateRequest(BaseModel):
@@ -71,15 +75,41 @@ async def update_subscription(
     if request.plan_name is not None:
         sub.plan_name = request.plan_name
     if request.status is not None:
-        sub.status = request.status
+        normalized_status = request.status.strip().lower()
+        if normalized_status == "cancelled":
+            normalized_status = "canceled"
+        if normalized_status not in ALLOWED_SUBSCRIPTION_STATUSES:
+            raise TaloxException(
+                message="Invalid subscription status. Allowed values: active, canceled, paused",
+                code="INVALID_SUBSCRIPTION_STATUS",
+                status_code=400,
+            )
+        if normalized_status == "active":
+            profile_res = await session.execute(select(Profile).where(Profile.id == context.user_id))
+            caller_profile = profile_res.scalar_one_or_none()
+            is_super = (
+                await auth_service.is_platform_super_admin(session, caller_profile)
+                if caller_profile
+                else False
+            )
+            if not is_super:
+                raise PermissionDeniedError(
+                    "Direct subscription activation requires verified payment or Platform Super Admin approval"
+                )
+        sub.status = normalized_status
 
     await session.commit()
     await session.refresh(sub)
+
+    srv_res = await session.execute(select(Service).where(Service.id == sub.service_id))
+    srv = srv_res.scalar_one_or_none()
 
     return SubscriptionResponse(
         id=sub.id,
         tenant_id=sub.tenant_id,
         service_id=sub.service_id,
+        service_name=srv.name if srv else None,
+        service_slug=srv.slug if srv else None,
         plan_name=sub.plan_name,
         status=sub.status,
         billing_interval=sub.billing_interval,

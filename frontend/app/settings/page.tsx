@@ -3,9 +3,16 @@
 import React, { useEffect, useState } from "react";
 import { Navbar } from "../../components/shared/Navbar";
 import { Sidebar } from "../../components/shared/Sidebar";
+import { SupportRequestModal } from "../../components/shared/SupportRequestModal";
 import { apiRequest } from "../../lib/api";
-import { clearSession, getActiveTenant, getAuthToken } from "../../lib/auth";
-import { ExternalLink, RefreshCw, Link2, CheckCircle2, AlertCircle } from "lucide-react";
+import {
+  clearSession,
+  getActiveTenant,
+  getAuthToken,
+  SUPPORT_WHATSAPP_NUMBER,
+  SUPPORT_WHATSAPP_LINK,
+} from "../../lib/auth";
+import { ExternalLink, RefreshCw, Link2, CheckCircle2, AlertCircle, LifeBuoy, MessageSquare } from "lucide-react";
 
 interface IntegrationItem {
   id: string;
@@ -37,6 +44,8 @@ export default function SettingsPage() {
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [verifyingId, setVerifyingId] = useState<string | null>(null);
+  const [oauthUnavailableProvider, setOauthUnavailableProvider] = useState<string | null>(null);
+  const [supportModalOpen, setSupportModalOpen] = useState(false);
 
   const loadSettingsWorkspace = async () => {
     const [intRes, notifRes] = await Promise.all([
@@ -107,6 +116,7 @@ export default function SettingsPage() {
   const handleOAuthConnect = async (provider: string) => {
     setErrorMessage(null);
     setStatusMessage(null);
+    setOauthUnavailableProvider(null);
     try {
       const authInfo = await apiRequest(
         `/api/v1/integrations/oauth/${provider}/authorize?return_to=/settings`
@@ -116,6 +126,8 @@ export default function SettingsPage() {
           sessionStorage.setItem("talox_oauth_return_to", "/settings");
         }
         window.location.href = authInfo.data.authorization_url;
+      } else if (authInfo.error?.code === "OAUTH_NOT_CONFIGURED") {
+        setOauthUnavailableProvider(provider);
       } else {
         setErrorMessage(authInfo.error?.message || `Failed to initiate OAuth for ${provider}`);
       }
@@ -207,7 +219,7 @@ export default function SettingsPage() {
       <Navbar />
       <div className="flex flex-1">
         <Sidebar currentPath="/settings" />
-        <main className="flex-1 p-8 space-y-8 overflow-y-auto">
+        <main className="flex-1 min-w-0 p-4 sm:p-6 md:p-8 space-y-8 overflow-y-auto">
           <div>
             <h1 className="text-2xl font-bold text-white">Integrations, WhatsApp & Notifications</h1>
             <p className="text-slate-400 text-sm mt-1">
@@ -226,6 +238,36 @@ export default function SettingsPage() {
             <div className="flex items-center gap-2 p-4 rounded-lg bg-red-950/60 border border-red-700 text-red-200 text-sm">
               <AlertCircle className="h-4 w-4 shrink-0 text-red-400" />
               <span>{errorMessage}</span>
+            </div>
+          )}
+
+          {oauthUnavailableProvider && (
+            <div className="rounded-xl border border-amber-500/40 bg-amber-950/30 p-4 space-y-2.5 text-xs text-slate-200">
+              <p className="font-bold text-amber-300 text-sm">
+                One-Click OAuth Setup Not Enabled Yet ({oauthUnavailableProvider.replace(/_/g, " ").toUpperCase()})
+              </p>
+              <p className="text-slate-300 leading-relaxed">
+                Live OAuth app credentials are not yet configured on this server environment. Your workspace stays safe in Sandbox Mode, and our onboarding engineers can configure this integration for you.
+              </p>
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setSupportModalOpen(true)}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-bold text-slate-950 hover:bg-amber-400 transition"
+                >
+                  <LifeBuoy className="h-3.5 w-3.5" />
+                  <span>Request Setup Support</span>
+                </button>
+                <a
+                  href={SUPPORT_WHATSAPP_LINK}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-300 hover:bg-emerald-500/20 transition"
+                >
+                  <MessageSquare className="h-3.5 w-3.5" />
+                  <span>WhatsApp: {SUPPORT_WHATSAPP_NUMBER}</span>
+                </a>
+              </div>
             </div>
           )}
 
@@ -438,6 +480,23 @@ export default function SettingsPage() {
           </div>
         </main>
       </div>
+
+      <SupportRequestModal
+        isOpen={supportModalOpen}
+        onClose={() => setSupportModalOpen(false)}
+        defaultCategory="integration_setup"
+        defaultProvider={oauthUnavailableProvider || undefined}
+        defaultSubject={
+          oauthUnavailableProvider
+            ? `Assisted Setup Request: ${oauthUnavailableProvider.replace(/_/g, " ")}`
+            : "Integration Setup Support"
+        }
+        defaultMessage={
+          oauthUnavailableProvider
+            ? `Please assist with connecting ${oauthUnavailableProvider} for my workspace.`
+            : ""
+        }
+      />
     </div>
   );
 }

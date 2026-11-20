@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef } from "react";
 import { apiRequest } from "@/lib/api";
-import { getActiveTenant } from "@/lib/auth";
+import { getActiveTenant, SUPPORT_WHATSAPP_NUMBER, SUPPORT_WHATSAPP_LINK } from "@/lib/auth";
 import {
   MessageSquare,
   X,
@@ -40,7 +40,7 @@ export function SalesChatbot() {
     {
       id: "welcome",
       sender: "bot",
-      text: "Hello! I am your Talox AI Sales Consultant & Receptionist. I can guide you through our Done-For-You AI automation services across 27 industries, help you choose a package, or connect you directly with our human sales team on WhatsApp.",
+      text: "Hello! I am your Talox AI Sales Consultant & Receptionist. I can guide you through our 6 Done-For-You AI automation services across our 4 core industries (Financing, Clinics / Hospitals, Real Estate / Property, E-Commerce) plus custom setups, or connect you directly with our team on WhatsApp.",
       timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
     },
   ]);
@@ -98,11 +98,11 @@ export function SalesChatbot() {
         sender: "bot",
         text:
           data.reply ||
-          "Thank you for contacting Talox Tech Stream! Our team is available 24/7. You can reach our executive consultants on WhatsApp at +92 339 8701000.",
+          `Thank you for contacting Talox Tech Stream! Our team is available 24/7. You can reach our executive consultants on WhatsApp at ${SUPPORT_WHATSAPP_NUMBER}.`,
         timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
         hotLead: Boolean(data.hot_lead),
         alertMessage: data.alert_message,
-        whatsappUrl: data.whatsapp_url || "https://wa.me/923398701000",
+        whatsappUrl: data.whatsapp_url || SUPPORT_WHATSAPP_LINK,
         detectedIndustry: data.detected_industry,
         detectedPlan: data.detected_plan_name,
         detectedPrice: data.detected_price,
@@ -116,11 +116,11 @@ export function SalesChatbot() {
         {
           id: `bot_err_${Date.now()}`,
           sender: "bot",
-          text: "We are currently experiencing high request volume. For instant live assistance, please click below to message us directly on WhatsApp at +92 339 8701000.",
+          text: `We are currently experiencing high request volume. For instant live assistance, please click below to message us directly on WhatsApp at ${SUPPORT_WHATSAPP_NUMBER}.`,
           timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
           hotLead: true,
           alertMessage: "A hot lead is ready to chat with you right now!",
-          whatsappUrl: "https://wa.me/923398701000",
+          whatsappUrl: SUPPORT_WHATSAPP_LINK,
         },
       ]);
     } finally {
@@ -151,7 +151,7 @@ export function SalesChatbot() {
 
       {/* Expanded Chat Dialog Window */}
       {isOpen && (
-        <div className="flex h-[560px] w-[360px] sm:w-[410px] flex-col rounded-2xl border border-slate-700 bg-slate-950 text-slate-100 shadow-2xl shadow-black/60 overflow-hidden animate-in fade-in slide-in-from-bottom-4 duration-200">
+        <div className="flex h-[560px] max-h-[80vh] w-[calc(100vw-2rem)] max-w-[calc(100vw-2rem)] sm:w-[360px] flex-col rounded-2xl border border-slate-700 bg-slate-950 text-slate-100 shadow-2xl shadow-black/60 overflow-hidden animate-in fade-in slide-in-from-bottom-4 duration-200">
           {/* Header */}
           <div className="flex items-center justify-between border-b border-slate-800 bg-gradient-to-r from-slate-900 via-slate-900 to-slate-950 px-4 py-3.5">
             <div className="flex items-center gap-2.5">
@@ -211,13 +211,13 @@ export function SalesChatbot() {
                       Our live senior support agent is available right now for direct assistance.
                     </p>
                     <a
-                      href={msg.whatsappUrl || "https://wa.me/923398701000"}
+                      href={msg.whatsappUrl || SUPPORT_WHATSAPP_LINK}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="flex items-center justify-center gap-2 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-500 shadow-md shadow-emerald-600/30 transition"
                     >
                       <PhoneCall className="h-3.5 w-3.5" />
-                      <span>Chat with Live Human on WhatsApp (+92 339 8701000)</span>
+                      <span>Chat with Live Human on WhatsApp ({SUPPORT_WHATSAPP_NUMBER})</span>
                     </a>
                   </div>
                 )}
@@ -272,19 +272,19 @@ export function SalesChatbot() {
               onClick={() => handleSendMessage("What industries do you support?")}
               className="shrink-0 rounded-full border border-slate-700 bg-slate-800 px-2.5 py-1 text-[10px] text-slate-300 hover:border-emerald-500 hover:text-white transition"
             >
-              🏢 27 Industries
+              🏢 4 Core Industries + Custom
             </button>
             <button
               onClick={() => handleSendMessage("Show me pricing and packages")}
               className="shrink-0 rounded-full border border-slate-700 bg-slate-800 px-2.5 py-1 text-[10px] text-slate-300 hover:border-emerald-500 hover:text-white transition"
             >
-              💰 Pricing ($99, $249, $499)
+              💰 Pricing ($99+)
             </button>
             <button
               onClick={() => handleSendMessage("I want to talk to a human on WhatsApp")}
               className="shrink-0 rounded-full border border-emerald-500/50 bg-emerald-500/10 px-2.5 py-1 text-[10px] text-emerald-300 hover:bg-emerald-500/20 transition"
             >
-              💬 WhatsApp (+92 339 8701000)
+              💬 WhatsApp ({SUPPORT_WHATSAPP_NUMBER})
             </button>
             <button
               onClick={() => handleSendMessage("What are your company bank details?")}

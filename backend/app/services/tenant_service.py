@@ -45,6 +45,13 @@ from app.schemas.tenant import (
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+PROTECTED_TENANT_SETTING_KEYS = {
+    "payment_approved",
+    "automation_approved_by_owner",
+    "payment_approved_at",
+    "payment_approval_notes",
+}
+
 
 class TenantService:
     """Manages tenant workspaces and strict membership isolation."""
@@ -54,6 +61,8 @@ class TenantService:
         session: AsyncSession,
         user_id: uuid.UUID,
         request: TenantCreateRequest,
+        *,
+        is_super_admin: bool = False,
     ) -> TenantResponse:
         """Create a new tenant workspace and assign the creator as the Owner."""
         # 1. Check slug uniqueness
@@ -66,13 +75,20 @@ class TenantService:
                 status_code=409,
             )
 
-        # 2. Create Tenant record
+        # 2. Sanitize protected billing/approval settings for non-super-admins
+        sanitized_settings = dict(request.settings or {})
+        if not is_super_admin:
+            for key in PROTECTED_TENANT_SETTING_KEYS:
+                sanitized_settings.pop(key, None)
+        sanitized_settings.setdefault("payment_approved", False)
+
+        # 3. Create Tenant record
         tenant = Tenant(
             name=request.name,
             slug=request.slug,
             industry=request.industry,
             status="pending_approval",
-            settings=request.settings or {},
+            settings=sanitized_settings,
         )
         session.add(tenant)
         await session.flush()

@@ -11,8 +11,9 @@ import {
   ArrowRight,
   Key,
 } from "lucide-react";
-import { SUPPORT_WHATSAPP_NUMBER, SUPPORT_WHATSAPP_LINK } from "@/lib/auth";
+import { SUPPORT_WHATSAPP_NUMBER, SUPPORT_WHATSAPP_LINK, getAuthToken } from "@/lib/auth";
 import { apiRequest } from "@/lib/api";
+import { normalizeServiceSlug } from "@/lib/services";
 
 interface ChatMessage {
   id: string;
@@ -37,7 +38,7 @@ export function ClientServicesChatbot() {
     {
       id: "msg-1",
       sender: "bot",
-      text: "👋 Welcome to Teloxtech! I am your AI Sales Concierge. We build and operate done-for-you managed AI automations — from rent & financial tracking to 24/7 WhatsApp triage and lead growth. What type of business do you run, and what challenges are you looking to automate today?",
+      text: "👋 Welcome to Teloxtech! I am your AI Sales Concierge. We deliver 6 done-for-you managed AI services across Financing, Clinics / Hospitals, Real Estate / Property, E-Commerce, and custom business setups. What would you like to automate today?",
       timestamp: "Just now",
     },
   ]);
@@ -73,8 +74,20 @@ export function ClientServicesChatbot() {
 
   const handleRedirectToDashboard = (url: string, slug?: string) => {
     if (typeof window !== "undefined") {
-      if (slug) {
-        localStorage.setItem("teloxtech_preselected_service", slug);
+      const normalized = normalizeServiceSlug(slug) || slug || "";
+      if (normalized) {
+        localStorage.setItem("teloxtech_preselected_service", normalized);
+      }
+      const isAuthenticated = Boolean(getAuthToken());
+      if (!isAuthenticated) {
+        if (url.startsWith("/register")) {
+          window.location.href = url;
+        } else if (normalized) {
+          window.location.href = `/register?service=${encodeURIComponent(normalized)}`;
+        } else {
+          window.location.href = "/register";
+        }
+        return;
       }
       window.location.href = url;
     }
@@ -194,7 +207,7 @@ export function ClientServicesChatbot() {
 
       {/* 2. Chat Window: Compact & Responsive Dimensions */}
       {isOpen && (
-        <div className="flex flex-col w-[calc(100vw-1.5rem)] max-w-[340px] sm:w-[340px] h-[400px] sm:h-[450px] max-h-[70vh] sm:max-h-[80vh] rounded-2xl bg-slate-900 border border-slate-800 shadow-2xl overflow-hidden animate-in fade-in slide-in-from-bottom-3 duration-200 text-slate-100">
+        <div className="flex flex-col w-[calc(100vw-2rem)] max-w-[calc(100vw-2rem)] sm:w-[360px] h-[440px] max-h-[75vh] rounded-2xl bg-slate-900 border border-slate-800 shadow-2xl overflow-hidden animate-in fade-in slide-in-from-bottom-3 duration-200 text-slate-100">
           {/* Header */}
           <div className="flex items-center justify-between bg-slate-950 px-3.5 py-2.5 border-b border-slate-800 shrink-0">
             <div className="flex items-center gap-2">
@@ -305,22 +318,46 @@ export function ClientServicesChatbot() {
           {/* Quick Inquiry Pills */}
           <div className="px-2.5 py-1.5 border-t border-slate-800/80 bg-slate-950/70 flex gap-1.5 overflow-x-auto no-scrollbar shrink-0">
             <button
-              onClick={() => handleSendMessage("Tell me about Rent & Financial Tracking")}
+              onClick={() => handleSendMessage("What industries do you support?")}
               className="whitespace-nowrap rounded-full bg-slate-800 hover:bg-slate-700 px-2 py-0.5 text-[10px] text-slate-300 font-medium transition border border-slate-700/60"
             >
-              🏢 Rent & Finance Tracking
+              🏢 4 Core Industries + Custom
             </button>
             <button
-              onClick={() => handleSendMessage("How does 24/7 WhatsApp AI Support work?")}
+              onClick={() => handleSendMessage("Tell me about Business Financial Tracking & Ledger")}
               className="whitespace-nowrap rounded-full bg-slate-800 hover:bg-slate-700 px-2 py-0.5 text-[10px] text-slate-300 font-medium transition border border-slate-700/60"
             >
-              💬 WhatsApp AI Concierge
+              💰 Financial Ledger ($99+)
             </button>
             <button
-              onClick={() => handleSendMessage("Tell me about Google Maps Lead Generation")}
+              onClick={() => handleSendMessage("How does WhatsApp Business Concierge work?")}
               className="whitespace-nowrap rounded-full bg-slate-800 hover:bg-slate-700 px-2 py-0.5 text-[10px] text-slate-300 font-medium transition border border-slate-700/60"
             >
-              📈 Google Maps Lead Growth
+              💬 WhatsApp Concierge ($129+)
+            </button>
+            <button
+              onClick={() => handleSendMessage("Tell me about AI Marketing & Growth Automation")}
+              className="whitespace-nowrap rounded-full bg-slate-800 hover:bg-slate-700 px-2 py-0.5 text-[10px] text-slate-300 font-medium transition border border-slate-700/60"
+            >
+              📈 Marketing & Growth ($149+)
+            </button>
+            <button
+              onClick={() => handleSendMessage("Tell me about Multi-Agent Task Orchestration")}
+              className="whitespace-nowrap rounded-full bg-slate-800 hover:bg-slate-700 px-2 py-0.5 text-[10px] text-slate-300 font-medium transition border border-slate-700/60"
+            >
+              🤖 Multi-Agent Suite ($199+)
+            </button>
+            <button
+              onClick={() => handleSendMessage("Tell me about Lead CRM & AI Qualification")}
+              className="whitespace-nowrap rounded-full bg-slate-800 hover:bg-slate-700 px-2 py-0.5 text-[10px] text-slate-300 font-medium transition border border-slate-700/60"
+            >
+              🎯 Lead CRM ($149+)
+            </button>
+            <button
+              onClick={() => handleSendMessage("Tell me about Executive Analytics & Compliance Vault")}
+              className="whitespace-nowrap rounded-full bg-slate-800 hover:bg-slate-700 px-2 py-0.5 text-[10px] text-slate-300 font-medium transition border border-slate-700/60"
+            >
+              📊 Analytics & Vault ($99+)
             </button>
           </div>
 

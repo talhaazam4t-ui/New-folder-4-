@@ -210,7 +210,21 @@ async def test_industry_catalog_onboarding_encryption_and_managed_dashboard_flow
             assert raw_stored_key.startswith("enc:v1:")
             assert "sk_live_super_secret_ehr_key_99999" not in raw_stored_key
 
-        # 7. Verify all required integrations are now connected and automation is active!
+        # 7. Before admin payment approval, automation_active must remain False even with all integrations connected
+        req_before_approval = await client.get("/api/v1/integrations/onboarding-requirements", headers=tenant_headers)
+        assert req_before_approval.status_code == 200
+        assert req_before_approval.json()["data"]["all_required_connected"] is True
+        assert req_before_approval.json()["data"]["automation_active"] is False
+
+        # Platform Owner approves payment & activates tenant
+        approve_res = await client.post(
+            f"/api/v1/admin/tenants/{tenant_id}/approve-payment",
+            json={"notes": "Approved for Al Noor Hospital"},
+            headers=owner_headers,
+        )
+        assert approve_res.status_code == 200
+
+        # Verify all required integrations are now connected and automation is active!
         req_complete = await client.get("/api/v1/integrations/onboarding-requirements", headers=tenant_headers)
         complete_data = req_complete.json()["data"]
         assert complete_data["all_required_connected"] is True

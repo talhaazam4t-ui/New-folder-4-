@@ -4,9 +4,11 @@ import pytest
 from app.config import settings
 from app.database.models.business import BusinessRecord
 from app.database.models.marketing import Lead
+from app.database.models.tenant import Tenant
 from app.database.supabase import get_session_factory
 from app.main import app
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 
 
 @pytest.mark.asyncio
@@ -34,9 +36,12 @@ async def test_tenant_overview_metrics_endpoint():
             "X-Tenant-ID": str(tenant_id),
         }
 
-        # 2. Add sample financial and lead records
+        # 2. Add sample financial and lead records & activate approved tenant
         factory = get_session_factory()
         async with factory() as session:
+            t_row = (await session.execute(select(Tenant).where(Tenant.id == tenant_id))).scalar_one()
+            t_row.status = "active"
+            t_row.settings = {"payment_approved": True, "automation_approved_by_owner": True}
             session.add(BusinessRecord(
                 tenant_id=tenant_id,
                 record_type="income",
