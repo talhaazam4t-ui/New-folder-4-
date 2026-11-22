@@ -47,7 +47,7 @@ interface ReceptionistConfig {
   calcom_booking_url: string | null;
   calcom_event_type_id: string | null;
   calcom_api_key_configured: boolean;
-  twilio_phone_number: string | null;
+  telnyx_phone_number: string | null;
   retell_agent_id: string | null;
   voice_id: string;
   provisioning_status: string;
@@ -309,7 +309,7 @@ export default function OfficeReceptionistPage() {
         setConfig(res.data);
         hydrateFormFromConfig(res.data);
         setStatusMessage(
-          "Twilio phone number, Voice Webhooks, and Retell AI Voice Agent synced successfully."
+          "Telnyx phone number, TeXML Voice Webhooks, and Retell AI Voice Agent synced successfully."
         );
       } else {
         setErrorMessage(res.error?.message || "Failed to provision voice agent.");
@@ -389,7 +389,7 @@ export default function OfficeReceptionistPage() {
                 </span>
               </div>
               <p className="text-sm text-slate-500">
-                24/7 Retell AI + Twilio phone answering, live Cal.com appointment scheduling, and
+                24/7 Retell AI + Telnyx phone answering, live Cal.com appointment scheduling, and
                 instant human call transfers to your fallback number.
               </p>
             </div>
@@ -434,21 +434,21 @@ export default function OfficeReceptionistPage() {
               <div className="rounded-xl border border-emerald-200 bg-emerald-50/50 p-4 flex items-center justify-between gap-3">
                 <div>
                   <p className="text-[11px] font-semibold uppercase tracking-wider text-emerald-700">
-                    Assigned Twilio AI Number
+                    Assigned Telnyx AI Number
                   </p>
                   <p className="text-lg font-bold font-mono text-slate-900 mt-0.5">
-                    {config.twilio_phone_number || "Pending Assignment"}
+                    {config.telnyx_phone_number || "Pending Assignment"}
                   </p>
                   <p className="text-[11px] text-slate-500">
                     Forward your office line here for 24/7 AI coverage
                   </p>
                 </div>
-                {config.twilio_phone_number && (
+                {config.telnyx_phone_number && (
                   <button
                     type="button"
-                    onClick={() => handleCopyText("ai-num", config.twilio_phone_number!)}
+                    onClick={() => handleCopyText("ai-num", config.telnyx_phone_number!)}
                     className="rounded-lg border border-emerald-200 bg-white p-2 text-emerald-700 hover:bg-emerald-100 transition"
-                    title="Copy assigned Twilio AI number"
+                    title="Copy assigned Telnyx AI number"
                   >
                     {copiedKey === "ai-num" ? (
                       <Check className="h-4 w-4" />
@@ -539,7 +539,7 @@ export default function OfficeReceptionistPage() {
                   </h2>
                   <p className="text-xs text-slate-500">
                     Forward calls from your existing business phone ({guide.fallback_human_number}) to
-                    your assigned Twilio AI number ({guide.assigned_ai_number}).
+                    your assigned Telnyx AI number ({guide.assigned_ai_number}).
                   </p>
                 </div>
               </div>
@@ -912,7 +912,7 @@ export default function OfficeReceptionistPage() {
                         : "No calls logged yet"}
                     </p>
                     <p className="text-xs text-slate-500 max-w-md mx-auto">
-                      Once your office line forwards to your assigned Twilio AI number — or when
+                      Once your office line forwards to your assigned Telnyx AI number — or when
                       you click &ldquo;Run Test Call&rdquo; above — call summaries, transcripts, and
                       booked appointments will appear here in real time.
                     </p>

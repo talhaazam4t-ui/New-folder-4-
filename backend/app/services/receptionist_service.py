@@ -1,12 +1,12 @@
-"""Office Receptionist (AI Voice Agent) Service — Retell AI, Twilio, and Cal.com.
+"""Office Receptionist (AI Voice Agent) Service — Retell AI, Telnyx, and Cal.com.
 
 Handles:
 1. Super Admin encrypted master credentials management (DB vault + env-var fallback).
 2. Per-tenant Office Receptionist onboarding configuration, encrypted Cal.com API key storage,
    and automatic Call Forwarding setup guide generation.
-3. End-to-end Twilio number provisioning/assignment + Retell AI Agent creation + Cal.com tools
+3. End-to-end Telnyx number provisioning/assignment + Retell AI Agent creation + Cal.com tools
    + live human/emergency call transfer routing.
-4. Inbound Retell AI & Twilio Voice webhook processing, Cal.com live function-calling tools,
+4. Inbound Retell AI & Telnyx TeXML Voice webhook processing, Cal.com live function-calling tools,
    and call logs / booked appointments analytics.
 """
 
@@ -35,7 +35,7 @@ from app.integrations.voice.receptionist_providers import (
     generate_call_forwarding_guide,
     normalize_e164,
     retell_ai_adapter,
-    twilio_voice_adapter,
+    telnyx_voice_adapter,
 )
 from app.schemas.receptionist import (
     AdminVoiceCredentialsUpdateRequest,
@@ -84,21 +84,21 @@ class ReceptionistService:
             _get_vault_val("retell", "webhook_secret")
             or (settings.retell_webhook_secret or os.environ.get("RETELL_WEBHOOK_SECRET") or "").strip()
         )
-        twilio_sid = (
-            _get_vault_val("twilio", "account_sid")
-            or (settings.twilio_account_sid or os.environ.get("TWILIO_ACCOUNT_SID") or "").strip()
+        telnyx_api_key = (
+            _get_vault_val("telnyx", "api_key")
+            or (settings.telnyx_api_key or os.environ.get("TELNYX_API_KEY") or "").strip()
         )
-        twilio_token = (
-            _get_vault_val("twilio", "auth_token")
-            or (settings.twilio_auth_token or os.environ.get("TWILIO_AUTH_TOKEN") or "").strip()
+        telnyx_connection_id = (
+            _get_vault_val("telnyx", "connection_id")
+            or (settings.telnyx_connection_id or os.environ.get("TELNYX_CONNECTION_ID") or "").strip()
         )
-        twilio_default_number = (
-            _get_vault_val("twilio", "default_number")
-            or (settings.twilio_default_number or os.environ.get("TWILIO_DEFAULT_NUMBER") or "").strip()
+        telnyx_default_number = (
+            _get_vault_val("telnyx", "default_number")
+            or (settings.telnyx_default_number or os.environ.get("TELNYX_DEFAULT_NUMBER") or "").strip()
         )
-        twilio_country = (
-            _get_vault_val("twilio", "default_country")
-            or (settings.twilio_default_country or "US").strip()
+        telnyx_country = (
+            _get_vault_val("telnyx", "default_country")
+            or (settings.telnyx_default_country or "US").strip()
         )
         calcom_api_key = (
             _get_vault_val("calcom", "api_key")
@@ -108,18 +108,18 @@ class ReceptionistService:
         return {
             "retell_api_key": retell_api_key,
             "retell_webhook_secret": retell_webhook_secret,
-            "twilio_account_sid": twilio_sid,
-            "twilio_auth_token": twilio_token,
-            "twilio_default_number": twilio_default_number,
-            "twilio_default_country": twilio_country or "US",
+            "telnyx_api_key": telnyx_api_key,
+            "telnyx_connection_id": telnyx_connection_id,
+            "telnyx_default_number": telnyx_default_number,
+            "telnyx_default_country": telnyx_country or "US",
             "calcom_api_key": calcom_api_key,
             "sources": {
                 "retell": "encrypted_vault"
                 if _get_vault_val("retell", "api_key")
                 else ("environment" if (settings.retell_api_key or os.environ.get("RETELL_API_KEY")) else "unconfigured"),
-                "twilio": "encrypted_vault"
-                if _get_vault_val("twilio", "account_sid")
-                else ("environment" if (settings.twilio_account_sid or os.environ.get("TWILIO_ACCOUNT_SID")) else "unconfigured"),
+                "telnyx": "encrypted_vault"
+                if _get_vault_val("telnyx", "api_key")
+                else ("environment" if (settings.telnyx_api_key or os.environ.get("TELNYX_API_KEY")) else "unconfigured"),
                 "calcom": "encrypted_vault"
                 if _get_vault_val("calcom", "api_key")
                 else ("environment" if (settings.calcom_api_key or os.environ.get("CALCOM_API_KEY")) else "unconfigured"),
@@ -127,7 +127,7 @@ class ReceptionistService:
         }
 
     async def get_admin_voice_credentials_status(self, session: AsyncSession) -> Dict[str, Any]:
-        """Return safe masked status of master Retell AI, Twilio, and Cal.com credentials for Admin Settings."""
+        """Return safe masked status of master Retell AI, Telnyx, and Cal.com credentials for Admin Settings."""
         creds = await self._resolve_master_credentials(session)
         return {
             "retell": {
@@ -136,13 +136,13 @@ class ReceptionistService:
                 "api_key_masked": _mask_secret(creds["retell_api_key"]),
                 "webhook_secret_configured": bool(creds["retell_webhook_secret"]),
             },
-            "twilio": {
-                "configured": bool(creds["twilio_account_sid"] and creds["twilio_auth_token"]),
-                "source": creds["sources"]["twilio"],
-                "account_sid_masked": _mask_secret(creds["twilio_account_sid"]),
-                "auth_token_configured": bool(creds["twilio_auth_token"]),
-                "default_number": creds["twilio_default_number"] or None,
-                "default_country": creds["twilio_default_country"],
+            "telnyx": {
+                "configured": bool(creds["telnyx_api_key"]),
+                "source": creds["sources"]["telnyx"],
+                "api_key_masked": _mask_secret(creds["telnyx_api_key"]),
+                "connection_id": creds["telnyx_connection_id"] or None,
+                "default_number": creds["telnyx_default_number"] or None,
+                "default_country": creds["telnyx_default_country"],
             },
             "calcom": {
                 "configured": bool(creds["calcom_api_key"]),
@@ -157,7 +157,7 @@ class ReceptionistService:
         admin_user_id: uuid.UUID,
         request: AdminVoiceCredentialsUpdateRequest,
     ) -> Dict[str, Any]:
-        """Encrypt and save master Retell AI, Twilio, and Cal.com API credentials in the DB vault."""
+        """Encrypt and save master Retell AI, Telnyx, and Cal.com API credentials in the DB vault."""
         updates_by_provider: Dict[str, Dict[str, Any]] = {}
         if request.retell_api_key or request.retell_webhook_secret:
             updates_by_provider["retell"] = {}
@@ -167,22 +167,22 @@ class ReceptionistService:
                 updates_by_provider["retell"]["webhook_secret"] = request.retell_webhook_secret.strip()
 
         if (
-            request.twilio_account_sid
-            or request.twilio_auth_token
-            or request.twilio_default_number is not None
-            or request.twilio_default_country
+            request.telnyx_api_key
+            or request.telnyx_connection_id is not None
+            or request.telnyx_default_number is not None
+            or request.telnyx_default_country
         ):
-            twilio_patch: Dict[str, Any] = {}
-            if request.twilio_account_sid and request.twilio_account_sid.strip():
-                twilio_patch["account_sid"] = request.twilio_account_sid.strip()
-            if request.twilio_auth_token and request.twilio_auth_token.strip():
-                twilio_patch["auth_token"] = request.twilio_auth_token.strip()
-            if request.twilio_default_number and request.twilio_default_number.strip():
-                twilio_patch["default_number"] = normalize_e164(request.twilio_default_number)
-            if request.twilio_default_country and request.twilio_default_country.strip():
-                twilio_patch["default_country"] = request.twilio_default_country.strip().upper()
-            if twilio_patch:
-                updates_by_provider["twilio"] = twilio_patch
+            telnyx_patch: Dict[str, Any] = {}
+            if request.telnyx_api_key and request.telnyx_api_key.strip():
+                telnyx_patch["api_key"] = request.telnyx_api_key.strip()
+            if request.telnyx_connection_id and request.telnyx_connection_id.strip():
+                telnyx_patch["connection_id"] = request.telnyx_connection_id.strip()
+            if request.telnyx_default_number and request.telnyx_default_number.strip():
+                telnyx_patch["default_number"] = normalize_e164(request.telnyx_default_number)
+            if request.telnyx_default_country and request.telnyx_default_country.strip():
+                telnyx_patch["default_country"] = request.telnyx_default_country.strip().upper()
+            if telnyx_patch:
+                updates_by_provider["telnyx"] = telnyx_patch
 
         if request.calcom_api_key and request.calcom_api_key.strip():
             updates_by_provider["calcom"] = {"api_key": request.calcom_api_key.strip()}
@@ -195,7 +195,7 @@ class ReceptionistService:
             existing_cfg = dict(row.encrypted_config or {}) if row else {}
             enc_patch = encrypt_sensitive_config(raw_fields)
             # Encrypt additional voice-specific secret fields explicitly
-            for secret_field in ("account_sid", "auth_token", "webhook_secret", "api_key"):
+            for secret_field in ("webhook_secret", "api_key"):
                 if secret_field in raw_fields:
                     enc_patch[secret_field] = encrypt_secret(str(raw_fields[secret_field]))
             merged = {**existing_cfg, **enc_patch}
@@ -228,7 +228,7 @@ class ReceptionistService:
             "calcom_booking_url": row.calcom_booking_url,
             "calcom_event_type_id": row.calcom_event_type_id,
             "calcom_api_key_configured": bool(row.encrypted_calcom_api_key),
-            "twilio_phone_number": row.twilio_phone_number,
+            "telnyx_phone_number": row.telnyx_phone_number,
             "retell_agent_id": row.retell_agent_id,
             "voice_id": row.voice_id,
             "provisioning_status": row.provisioning_status,
@@ -338,10 +338,10 @@ class ReceptionistService:
         if request.auto_provision:
             return await self.provision_voice_stack(session, tenant_id, user_id)
 
-        if row.twilio_phone_number:
+        if row.telnyx_phone_number:
             row.call_forwarding_guide = generate_call_forwarding_guide(
                 fallback_phone=row.fallback_phone_number,
-                assigned_twilio_number=row.twilio_phone_number,
+                assigned_telnyx_number=row.telnyx_phone_number,
                 business_name=row.business_name,
             )
             await session.commit()
@@ -386,7 +386,7 @@ class ReceptionistService:
         tenant_id: uuid.UUID,
         actor_id: Optional[uuid.UUID] = None,
     ) -> Dict[str, Any]:
-        """Provision/sync Twilio phone number + Voice Webhooks + Retell AI Agent + Cal.com tools + Call Forwarding guide."""
+        """Provision/sync Telnyx phone number + TeXML Voice Webhooks + Retell AI Agent + Cal.com tools + Call Forwarding guide."""
         res = await session.execute(
             select(ReceptionistConfig).where(ReceptionistConfig.tenant_id == tenant_id)
         )
@@ -410,25 +410,25 @@ class ReceptionistService:
 
         master = await self._resolve_master_credentials(session)
         public_base = self._backend_public_url()
-        voice_webhook_url = f"{public_base}/api/v1/receptionist/webhooks/twilio/voice"
-        status_callback_url = f"{public_base}/api/v1/receptionist/webhooks/twilio/status"
+        voice_webhook_url = f"{public_base}/api/v1/receptionist/webhooks/telnyx/voice"
+        status_callback_url = f"{public_base}/api/v1/receptionist/webhooks/telnyx/status"
 
-        # 1. Provision or assign Twilio number + configure Voice Webhooks
-        twilio_res = await twilio_voice_adapter.provision_or_assign_number(
+        # 1. Provision or assign Telnyx number + attach TeXML Voice Application
+        telnyx_res = await telnyx_voice_adapter.provision_or_assign_number(
             tenant_id=str(tenant_id),
-            account_sid=master["twilio_account_sid"],
-            auth_token=master["twilio_auth_token"],
+            api_key=master["telnyx_api_key"],
             voice_webhook_url=voice_webhook_url,
             status_callback_url=status_callback_url,
-            default_number=master["twilio_default_number"],
-            country_code=master["twilio_default_country"],
-            existing_phone=row.twilio_phone_number,
-            existing_sid=row.twilio_phone_sid,
+            connection_id=master["telnyx_connection_id"],
+            default_number=master["telnyx_default_number"],
+            country_code=master["telnyx_default_country"],
+            existing_phone=row.telnyx_phone_number,
+            existing_phone_id=row.telnyx_phone_id,
         )
-        row.twilio_phone_number = twilio_res["phone_number"]
-        row.twilio_phone_sid = twilio_res["phone_sid"]
+        row.telnyx_phone_number = telnyx_res["phone_number"]
+        row.telnyx_phone_id = telnyx_res["phone_id"]
 
-        # 2. Provision or update dedicated Retell AI LLM + Voice Agent + link Twilio number
+        # 2. Provision or update dedicated Retell AI LLM + Voice Agent + link Telnyx number
         retell_res = await retell_ai_adapter.create_or_update_agent(
             api_key=master["retell_api_key"],
             tenant_id=str(tenant_id),
@@ -438,7 +438,7 @@ class ReceptionistService:
             faqs=row.faqs_knowledge_base,
             fallback_phone=row.fallback_phone_number,
             backend_base_url=public_base,
-            twilio_phone_number=row.twilio_phone_number,
+            telnyx_phone_number=row.telnyx_phone_number,
             calcom_booking_url=row.calcom_booking_url,
             voice_id=row.voice_id,
             existing_llm_id=row.retell_llm_id,
@@ -450,19 +450,19 @@ class ReceptionistService:
         # 3. Generate Call Forwarding Setup Guide
         row.call_forwarding_guide = generate_call_forwarding_guide(
             fallback_phone=row.fallback_phone_number,
-            assigned_twilio_number=row.twilio_phone_number or "+15550000000",
+            assigned_telnyx_number=row.telnyx_phone_number or "+15550000000",
             business_name=row.business_name,
         )
 
         # 4. Determine honest provisioning status
-        if twilio_res["is_live"] and retell_res["is_live"]:
+        if telnyx_res["is_live"] and retell_res["is_live"]:
             row.provisioning_status = "active"
-        elif twilio_res["is_live"] or retell_res["is_live"]:
+        elif telnyx_res["is_live"] or retell_res["is_live"]:
             row.provisioning_status = "active"
         else:
             row.provisioning_status = "sandbox_ready"
 
-        row.provisioning_notes = f"Twilio: {twilio_res['note']} | Retell AI: {retell_res['note']}"
+        row.provisioning_notes = f"Telnyx: {telnyx_res['note']} | Retell AI: {retell_res['note']}"
 
         session.add(
             AuditLog(
@@ -473,7 +473,7 @@ class ReceptionistService:
                 resource_type="receptionist_config",
                 resource_id=row.id,
                 metadata_={
-                    "twilio_phone_number": row.twilio_phone_number,
+                    "telnyx_phone_number": row.telnyx_phone_number,
                     "retell_agent_id": row.retell_agent_id,
                     "status": row.provisioning_status,
                 },
@@ -556,7 +556,7 @@ class ReceptionistService:
                 external_call_id=call_id_str,
                 caller_phone=request.attendee_phone or "Unknown",
                 caller_name=request.attendee_name,
-                to_number=cfg.twilio_phone_number if cfg else None,
+                to_number=cfg.telnyx_phone_number if cfg else None,
                 status="completed",
                 booking_status="booked",
                 booked_appointment_at=appt_dt,
@@ -596,7 +596,7 @@ class ReceptionistService:
         if not cfg and to_number:
             res = await session.execute(
                 select(ReceptionistConfig).where(
-                    ReceptionistConfig.twilio_phone_number == normalize_e164(str(to_number))
+                    ReceptionistConfig.telnyx_phone_number == normalize_e164(str(to_number))
                 )
             )
             cfg = res.scalar_one_or_none()
@@ -639,7 +639,7 @@ class ReceptionistService:
                 config_id=cfg.id,
                 external_call_id=external_call_id,
                 caller_phone=str(from_number),
-                to_number=cfg.twilio_phone_number,
+                to_number=cfg.telnyx_phone_number,
                 direction="inbound",
                 duration_seconds=duration_sec,
                 status=status_val,
@@ -654,7 +654,7 @@ class ReceptionistService:
         await session.commit()
         return {"processed": True, "call_log_id": str(log.id), "tenant_id": str(cfg.tenant_id)}
 
-    async def handle_twilio_voice_webhook(
+    async def handle_telnyx_voice_webhook(
         self,
         session: AsyncSession,
         to_number: str,
@@ -662,10 +662,10 @@ class ReceptionistService:
         call_sid: str,
         emergency_transfer: bool = False,
     ) -> str:
-        """Return TwiML routing inbound Twilio voice calls to Retell AI or live human transfer."""
+        """Return TeXML routing inbound Telnyx voice calls to Retell AI or live human transfer."""
         norm_to = normalize_e164(to_number)
         res = await session.execute(
-            select(ReceptionistConfig).where(ReceptionistConfig.twilio_phone_number == norm_to)
+            select(ReceptionistConfig).where(ReceptionistConfig.telnyx_phone_number == norm_to)
         )
         cfg = res.scalar_one_or_none()
         if not cfg:
@@ -679,7 +679,7 @@ class ReceptionistService:
                 ReceptionistCallLog(
                     tenant_id=cfg.tenant_id,
                     config_id=cfg.id,
-                    external_call_id=call_sid or f"tw_{uuid.uuid4().hex[:10]}",
+                    external_call_id=call_sid or f"tx_{uuid.uuid4().hex[:10]}",
                     caller_phone=from_number or "Unknown",
                     to_number=norm_to,
                     status="transferred",
@@ -688,12 +688,12 @@ class ReceptionistService:
                 )
             )
             await session.commit()
-            return twilio_voice_adapter.build_live_transfer_twiml(
+            return telnyx_voice_adapter.build_live_transfer_texml(
                 fallback_phone=cfg.fallback_phone_number,
                 announcement=f"Transferring your call to {cfg.business_name} staff right now.",
             )
 
-        return twilio_voice_adapter.build_retell_sip_or_greeting_twiml(
+        return telnyx_voice_adapter.build_retell_sip_or_greeting_texml(
             business_name=cfg.business_name,
             greeting=cfg.greeting_message,
             fallback_phone=cfg.fallback_phone_number,
@@ -723,7 +723,7 @@ class ReceptionistService:
                 external_call_id=call_id,
                 caller_phone=request.caller_phone,
                 caller_name=request.caller_name,
-                to_number=cfg.twilio_phone_number,
+                to_number=cfg.telnyx_phone_number,
                 duration_seconds=48,
                 status="transferred",
                 booking_status="none",
@@ -747,7 +747,7 @@ class ReceptionistService:
                 external_call_id=call_id,
                 caller_phone=request.caller_phone,
                 caller_name=request.caller_name,
-                to_number=cfg.twilio_phone_number,
+                to_number=cfg.telnyx_phone_number,
                 duration_seconds=74,
                 status="completed",
                 booking_status="none",

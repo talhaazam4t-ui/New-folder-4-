@@ -1,4 +1,4 @@
-"""Pydantic v2 Schemas for Office Receptionist (AI Voice Agent — Retell AI, Twilio, Cal.com)."""
+"""Pydantic v2 Schemas for Office Receptionist (AI Voice Agent — Retell AI, Telnyx, Cal.com)."""
 
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -58,10 +58,10 @@ class CalComBookToolRequest(BaseModel):
 class AdminVoiceCredentialsUpdateRequest(BaseModel):
     retell_api_key: Optional[str] = None
     retell_webhook_secret: Optional[str] = None
-    twilio_account_sid: Optional[str] = None
-    twilio_auth_token: Optional[str] = None
-    twilio_default_number: Optional[str] = None
-    twilio_default_country: Optional[str] = Field(default="US", max_length=5)
+    telnyx_api_key: Optional[str] = None
+    telnyx_connection_id: Optional[str] = None
+    telnyx_default_number: Optional[str] = None
+    telnyx_default_country: Optional[str] = Field(default="US", max_length=5)
     calcom_api_key: Optional[str] = None
 
 
@@ -96,7 +96,7 @@ class ReceptionistConfigResponse(BaseModel):
     calcom_booking_url: Optional[str]
     calcom_event_type_id: Optional[str]
     calcom_api_key_configured: bool
-    twilio_phone_number: Optional[str]
+    telnyx_phone_number: Optional[str]
     retell_agent_id: Optional[str]
     voice_id: str
     provisioning_status: str

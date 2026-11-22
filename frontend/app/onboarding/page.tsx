@@ -667,8 +667,8 @@ export default function OnboardingPage() {
         setRecepBusinessName(res.data.business_name || effectiveBizName);
         setRecepCalcomApiKey("");
         setStatusMessage(
-          `Office Receptionist provisioned! Your assigned Twilio AI number is ${
-            res.data.twilio_phone_number || "ready"
+          `Office Receptionist provisioned! Your assigned Telnyx AI number is ${
+            res.data.telnyx_phone_number || "ready"
           }. Follow the Call Forwarding guide below to go live.`
         );
       } else {
@@ -1011,7 +1011,7 @@ export default function OnboardingPage() {
                           ))
                         ) : (
                           <span className="rounded bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.5 text-[10px] font-semibold text-emerald-300">
-                            Guided Voice Setup (Retell AI + Twilio + Cal.com)
+                            Guided Voice Setup (Retell AI + Telnyx + Cal.com)
                           </span>
                         )}
                       </div>
@@ -1097,19 +1097,19 @@ export default function OnboardingPage() {
                 </h3>
                 <p className="text-xs text-slate-400">
                   {hasOfficeReceptionist && requiredIntegrations.length === 0
-                    ? "Enter only the details needed for your Retell AI Voice Receptionist, Twilio number assignment, Cal.com appointment booking, and live call transfer."
+                    ? "Enter only the details needed for your Retell AI Voice Receptionist, Telnyx number assignment, Cal.com appointment booking, and live call transfer."
                     : "Credentials are encrypted at rest on the backend. Automation remains inactive until all required connections below are verified."}
                 </p>
               </div>
               <div className="flex items-center gap-2">
                 <span
                   className={`rounded-full px-3 py-1 text-xs font-bold ${
-                    automationActive || Boolean(recepConfig?.twilio_phone_number)
+                    automationActive || Boolean(recepConfig?.telnyx_phone_number)
                       ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
                       : "bg-amber-500/20 text-amber-300 border border-amber-500/30"
                   }`}
                 >
-                  {automationActive || Boolean(recepConfig?.twilio_phone_number)
+                  {automationActive || Boolean(recepConfig?.telnyx_phone_number)
                     ? "Setup Active & Ready"
                     : "Pending Setup"}
                 </span>
@@ -1129,14 +1129,14 @@ export default function OnboardingPage() {
                         Office Receptionist — AI Voice Agent Onboarding
                       </h4>
                       <p className="text-[11px] text-slate-400">
-                        Automatically provisions your Twilio phone number, Retell AI voice agent,
+                        Automatically provisions your Telnyx phone number, Retell AI voice agent,
                         Cal.com appointment tools, and live emergency transfer routing.
                       </p>
                     </div>
                   </div>
-                  {recepConfig?.twilio_phone_number && (
+                  {recepConfig?.telnyx_phone_number && (
                     <span className="rounded-full bg-emerald-500/20 border border-emerald-500/30 px-3 py-1 text-[11px] font-mono font-bold text-emerald-300">
-                      AI Number: {recepConfig.twilio_phone_number}
+                      AI Number: {recepConfig.telnyx_phone_number}
                     </span>
                   )}
                 </div>
@@ -1273,7 +1273,7 @@ export default function OnboardingPage() {
                     <PhoneCall className="h-4 w-4" />
                     <span>
                       {recepSaving
-                        ? "Provisioning Twilio Number & Retell AI Voice Agent..."
+                        ? "Provisioning Telnyx Number & Retell AI Voice Agent..."
                         : recepConfig
                         ? "Update Office Receptionist & Refresh Call Forwarding Guide"
                         : "Provision AI Receptionist & Generate Call Forwarding Guide"}

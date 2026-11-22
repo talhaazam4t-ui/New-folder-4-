@@ -1,4 +1,4 @@
-"""Office Receptionist (AI Voice Agent) API Endpoints — Retell AI, Twilio, and Cal.com."""
+"""Office Receptionist (AI Voice Agent) API Endpoints — Retell AI, Telnyx, and Cal.com."""
 
 import json
 import uuid
@@ -39,7 +39,7 @@ async def upsert_receptionist_config(
     context: TenantContext = Depends(get_current_tenant),
     session: AsyncSession = Depends(get_db),
 ):
-    """Create or update the client's Office Receptionist onboarding settings and provision Twilio + Retell AI."""
+    """Create or update the client's Office Receptionist onboarding settings and provision Telnyx + Retell AI."""
     cfg = await receptionist_service.upsert_config(
         session=session,
         tenant_id=context.tenant_id,
@@ -78,7 +78,7 @@ async def provision_receptionist_agent(
     context: TenantContext = Depends(require_permission("integrations.manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    """Provision or re-sync the tenant's Twilio AI number, Retell AI voice agent, and Cal.com tools."""
+    """Provision or re-sync the tenant's Telnyx AI number, Retell AI voice agent, and Cal.com tools."""
     cfg = await receptionist_service.provision_voice_stack(
         session=session,
         tenant_id=context.tenant_id,
@@ -87,7 +87,7 @@ async def provision_receptionist_agent(
     return {
         "success": True,
         "data": cfg,
-        "message": "Twilio number and Retell AI Voice Receptionist provisioned.",
+        "message": "Telnyx number and Retell AI Voice Receptionist provisioned.",
     }
 
 
@@ -162,7 +162,7 @@ async def retell_tool_calcom_book(
 
 
 # ------------------------------------------------------------------------------
-# Public Voice Webhooks (Retell AI Call Events & Twilio Inbound Voice TwiML)
+# Public Voice Webhooks (Retell AI Call Events & Telnyx Inbound Voice TeXML)
 # ------------------------------------------------------------------------------
 
 
@@ -194,29 +194,29 @@ async def retell_call_event_webhook(
     return {"success": True, "data": result}
 
 
-@router.post("/webhooks/twilio/voice")
-async def twilio_inbound_voice_webhook(
+@router.post("/webhooks/telnyx/voice")
+async def telnyx_inbound_voice_webhook(
     To: str = Form(default=""),
     From: str = Form(default="Unknown"),
     CallSid: str = Form(default=""),
     emergency: bool = Query(default=False),
     session: AsyncSession = Depends(get_db),
 ):
-    """Twilio Voice Webhook returning TwiML routing calls to Retell AI or live human transfer."""
-    twiml = await receptionist_service.handle_twilio_voice_webhook(
+    """Telnyx TeXML Voice Webhook returning TeXML routing calls to Retell AI or live human transfer."""
+    texml = await receptionist_service.handle_telnyx_voice_webhook(
         session=session,
         to_number=To,
         from_number=From,
         call_sid=CallSid,
         emergency_transfer=emergency,
     )
-    return Response(content=twiml, media_type="application/xml")
+    return Response(content=texml, media_type="application/xml")
 
 
-@router.post("/webhooks/twilio/status")
-async def twilio_call_status_callback(
+@router.post("/webhooks/telnyx/status")
+async def telnyx_call_status_callback(
     CallSid: str = Form(default=""),
     CallStatus: str = Form(default="completed"),
 ):
-    """Twilio Voice StatusCallback acknowledgement endpoint."""
+    """Telnyx TeXML Voice StatusCallback acknowledgement endpoint."""
     return {"success": True, "call_sid": CallSid, "status": CallStatus}

@@ -1,4 +1,4 @@
-"""SQLAlchemy Models for Office Receptionist (AI Voice Agent — Retell AI, Twilio, Cal.com).
+"""SQLAlchemy Models for Office Receptionist (AI Voice Agent — Retell AI, Telnyx, Cal.com).
 """
 
 import uuid
@@ -12,7 +12,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 
 class PlatformVoiceCredential(Base, TimestampMixin):
-    """Super-admin-managed encrypted master credentials for Retell AI, Twilio, and Cal.com."""
+    """Super-admin-managed encrypted master credentials for Retell AI, Telnyx, and Cal.com."""
 
     __tablename__ = "platform_voice_credentials"
 
@@ -58,8 +58,8 @@ class ReceptionistConfig(Base, TimestampMixin):
     encrypted_calcom_api_key: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # Provisioned Voice Infrastructure
-    twilio_phone_number: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, index=True)
-    twilio_phone_sid: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    telnyx_phone_number: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, index=True)
+    telnyx_phone_id: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
     retell_agent_id: Mapped[Optional[str]] = mapped_column(String(120), nullable=True, index=True)
     retell_llm_id: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
     voice_id: Mapped[str] = mapped_column(String(100), default="11labs-Adrian", nullable=False)

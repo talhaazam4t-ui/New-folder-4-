@@ -1,8 +1,8 @@
 """Voice AI Provider Adapters for Office Receptionist:
-1. TwilioVoiceAdapter: Automatic phone number provisioning/assignment, Voice Webhook configuration,
-   live call transfer TwiML, and personalized Call Forwarding guide generation.
+1. TelnyxVoiceAdapter: Automatic phone number provisioning/assignment, TeXML Voice Application
+   configuration, live call transfer TeXML, and personalized Call Forwarding guide generation.
 2. RetellAIAdapter: Dedicated Retell LLM + Voice Agent creation/updates with Cal.com custom tools
-   and live human/emergency call transfer routing, plus Twilio phone linking.
+   and live human/emergency call transfer routing, plus Telnyx phone linking.
 3. CalComAdapter: Live Cal.com availability checks and real-time appointment booking during calls.
 """
 
@@ -29,11 +29,11 @@ def normalize_e164(phone: str) -> str:
 
 def generate_call_forwarding_guide(
     fallback_phone: str,
-    assigned_twilio_number: str,
+    assigned_telnyx_number: str,
     business_name: str,
 ) -> Dict[str, Any]:
     """Generate a simple, carrier-friendly Call Forwarding setup guide for the client."""
-    ai_num = normalize_e164(assigned_twilio_number)
+    ai_num = normalize_e164(assigned_telnyx_number)
     digits_only = ai_num.lstrip("+")
     return {
         "business_name": business_name,
@@ -63,68 +63,149 @@ def generate_call_forwarding_guide(
     }
 
 
-class TwilioVoiceAdapter:
-    """Handles Twilio number provisioning/assignment, webhook wiring, and live transfer TwiML."""
+class TelnyxVoiceAdapter:
+    """Handles Telnyx number provisioning/assignment, TeXML Voice App wiring, and live transfer TeXML."""
 
-    base_url = "https://api.twilio.com/2010-04-01"
+    base_url = "https://api.telnyx.com/v2"
+
+    async def _ensure_texml_connection(
+        self,
+        client: httpx.AsyncClient,
+        headers: Dict[str, str],
+        voice_webhook_url: str,
+        status_callback_url: str,
+        connection_id: Optional[str] = None,
+    ) -> Optional[str]:
+        """Resolve an existing Telnyx Connection / TeXML Application ID or create one for Voice webhooks."""
+        if connection_id and connection_id.strip():
+            return connection_id.strip()
+
+        # Check existing TeXML applications for a Talox Receptionist app
+        try:
+            apps_resp = await client.get(
+                f"{self.base_url}/texml_applications",
+                headers=headers,
+                params={"page[size]": 25},
+            )
+            if apps_resp.status_code == 200:
+                apps = apps_resp.json().get("data") or []
+                existing = next(
+                    (
+                        a
+                        for a in apps
+                        if a.get("voice_url") == voice_webhook_url
+                        or str(a.get("friendly_name") or "").startswith("Talox Receptionist")
+                    ),
+                    None,
+                )
+                if existing and existing.get("id"):
+                    app_id = str(existing["id"])
+                    if existing.get("voice_url") != voice_webhook_url:
+                        await client.patch(
+                            f"{self.base_url}/texml_applications/{app_id}",
+                            headers=headers,
+                            json={
+                                "friendly_name": existing.get("friendly_name") or "Talox Receptionist Voice",
+                                "voice_url": voice_webhook_url,
+                                "voice_method": "post",
+                                "status_callback": status_callback_url,
+                                "status_callback_method": "post",
+                                "active": True,
+                            },
+                        )
+                    return app_id
+
+            # Create a fresh TeXML Application wired to our Voice Webhook
+            create_resp = await client.post(
+                f"{self.base_url}/texml_applications",
+                headers=headers,
+                json={
+                    "friendly_name": "Talox Receptionist Voice",
+                    "voice_url": voice_webhook_url,
+                    "voice_method": "post",
+                    "status_callback": status_callback_url,
+                    "status_callback_method": "post",
+                    "active": True,
+                },
+            )
+            if create_resp.status_code in (200, 201):
+                created = create_resp.json().get("data") or {}
+                if created.get("id"):
+                    return str(created["id"])
+        except Exception as exc:
+            logger.warning("Telnyx TeXML application lookup/creation skipped", error=str(exc))
+
+        return None
 
     async def provision_or_assign_number(
         self,
         tenant_id: str,
-        account_sid: Optional[str],
-        auth_token: Optional[str],
+        api_key: Optional[str],
         voice_webhook_url: str,
         status_callback_url: str,
+        connection_id: Optional[str] = None,
         default_number: Optional[str] = None,
         country_code: str = "US",
         existing_phone: Optional[str] = None,
-        existing_sid: Optional[str] = None,
+        existing_phone_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Provision or assign a Twilio phone number and attach Voice + Status webhooks."""
-        sid = (account_sid or "").strip()
-        token = (auth_token or "").strip()
+        """Provision or assign a Telnyx phone number and attach the TeXML Voice Application."""
+        key = (api_key or "").strip()
 
-        if not sid or not token or sid.startswith("your-") or token.startswith("your-"):
+        if not key or key.startswith("your-"):
             sandbox_num = existing_phone or default_number or f"+1555{str(abs(hash(tenant_id)))[:7]}"
             return {
                 "success": True,
                 "phone_number": normalize_e164(sandbox_num),
-                "phone_sid": existing_sid or f"PN_SANDBOX_{tenant_id[:8]}",
+                "phone_id": existing_phone_id or f"TN_SANDBOX_{tenant_id[:8]}",
                 "is_live": False,
-                "note": "Twilio master credentials not configured yet; assigned sandbox AI number.",
+                "note": "Telnyx master API key not configured yet; assigned sandbox AI number.",
             }
 
-        auth = (sid, token)
+        headers = {
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
         try:
-            async with httpx.AsyncClient(timeout=20.0, auth=auth) as client:
-                # 1. Update existing SID if already assigned to this tenant
-                if existing_sid and not existing_sid.startswith("PN_SANDBOX_"):
-                    upd = await client.post(
-                        f"{self.base_url}/Accounts/{sid}/IncomingPhoneNumbers/{existing_sid}.json",
-                        data={
-                            "VoiceUrl": voice_webhook_url,
-                            "VoiceMethod": "POST",
-                            "StatusCallback": status_callback_url,
-                            "StatusCallbackMethod": "POST",
-                        },
-                    )
-                    if upd.status_code in (200, 201):
-                        data = upd.json()
-                        return {
-                            "success": True,
-                            "phone_number": data.get("phone_number") or existing_phone,
-                            "phone_sid": data.get("sid") or existing_sid,
-                            "is_live": True,
-                            "note": "Existing Twilio phone number webhooks synced.",
-                        }
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                active_conn_id = await self._ensure_texml_connection(
+                    client=client,
+                    headers=headers,
+                    voice_webhook_url=voice_webhook_url,
+                    status_callback_url=status_callback_url,
+                    connection_id=connection_id,
+                )
 
-                # 2. Check existing owned IncomingPhoneNumbers (match default_number or unassigned)
+                # 1. Sync existing assigned Telnyx number if already provisioned for this tenant
+                if existing_phone_id and not existing_phone_id.startswith(("TN_SANDBOX_", "PN_SANDBOX_")):
+                    patch_body: Dict[str, Any] = {}
+                    if active_conn_id:
+                        patch_body["connection_id"] = active_conn_id
+                    if patch_body:
+                        upd = await client.patch(
+                            f"{self.base_url}/phone_numbers/{existing_phone_id}",
+                            headers=headers,
+                            json=patch_body,
+                        )
+                        if upd.status_code in (200, 201):
+                            data = upd.json().get("data") or {}
+                            return {
+                                "success": True,
+                                "phone_number": data.get("phone_number") or existing_phone,
+                                "phone_id": str(data.get("id") or existing_phone_id),
+                                "is_live": True,
+                                "note": "Existing Telnyx phone number TeXML voice routing synced.",
+                            }
+
+                # 2. Check existing owned Telnyx phone numbers (match default_number or unassigned)
                 list_resp = await client.get(
-                    f"{self.base_url}/Accounts/{sid}/IncomingPhoneNumbers.json",
-                    params={"PageSize": 20},
+                    f"{self.base_url}/phone_numbers",
+                    headers=headers,
+                    params={"page[size]": 25},
                 )
                 if list_resp.status_code == 200:
-                    owned = list_resp.json().get("incoming_phone_numbers") or []
+                    owned = list_resp.json().get("data") or []
                     chosen = None
                     if default_number:
                         norm_def = normalize_e164(default_number)
@@ -133,80 +214,88 @@ class TwilioVoiceAdapter:
                             None,
                         )
                     if not chosen and owned:
-                        # Pick an owned number not yet wired to another tenant's voice webhook
                         chosen = next(
-                            (n for n in owned if not n.get("voice_url") or "demo.twilio.com" in str(n.get("voice_url"))),
+                            (n for n in owned if not n.get("connection_id")),
                             owned[0],
                         )
                     if chosen:
-                        chosen_sid = chosen["sid"]
-                        upd = await client.post(
-                            f"{self.base_url}/Accounts/{sid}/IncomingPhoneNumbers/{chosen_sid}.json",
-                            data={
-                                "VoiceUrl": voice_webhook_url,
-                                "VoiceMethod": "POST",
-                                "StatusCallback": status_callback_url,
-                                "StatusCallbackMethod": "POST",
-                            },
-                        )
-                        upd.raise_for_status()
+                        chosen_id = str(chosen["id"])
+                        if active_conn_id:
+                            upd = await client.patch(
+                                f"{self.base_url}/phone_numbers/{chosen_id}",
+                                headers=headers,
+                                json={"connection_id": active_conn_id},
+                            )
+                            upd.raise_for_status()
                         return {
                             "success": True,
                             "phone_number": chosen["phone_number"],
-                            "phone_sid": chosen_sid,
+                            "phone_id": chosen_id,
                             "is_live": True,
-                            "note": "Assigned owned Twilio number and configured Voice Webhooks.",
+                            "note": "Assigned owned Telnyx number and attached TeXML Voice Application.",
                         }
 
-                # 3. Search & purchase a fresh Local Twilio phone number automatically
+                # 3. Search & order a fresh Telnyx voice-enabled phone number automatically
                 avail_resp = await client.get(
-                    f"{self.base_url}/Accounts/{sid}/AvailablePhoneNumbers/{country_code.upper()}/Local.json",
-                    params={"VoiceEnabled": "true", "PageSize": 5},
-                )
-                avail_resp.raise_for_status()
-                available = avail_resp.json().get("available_phone_numbers") or []
-                if not available:
-                    raise RuntimeError(f"No available Twilio voice numbers found in country '{country_code}'")
-
-                target_num = available[0]["phone_number"]
-                buy_resp = await client.post(
-                    f"{self.base_url}/Accounts/{sid}/IncomingPhoneNumbers.json",
-                    data={
-                        "PhoneNumber": target_num,
-                        "FriendlyName": f"Talox Receptionist {tenant_id[:8]}",
-                        "VoiceUrl": voice_webhook_url,
-                        "VoiceMethod": "POST",
-                        "StatusCallback": status_callback_url,
-                        "StatusCallbackMethod": "POST",
+                    f"{self.base_url}/available_phone_numbers",
+                    headers=headers,
+                    params={
+                        "filter[country_code]": country_code.upper(),
+                        "filter[features][]": "voice",
+                        "filter[limit]": 5,
                     },
                 )
+                avail_resp.raise_for_status()
+                available = avail_resp.json().get("data") or []
+                if not available:
+                    raise RuntimeError(f"No available Telnyx voice numbers found in country '{country_code}'")
+
+                target_num = available[0]["phone_number"]
+                order_payload: Dict[str, Any] = {
+                    "phone_numbers": [{"phone_number": target_num}],
+                    "customer_reference": f"talox-receptionist-{tenant_id[:8]}",
+                }
+                if active_conn_id:
+                    order_payload["connection_id"] = active_conn_id
+
+                buy_resp = await client.post(
+                    f"{self.base_url}/number_orders",
+                    headers=headers,
+                    json=order_payload,
+                )
                 buy_resp.raise_for_status()
-                bought = buy_resp.json()
+                order_data = buy_resp.json().get("data") or {}
+                ordered_nums = order_data.get("phone_numbers") or []
+                ordered_id = (
+                    str(ordered_nums[0].get("id"))
+                    if ordered_nums and ordered_nums[0].get("id")
+                    else str(order_data.get("id") or f"TN_ORDER_{tenant_id[:8]}")
+                )
                 return {
                     "success": True,
-                    "phone_number": bought["phone_number"],
-                    "phone_sid": bought["sid"],
+                    "phone_number": normalize_e164(target_num),
+                    "phone_id": ordered_id,
                     "is_live": True,
-                    "note": "Provisioned new Twilio voice number and configured Voice Webhooks.",
+                    "note": "Provisioned new Telnyx voice number and linked TeXML Voice Application.",
                 }
 
         except Exception as exc:
-            logger.warning("Twilio live provisioning failed; keeping sandbox assignment", error=str(exc))
+            logger.warning("Telnyx live provisioning failed; keeping sandbox assignment", error=str(exc))
             sandbox_num = existing_phone or default_number or f"+1555{str(abs(hash(tenant_id)))[:7]}"
             return {
                 "success": False,
                 "phone_number": normalize_e164(sandbox_num),
-                "phone_sid": existing_sid or f"PN_SANDBOX_{tenant_id[:8]}",
+                "phone_id": existing_phone_id or f"TN_SANDBOX_{tenant_id[:8]}",
                 "is_live": False,
-                "note": f"Twilio live call failed ({str(exc)[:140]}); sandbox number retained.",
+                "note": f"Telnyx live call failed ({str(exc)[:140]}); sandbox number retained.",
             }
 
-    def build_live_transfer_twiml(
+    def build_live_transfer_texml(
         self,
         fallback_phone: str,
         announcement: str = "Connecting you directly to a human representative now. Please hold.",
     ) -> str:
-        """Build Twilio TwiML XML for immediate live call transfer to the client's personal/fallback phone."""
+        """Build Telnyx TeXML XML for immediate live call transfer to the client's personal/fallback phone."""
         safe_msg = xml_escape(announcement)
         safe_num = xml_escape(normalize_e164(fallback_phone))
         return (
@@ -219,14 +308,14 @@ class TwilioVoiceAdapter:
             "</Response>"
         )
 
-    def build_retell_sip_or_greeting_twiml(
+    def build_retell_sip_or_greeting_texml(
         self,
         business_name: str,
         greeting: str,
         fallback_phone: str,
         retell_agent_id: Optional[str] = None,
     ) -> str:
-        """Build Twilio inbound voice TwiML routing to Retell SIP or fallback live transfer."""
+        """Build Telnyx inbound voice TeXML routing to Retell SIP or fallback live transfer."""
         if retell_agent_id and not retell_agent_id.startswith("agent_sandbox_"):
             safe_sip = xml_escape(f"sip:{retell_agent_id}@5t4n6j0wnrl.sip.livekit.cloud")
             return (
@@ -238,11 +327,11 @@ class TwilioVoiceAdapter:
                 "</Response>"
             )
         safe_greeting = xml_escape(greeting or f"Welcome to {business_name}. Connecting you now.")
-        return self.build_live_transfer_twiml(fallback_phone, announcement=safe_greeting)
+        return self.build_live_transfer_texml(fallback_phone, announcement=safe_greeting)
 
 
 class RetellAIAdapter:
-    """Handles Retell AI LLM + Voice Agent provisioning, Cal.com tools, live transfer, and Twilio linking."""
+    """Handles Retell AI LLM + Voice Agent provisioning, Cal.com tools, live transfer, and Telnyx linking."""
 
     def _build_receptionist_prompt(
         self,
@@ -340,14 +429,14 @@ class RetellAIAdapter:
         faqs: str,
         fallback_phone: str,
         backend_base_url: str,
-        twilio_phone_number: Optional[str] = None,
+        telnyx_phone_number: Optional[str] = None,
         calcom_booking_url: Optional[str] = None,
         voice_id: str = "11labs-Adrian",
         existing_llm_id: Optional[str] = None,
         existing_agent_id: Optional[str] = None,
         base_url: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Provision or update a dedicated Retell AI LLM + Voice Agent and bind it to the Twilio number."""
+        """Provision or update a dedicated Retell AI LLM + Voice Agent and bind it to the Telnyx number."""
         key = (api_key or "").strip()
         retell_base = (base_url or settings.retell_base_url).rstrip("/")
 
@@ -427,11 +516,11 @@ class RetellAIAdapter:
                     ag_resp.raise_for_status()
                     agent_id = ag_resp.json().get("agent_id")
 
-                # 3. Link Twilio phone number to Retell AI Agent if live E.164 number is present
-                if twilio_phone_number and not twilio_phone_number.startswith("+1555"):
+                # 3. Link Telnyx phone number to Retell AI Agent if live E.164 number is present
+                if telnyx_phone_number and not telnyx_phone_number.startswith("+1555"):
                     try:
                         await client.patch(
-                            f"{retell_base}/update-phone-number/{normalize_e164(twilio_phone_number)}",
+                            f"{retell_base}/update-phone-number/{normalize_e164(telnyx_phone_number)}",
                             headers=headers,
                             json={"inbound_agent_id": agent_id},
                         )
@@ -442,7 +531,7 @@ class RetellAIAdapter:
                                 f"{retell_base}/import-phone-number",
                                 headers=headers,
                                 json={
-                                    "phone_number": normalize_e164(twilio_phone_number),
+                                    "phone_number": normalize_e164(telnyx_phone_number),
                                     "inbound_agent_id": agent_id,
                                     "nickname": f"{business_name} AI Line",
                                 },
@@ -614,6 +703,6 @@ class CalComAdapter:
         }
 
 
-twilio_voice_adapter = TwilioVoiceAdapter()
+telnyx_voice_adapter = TelnyxVoiceAdapter()
 retell_ai_adapter = RetellAIAdapter()
 calcom_adapter = CalComAdapter()

@@ -1,15 +1,15 @@
-"""End-to-End Test Suite for Office Receptionist (AI Voice Agent — Retell AI, Twilio, Cal.com).
+"""End-to-End Test Suite for Office Receptionist (AI Voice Agent — Retell AI, Telnyx, Cal.com).
 
 Verifies:
 1. "Office Receptionist" tier is seeded in the service catalog across industries with empty OAuth requirements.
 2. Super Admin master voice credentials vault (`GET`/`PUT /api/v1/admin/voice-credentials`) encrypts
    secrets at rest, masks outputs, and blocks non-admin users (`403`).
 3. Client onboarding flow (`PUT /api/v1/receptionist/config`) stores business info, operating hours,
-   fallback phone, FAQs, greeting, encrypted Cal.com key, auto-provisions Twilio + Retell AI, and
+   fallback phone, FAQs, greeting, encrypted Cal.com key, auto-provisions Telnyx + Retell AI, and
    generates a personalized Call Forwarding setup guide.
 4. Client live FAQ updates (`PATCH /api/v1/receptionist/faqs`) re-sync cleanly.
-5. Retell AI custom tools (`calcom/availability` & `calcom/book`), Retell call webhooks, Twilio live
-   human transfer TwiML (`<Dial>`), simulated calls, KPI summary, and strict cross-tenant isolation.
+5. Retell AI custom tools (`calcom/availability` & `calcom/book`), Retell call webhooks, Telnyx live
+   human transfer TeXML (`<Dial>`), simulated calls, KPI summary, and strict cross-tenant isolation.
 """
 
 import hashlib
@@ -102,7 +102,7 @@ async def test_office_receptionist_full_lifecycle_and_security():
         )
         assert unauth_cred.status_code == 403
 
-        # 4. Super Admin stores master Retell AI, Twilio & Cal.com credentials encrypted at rest
+        # 4. Super Admin stores master Retell AI, Telnyx & Cal.com credentials encrypted at rest
         raw_retell_key = "key_test_retell_secret_987654321"
         raw_webhook_secret = "whsec_test_signing_secret_123456"
         raw_calcom_key = "cal_live_master_secret_555666"
@@ -111,8 +111,8 @@ async def test_office_receptionist_full_lifecycle_and_security():
             json={
                 "retell_api_key": raw_retell_key,
                 "retell_webhook_secret": raw_webhook_secret,
-                "twilio_default_number": "+14155550188",
-                "twilio_default_country": "US",
+                "telnyx_default_number": "+14155550188",
+                "telnyx_default_country": "US",
                 "calcom_api_key": raw_calcom_key,
             },
             headers=admin_headers,
@@ -123,7 +123,7 @@ async def test_office_receptionist_full_lifecycle_and_security():
         assert creds_data["retell"]["source"] == "encrypted_vault"
         assert raw_retell_key not in json.dumps(creds_data)
         assert raw_calcom_key not in json.dumps(creds_data)
-        assert creds_data["twilio"]["default_number"] == "+14155550188"
+        assert creds_data["telnyx"]["default_number"] == "+14155550188"
 
         # Verify ciphertext stored in DB, NOT plaintext
         async with get_session_factory()() as db_sess:
@@ -182,7 +182,7 @@ async def test_office_receptionist_full_lifecycle_and_security():
         assert cfg["fallback_phone_number"] == "+14155550101"
         assert cfg["calcom_api_key_configured"] is True
         assert client_cal_secret not in json.dumps(cfg)
-        assert cfg["twilio_phone_number"] == "+14155550188"
+        assert cfg["telnyx_phone_number"] == "+14155550188"
         assert cfg["retell_agent_id"] is not None
         guide = cfg["call_forwarding_guide"]
         assert guide["assigned_ai_number"] == "+14155550188"
@@ -239,7 +239,7 @@ async def test_office_receptionist_full_lifecycle_and_security():
                 "call_id": "call_retell_live_001",
                 "agent_id": cfg["retell_agent_id"],
                 "from_number": "+14155550222",
-                "to_number": cfg["twilio_phone_number"],
+                "to_number": cfg["telnyx_phone_number"],
                 "duration_seconds": 135,
                 "call_analysis": {
                     "call_summary": "Caller Omar Hassan booked a dental cleaning via Cal.com.",
@@ -267,17 +267,17 @@ async def test_office_receptionist_full_lifecycle_and_security():
         assert ok_hook.status_code == 200, ok_hook.text
         assert ok_hook.json()["data"]["processed"] is True
 
-        # 10. Twilio Voice Webhook live emergency transfer returns <Dial> TwiML to fallback number
-        tw_res = await client.post(
-            "/api/v1/receptionist/webhooks/twilio/voice?emergency=true",
+        # 10. Telnyx TeXML Voice Webhook live emergency transfer returns <Dial> TeXML to fallback number
+        tx_res = await client.post(
+            "/api/v1/receptionist/webhooks/telnyx/voice?emergency=true",
             data={
-                "To": cfg["twilio_phone_number"],
+                "To": cfg["telnyx_phone_number"],
                 "From": "+14155550333",
-                "CallSid": "CA_EMERGENCY_001",
+                "CallSid": "TX_EMERGENCY_001",
             },
         )
-        assert tw_res.status_code == 200
-        assert '<Dial timeout="25">+14155550101</Dial>' in tw_res.text
+        assert tx_res.status_code == 200
+        assert '<Dial timeout="25">+14155550101</Dial>' in tx_res.text
 
         # 11. Simulate FAQ call & verify call logs + KPI summary + cross-tenant isolation
         sim_res = await client.post(

@@ -123,7 +123,7 @@ async def _fetch_tenants_overview_data(
     for rcfg in recep_res.scalars().all():
         receptionist_by_tenant[rcfg.tenant_id] = {
             "business_name": rcfg.business_name,
-            "twilio_phone_number": rcfg.twilio_phone_number,
+            "telnyx_phone_number": rcfg.telnyx_phone_number,
             "retell_agent_id": rcfg.retell_agent_id,
             "fallback_phone_number": rcfg.fallback_phone_number,
             "provisioning_status": rcfg.provisioning_status,
@@ -1051,7 +1051,7 @@ async def admin_get_voice_credentials(
     admin_user: Profile = Depends(verify_platform_admin),
     session: AsyncSession = Depends(get_db),
 ):
-    """Return masked configuration status of master Retell AI, Twilio, and Cal.com credentials."""
+    """Return masked configuration status of master Retell AI, Telnyx, and Cal.com credentials."""
     data = await receptionist_service.get_admin_voice_credentials_status(session)
     return {"success": True, "data": data}
 
@@ -1062,7 +1062,7 @@ async def admin_update_voice_credentials(
     admin_user: Profile = Depends(verify_platform_admin),
     session: AsyncSession = Depends(get_db),
 ):
-    """Encrypt and store master Retell AI, Twilio, and Cal.com API credentials in the Admin Vault."""
+    """Encrypt and store master Retell AI, Telnyx, and Cal.com API credentials in the Admin Vault."""
     data = await receptionist_service.upsert_admin_voice_credentials(
         session=session,
         admin_user_id=admin_user.id,
@@ -1081,7 +1081,7 @@ async def admin_provision_tenant_receptionist(
     admin_user: Profile = Depends(verify_platform_admin),
     session: AsyncSession = Depends(get_db),
 ):
-    """Owner control to provision or re-sync a client's Twilio number & Retell AI Office Receptionist."""
+    """Owner control to provision or re-sync a client's Telnyx number & Retell AI Office Receptionist."""
     data = await receptionist_service.provision_voice_stack(
         session=session,
         tenant_id=tenant_id,
