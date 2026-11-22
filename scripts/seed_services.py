@@ -433,6 +433,90 @@ DEFAULT_SERVICES = [
             },
         },
     },
+    {
+        "name": "Office Receptionist (AI Voice Agent)",
+        "slug": "office-receptionist",
+        "category": "communication",
+        "description": (
+            "24/7 AI Voice Receptionist powered by Retell AI, Twilio, and Cal.com — answers live phone calls, "
+            "handles FAQs, books appointments directly into Cal.com, and transfers urgent/human requests live."
+        ),
+        "configuration_schema": {
+            "industries": [
+                "Financing",
+                "Clinics / Hospitals",
+                "Real Estate / Property",
+                "E-Commerce",
+            ],
+            "required_integrations": [],
+            "features": [
+                "Dedicated Twilio AI phone number with automatic Voice Webhook & Call Forwarding guide",
+                "Custom Retell AI voice agent trained on your business hours, greeting, and FAQs",
+                "Real-time Cal.com availability lookup & live call appointment booking",
+                "Instant live call transfer to your personal/fallback number for emergencies or human requests",
+                "Full call logs, duration, AI call summaries, and booked appointments dashboard",
+            ],
+            "limitations": "Includes 300 voice minutes/mo on Starter; 1,500 on Growth; unlimited routing on Enterprise.",
+            "packages": [
+                {
+                    "plan_name": "starter",
+                    "display_name": "Starter Voice Receptionist",
+                    "price": 199.0,
+                    "billing_interval": "monthly",
+                    "features": [
+                        "1 dedicated Twilio AI number",
+                        "Retell AI voice agent + custom FAQs",
+                        "Cal.com appointment booking + live transfer",
+                        "300 voice minutes/month",
+                    ],
+                    "limitations": "1 concurrent line",
+                },
+                {
+                    "plan_name": "growth",
+                    "display_name": "Growth AI Receptionist",
+                    "price": 399.0,
+                    "billing_interval": "monthly",
+                    "features": [
+                        "Up to 3 Twilio lines",
+                        "1,500 voice minutes/month",
+                        "Priority Cal.com routing + SMS/WhatsApp follow-ups",
+                        "Full transcripts & call analytics",
+                    ],
+                    "limitations": "Up to 5 concurrent calls",
+                },
+                {
+                    "plan_name": "enterprise",
+                    "display_name": "Enterprise Voice Desk",
+                    "price": 799.0,
+                    "billing_interval": "monthly",
+                    "features": [
+                        "Unlimited lines & custom voice cloning",
+                        "Multi-department warm call transfers",
+                        "Dedicated SLA & CRM sync",
+                    ],
+                    "limitations": "None",
+                },
+            ],
+            "industry_profiles": {
+                "Financing": {
+                    "headline": "24/7 Financial Advisory Phone Receptionist & Cal.com Consultation Booking",
+                    "required_integrations": [],
+                },
+                "Clinics / Hospitals": {
+                    "headline": "24/7 Clinic AI Voice Receptionist, Patient Triage & Emergency Doctor Transfer",
+                    "required_integrations": [],
+                },
+                "Real Estate / Property": {
+                    "headline": "24/7 Property Viewing Phone Receptionist & Live Broker Transfer",
+                    "required_integrations": [],
+                },
+                "E-Commerce": {
+                    "headline": "24/7 Order Support Voice Desk & Escalation Routing",
+                    "required_integrations": [],
+                },
+            },
+        },
+    },
 ]
 
 

@@ -34,16 +34,19 @@ from app.database.models.agent import AgentExecution, AgentRegistry, AgentTask
 from app.database.models.automation import Approval, AuditLog, Integration, UsageRecord
 from app.database.models.billing import Payment
 from app.database.models.marketing import Lead, MarketingCampaign
+from app.database.models.receptionist import ReceptionistConfig
 from app.database.models.service import Service, ServiceSubscription
 from app.database.models.tenant import Profile, Tenant, TenantMember
 from app.database.supabase import get_db
 from app.dependencies import get_current_user
 from app.schemas.marketing import LeadGenerationRequest
 from app.schemas.payment import BankTransferApproveRequest
+from app.schemas.receptionist import AdminVoiceCredentialsUpdateRequest
 from app.schemas.service import SubscriptionCreateRequest
 from app.services.auth_service import auth_service
 from app.services.billing_service import billing_service, normalize_industry
 from app.services.marketing_service import marketing_service
+from app.services.receptionist_service import receptionist_service
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import func, select
@@ -100,19 +103,31 @@ async def _fetch_tenants_overview_data(
     }
 
     subs_res = await session.execute(
-        select(ServiceSubscription, Service.name).join(
+        select(ServiceSubscription, Service.name, Service.slug).join(
             Service, ServiceSubscription.service_id == Service.id
         )
     )
     subs_by_tenant: Dict[uuid.UUID, List[Dict[str, Any]]] = {}
-    for sub, service_name in subs_res.all():
+    for sub, service_name, service_slug in subs_res.all():
         subs_by_tenant.setdefault(sub.tenant_id, []).append({
             "id": str(sub.id),
             "service_name": service_name,
+            "service_slug": service_slug,
             "plan_name": sub.plan_name,
             "price": float(sub.price),
             "status": sub.status,
         })
+
+    recep_res = await session.execute(select(ReceptionistConfig))
+    receptionist_by_tenant: Dict[uuid.UUID, Dict[str, Any]] = {}
+    for rcfg in recep_res.scalars().all():
+        receptionist_by_tenant[rcfg.tenant_id] = {
+            "business_name": rcfg.business_name,
+            "twilio_phone_number": rcfg.twilio_phone_number,
+            "retell_agent_id": rcfg.retell_agent_id,
+            "fallback_phone_number": rcfg.fallback_phone_number,
+            "provisioning_status": rcfg.provisioning_status,
+        }
 
     leads_res = await session.execute(
         select(Lead.tenant_id, func.count(Lead.id)).group_by(Lead.tenant_id)
@@ -154,6 +169,7 @@ async def _fetch_tenants_overview_data(
             "integrations_pending": sum(1 for i in integrations if i.status == "pending_approval"),
             "integrations_failed": sum(1 for i in integrations if i.status == "error"),
             "integrations_disconnected": sum(1 for i in integrations if i.status == "disconnected"),
+            "receptionist": receptionist_by_tenant.get(t.id),
             "settings": cfg_settings,
             "created_at": t.created_at.isoformat() if t.created_at else None,
         })
@@ -179,6 +195,7 @@ class AdminProvisionTenantRequest(BaseModel):
     name: str
     slug: Optional[str] = None
     industry: str = "Financing"
+    service_slug: Optional[str] = None
     owner_email: str
     owner_name: Optional[str] = None
     owner_password: Optional[str] = None
@@ -497,9 +514,17 @@ async def admin_provision_tenant(
     )
     session.add(membership)
 
-    # 5. Provision service subscription if catalog service exists
-    services_res = await session.execute(select(Service).where(Service.active.is_(True)))
-    catalog_service = services_res.scalars().first()
+    # 5. Provision service subscription (specific selected service tier or default active service)
+    await billing_service.ensure_default_catalog(session)
+    catalog_service = None
+    if request.service_slug:
+        srv_res = await session.execute(
+            select(Service).where(Service.slug == request.service_slug.strip().lower())
+        )
+        catalog_service = srv_res.scalar_one_or_none()
+    if not catalog_service:
+        services_res = await session.execute(select(Service).where(Service.active.is_(True)))
+        catalog_service = services_res.scalars().first()
 
     if catalog_service:
         now_utc = datetime.now(timezone.utc)
@@ -1016,6 +1041,50 @@ async def admin_update_campaign_metrics(
         conversions=max(0, request.conversions),
         spend=max(0.0, request.spend),
         revenue=max(0.0, request.revenue),
+        actor_id=admin_user.id,
+    )
+    return {"success": True, "data": data}
+
+
+@router.get("/voice-credentials")
+async def admin_get_voice_credentials(
+    admin_user: Profile = Depends(verify_platform_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    """Return masked configuration status of master Retell AI, Twilio, and Cal.com credentials."""
+    data = await receptionist_service.get_admin_voice_credentials_status(session)
+    return {"success": True, "data": data}
+
+
+@router.put("/voice-credentials")
+async def admin_update_voice_credentials(
+    request: AdminVoiceCredentialsUpdateRequest,
+    admin_user: Profile = Depends(verify_platform_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    """Encrypt and store master Retell AI, Twilio, and Cal.com API credentials in the Admin Vault."""
+    data = await receptionist_service.upsert_admin_voice_credentials(
+        session=session,
+        admin_user_id=admin_user.id,
+        request=request,
+    )
+    return {
+        "success": True,
+        "data": data,
+        "message": "Master Voice AI credentials encrypted and saved securely.",
+    }
+
+
+@router.post("/tenants/{tenant_id}/receptionist/provision")
+async def admin_provision_tenant_receptionist(
+    tenant_id: uuid.UUID,
+    admin_user: Profile = Depends(verify_platform_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    """Owner control to provision or re-sync a client's Twilio number & Retell AI Office Receptionist."""
+    data = await receptionist_service.provision_voice_stack(
+        session=session,
+        tenant_id=tenant_id,
         actor_id=admin_user.id,
     )
     return {"success": True, "data": data}

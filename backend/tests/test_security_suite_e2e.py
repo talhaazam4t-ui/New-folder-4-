@@ -34,7 +34,7 @@ from scripts.seed_services import seed_platform_catalog
 async def test_all_seven_mandatory_security_guardrails_and_scripts():
     # Verify operational scripts first
     seeded_count = await seed_platform_catalog()
-    assert seeded_count == 6
+    assert seeded_count == 7
     # Running a second time is idempotent (0 newly created)
     assert await seed_platform_catalog() == 0
 

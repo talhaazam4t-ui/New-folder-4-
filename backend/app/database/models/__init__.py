@@ -25,6 +25,11 @@ from app.database.models.finance import (
     RentSchedule,
 )
 from app.database.models.marketing import Lead, MarketingCampaign, MarketingMetric
+from app.database.models.receptionist import (
+    PlatformVoiceCredential,
+    ReceptionistCallLog,
+    ReceptionistConfig,
+)
 from app.database.models.service import Service, ServiceSubscription
 from app.database.models.tenant import GUID, Profile, Tenant, TenantMember
 
@@ -58,4 +63,7 @@ __all__ = [
     "Notification",
     "AuditLog",
     "UsageRecord",
+    "PlatformVoiceCredential",
+    "ReceptionistConfig",
+    "ReceptionistCallLog",
 ]

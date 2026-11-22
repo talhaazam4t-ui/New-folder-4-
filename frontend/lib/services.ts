@@ -97,6 +97,18 @@ export const CANONICAL_SERVICES: CanonicalServiceMeta[] = [
     enterprisePrice: 399,
     recommendedPath: "/dashboard",
   },
+  {
+    slug: "office-receptionist",
+    name: "Office Receptionist (AI Voice Agent)",
+    shortName: "Office Receptionist (Voice)",
+    category: "communication",
+    description:
+      "24/7 AI Voice Receptionist powered by Retell AI, Twilio, and Cal.com with live call transfer and automated booking.",
+    starterPrice: 199,
+    growthPrice: 399,
+    enterprisePrice: 799,
+    recommendedPath: "/receptionist",
+  },
 ];
 
 export const CANONICAL_SERVICE_SLUGS: readonly string[] = CANONICAL_SERVICES.map(
@@ -153,6 +165,14 @@ export const SERVICE_SLUG_ALIASES: Record<string, string> = {
   analytics: "executive-analytics-compliance",
   "executive-analytics": "executive-analytics-compliance",
   compliance: "executive-analytics-compliance",
+
+  // office-receptionist
+  "office-receptionist": "office-receptionist",
+  office_receptionist: "office-receptionist",
+  "ai-voice-receptionist": "office-receptionist",
+  "voice-receptionist": "office-receptionist",
+  receptionist: "office-receptionist",
+  retell: "office-receptionist",
 };
 
 export function normalizeServiceSlug(raw?: string | null): string | null {

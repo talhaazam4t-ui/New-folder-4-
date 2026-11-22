@@ -25,6 +25,8 @@ import {
   Clock,
   Sparkles,
   MapPin,
+  PhoneCall,
+  KeyRound,
   X,
 } from "lucide-react";
 
@@ -102,13 +104,28 @@ export default function AdminDashboardPage() {
   const [provisionForm, setProvisionForm] = useState({
     name: "",
     industry: "Financing",
+    service_slug: "office-receptionist",
     owner_email: "",
     owner_name: "",
     plan_name: "growth",
-    price: 249,
+    price: 399,
     status: "active",
   });
   const [provisioning, setProvisioning] = useState(false);
+
+  // Admin Master Voice AI Credentials (Retell AI, Twilio, Cal.com)
+  const [voiceCredsStatus, setVoiceCredsStatus] = useState<any>(null);
+  const [voiceCredsForm, setVoiceCredsForm] = useState({
+    retell_api_key: "",
+    retell_webhook_secret: "",
+    twilio_account_sid: "",
+    twilio_auth_token: "",
+    twilio_default_number: "",
+    twilio_default_country: "US",
+    calcom_api_key: "",
+  });
+  const [savingVoiceCreds, setSavingVoiceCreds] = useState(false);
+  const [provisioningVoiceTenantId, setProvisioningVoiceTenantId] = useState<string | null>(null);
 
   const handleProvisionClient = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -129,10 +146,11 @@ export default function AdminDashboardPage() {
         setProvisionForm({
           name: "",
           industry: "Financing",
+          service_slug: "office-receptionist",
           owner_email: "",
           owner_name: "",
           plan_name: "growth",
-          price: 249,
+          price: 399,
           status: "active",
         });
         fetchOperationsData();
@@ -167,6 +185,94 @@ export default function AdminDashboardPage() {
     revenue: "0",
   });
   const [savingMetrics, setSavingMetrics] = useState(false);
+
+  const fetchVoiceCredentials = async () => {
+    const res = await apiRequest("/api/v1/admin/voice-credentials");
+    if (res.success && res.data) {
+      setVoiceCredsStatus(res.data);
+      setVoiceCredsForm((prev) => ({
+        ...prev,
+        twilio_default_number: res.data.twilio?.default_number || prev.twilio_default_number,
+        twilio_default_country: res.data.twilio?.default_country || prev.twilio_default_country || "US",
+      }));
+    }
+  };
+
+  const handleSaveVoiceCredentials = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSavingVoiceCreds(true);
+    try {
+      const payload: Record<string, string> = {};
+      if (voiceCredsForm.retell_api_key.trim()) {
+        payload.retell_api_key = voiceCredsForm.retell_api_key.trim();
+      }
+      if (voiceCredsForm.retell_webhook_secret.trim()) {
+        payload.retell_webhook_secret = voiceCredsForm.retell_webhook_secret.trim();
+      }
+      if (voiceCredsForm.twilio_account_sid.trim()) {
+        payload.twilio_account_sid = voiceCredsForm.twilio_account_sid.trim();
+      }
+      if (voiceCredsForm.twilio_auth_token.trim()) {
+        payload.twilio_auth_token = voiceCredsForm.twilio_auth_token.trim();
+      }
+      if (voiceCredsForm.twilio_default_number.trim()) {
+        payload.twilio_default_number = voiceCredsForm.twilio_default_number.trim();
+      }
+      if (voiceCredsForm.twilio_default_country.trim()) {
+        payload.twilio_default_country = voiceCredsForm.twilio_default_country.trim().toUpperCase();
+      }
+      if (voiceCredsForm.calcom_api_key.trim()) {
+        payload.calcom_api_key = voiceCredsForm.calcom_api_key.trim();
+      }
+
+      const res = await apiRequest("/api/v1/admin/voice-credentials", {
+        method: "PUT",
+        body: JSON.stringify(payload),
+      });
+      if (res.success && res.data) {
+        setVoiceCredsStatus(res.data);
+        setVoiceCredsForm({
+          retell_api_key: "",
+          retell_webhook_secret: "",
+          twilio_account_sid: "",
+          twilio_auth_token: "",
+          twilio_default_number: res.data.twilio?.default_number || "",
+          twilio_default_country: res.data.twilio?.default_country || "US",
+          calcom_api_key: "",
+        });
+        showStatus("Master Voice AI credentials (Retell AI, Twilio, Cal.com) encrypted and saved!");
+      } else {
+        showStatus(
+          `Error: ${res.error?.message || "Failed to save master voice credentials."}`,
+          true
+        );
+      }
+    } finally {
+      setSavingVoiceCreds(false);
+    }
+  };
+
+  const handleAdminProvisionVoice = async (tenantId: string, tenantName: string) => {
+    setProvisioningVoiceTenantId(tenantId);
+    showStatus(`Provisioning Twilio number & Retell AI Voice Receptionist for "${tenantName}"...`);
+    try {
+      const res = await apiRequest(`/api/v1/admin/tenants/${tenantId}/receptionist/provision`, {
+        method: "POST",
+      });
+      if (res.success && res.data) {
+        showStatus(
+          `Office Receptionist provisioned for "${tenantName}" — AI Number: ${
+            res.data.twilio_phone_number || "Assigned"
+          } (${res.data.provisioning_status}).`
+        );
+        fetchOperationsData();
+      } else {
+        showStatus(`Error: ${res.error?.message || "Failed to provision voice agent."}`, true);
+      }
+    } finally {
+      setProvisioningVoiceTenantId(null);
+    }
+  };
 
   const fetchOperationsData = async () => {
     try {
@@ -250,6 +356,7 @@ export default function AdminDashboardPage() {
     }
 
     fetchOperationsData();
+    fetchVoiceCredentials();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -275,8 +382,15 @@ export default function AdminDashboardPage() {
       }
     } else if (itemId === "leads") {
       setActiveTab("leads");
-    } else if (itemId === "integrations") {
+    } else if (itemId === "integrations" || itemId === "voice_settings") {
       setActiveTab("integrations");
+      if (itemId === "voice_settings") {
+        setTimeout(() => {
+          document
+            .getElementById("admin-voice-settings-section")
+            ?.scrollIntoView({ behavior: "smooth", block: "start" });
+        }, 60);
+      }
     } else {
       setActiveTab("monitoring");
     }
@@ -971,6 +1085,14 @@ export default function AdminDashboardPage() {
                                   ({t.integrations_failed} failed)
                                 </span>
                               )}
+                              {t.receptionist?.twilio_phone_number && (
+                                <div className="mt-1">
+                                  <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 text-[10px] font-mono text-emerald-300">
+                                    <PhoneCall className="h-2.5 w-2.5" />
+                                    {t.receptionist.twilio_phone_number}
+                                  </span>
+                                </div>
+                              )}
                             </td>
 
                             {/* 5. Account Status */}
@@ -1015,6 +1137,30 @@ export default function AdminDashboardPage() {
                                     >
                                       <Sparkles className="h-3 w-3" />
                                       <span>Find &amp; Score Leads</span>
+                                    </button>
+                                  )}
+                                {t.status === "active" &&
+                                  (activeSubs.some(
+                                    (s: any) =>
+                                      String(s.service_slug || "").toLowerCase() ===
+                                        "office-receptionist" ||
+                                      String(s.service_name || "")
+                                        .toLowerCase()
+                                        .includes("receptionist")
+                                  ) ||
+                                    Boolean(t.receptionist)) && (
+                                    <button
+                                      onClick={() => handleAdminProvisionVoice(t.id, t.name)}
+                                      disabled={provisioningVoiceTenantId === t.id}
+                                      className="inline-flex items-center gap-1 rounded bg-emerald-600/20 text-emerald-300 border border-emerald-500/30 px-2.5 py-1 text-xs font-semibold hover:bg-emerald-600/30 disabled:opacity-50 transition"
+                                      title="Provision or re-sync Twilio AI number & Retell AI Voice Receptionist"
+                                    >
+                                      <PhoneCall className="h-3 w-3" />
+                                      <span>
+                                        {provisioningVoiceTenantId === t.id
+                                          ? "Provisioning..."
+                                          : "Sync Voice AI"}
+                                      </span>
                                     </button>
                                   )}
                                 {t.status === "pending_approval" ? (
@@ -1885,9 +2031,244 @@ export default function AdminDashboardPage() {
             </div>
           )}
 
-          {/* TAB 4: INTEGRATION MANAGEMENT */}
+          {/* TAB 4: INTEGRATION MANAGEMENT & MASTER VOICE AI SETTINGS */}
           {activeTab === "integrations" && (
             <div className="space-y-6">
+              {/* Secure Admin Settings: Master Voice AI Credentials (Retell AI, Twilio, Cal.com) */}
+              <div
+                id="admin-voice-settings-section"
+                className="rounded-xl border border-emerald-500/30 bg-slate-950 p-6 space-y-5"
+              >
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-slate-800 pb-4">
+                  <div>
+                    <h2 className="text-base font-bold text-white flex items-center gap-2">
+                      <PhoneCall className="h-4 w-4 text-emerald-400" />
+                      Office Receptionist — Master Voice AI Credentials Vault
+                    </h2>
+                    <p className="text-xs text-slate-400">
+                      Store master Retell AI, Twilio, and Cal.com API keys securely with AES-Fernet encryption (automatically falls back to server environment variables when blank).
+                    </p>
+                  </div>
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 px-3 py-1 text-[11px] font-semibold text-emerald-300">
+                    <KeyRound className="h-3.5 w-3.5" />
+                    Encrypted at Rest
+                  </span>
+                </div>
+
+                {/* Live Masked Status Cards */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+                  <div className="rounded-xl border border-slate-800 bg-slate-900 p-4 space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold text-white">Retell AI</span>
+                      <span
+                        className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${
+                          voiceCredsStatus?.retell?.configured
+                            ? "bg-emerald-500/20 text-emerald-300"
+                            : "bg-amber-500/20 text-amber-300"
+                        }`}
+                      >
+                        {voiceCredsStatus?.retell?.configured ? "Configured" : "Not Set"}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-400 font-mono">
+                      Key: {voiceCredsStatus?.retell?.api_key_masked || "—"}
+                    </p>
+                    <p className="text-[10px] text-slate-500">
+                      Source: {voiceCredsStatus?.retell?.source || "unconfigured"} • Webhook Secret:{" "}
+                      {voiceCredsStatus?.retell?.webhook_secret_configured ? "Active" : "Optional"}
+                    </p>
+                  </div>
+
+                  <div className="rounded-xl border border-slate-800 bg-slate-900 p-4 space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold text-white">Twilio Voice</span>
+                      <span
+                        className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${
+                          voiceCredsStatus?.twilio?.configured
+                            ? "bg-emerald-500/20 text-emerald-300"
+                            : "bg-amber-500/20 text-amber-300"
+                        }`}
+                      >
+                        {voiceCredsStatus?.twilio?.configured ? "Configured" : "Not Set"}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-400 font-mono">
+                      SID: {voiceCredsStatus?.twilio?.account_sid_masked || "—"}
+                    </p>
+                    <p className="text-[10px] text-slate-500">
+                      Source: {voiceCredsStatus?.twilio?.source || "unconfigured"} • Pool:{" "}
+                      {voiceCredsStatus?.twilio?.default_number || "Auto-buy (" + (voiceCredsStatus?.twilio?.default_country || "US") + ")"}
+                    </p>
+                  </div>
+
+                  <div className="rounded-xl border border-slate-800 bg-slate-900 p-4 space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold text-white">Cal.com Master</span>
+                      <span
+                        className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${
+                          voiceCredsStatus?.calcom?.configured
+                            ? "bg-emerald-500/20 text-emerald-300"
+                            : "bg-slate-800 text-slate-400"
+                        }`}
+                      >
+                        {voiceCredsStatus?.calcom?.configured ? "Configured" : "Per-Client / Optional"}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-400 font-mono">
+                      Key: {voiceCredsStatus?.calcom?.api_key_masked || "—"}
+                    </p>
+                    <p className="text-[10px] text-slate-500">
+                      Source: {voiceCredsStatus?.calcom?.source || "unconfigured"}
+                    </p>
+                  </div>
+                </div>
+
+                <form onSubmit={handleSaveVoiceCredentials} className="space-y-4 text-xs">
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                        Retell AI API Key (RETELL_API_KEY)
+                      </label>
+                      <input
+                        type="password"
+                        value={voiceCredsForm.retell_api_key}
+                        onChange={(e) =>
+                          setVoiceCredsForm((prev) => ({
+                            ...prev,
+                            retell_api_key: e.target.value,
+                          }))
+                        }
+                        placeholder="key_... (leave blank to keep existing)"
+                        className="w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-xs font-mono text-white placeholder-slate-500 focus:border-emerald-500 focus:outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                        Retell Webhook Secret (optional)
+                      </label>
+                      <input
+                        type="password"
+                        value={voiceCredsForm.retell_webhook_secret}
+                        onChange={(e) =>
+                          setVoiceCredsForm((prev) => ({
+                            ...prev,
+                            retell_webhook_secret: e.target.value,
+                          }))
+                        }
+                        placeholder="whsec_... (HMAC verification)"
+                        className="w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-xs font-mono text-white placeholder-slate-500 focus:border-emerald-500 focus:outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                        Cal.com Master API Key (optional fallback)
+                      </label>
+                      <input
+                        type="password"
+                        value={voiceCredsForm.calcom_api_key}
+                        onChange={(e) =>
+                          setVoiceCredsForm((prev) => ({
+                            ...prev,
+                            calcom_api_key: e.target.value,
+                          }))
+                        }
+                        placeholder="cal_live_..."
+                        className="w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-xs font-mono text-white placeholder-slate-500 focus:border-emerald-500 focus:outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                        Twilio Account SID (TWILIO_ACCOUNT_SID)
+                      </label>
+                      <input
+                        type="password"
+                        value={voiceCredsForm.twilio_account_sid}
+                        onChange={(e) =>
+                          setVoiceCredsForm((prev) => ({
+                            ...prev,
+                            twilio_account_sid: e.target.value,
+                          }))
+                        }
+                        placeholder="ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                        className="w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-xs font-mono text-white placeholder-slate-500 focus:border-emerald-500 focus:outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                        Twilio Auth Token (TWILIO_AUTH_TOKEN)
+                      </label>
+                      <input
+                        type="password"
+                        value={voiceCredsForm.twilio_auth_token}
+                        onChange={(e) =>
+                          setVoiceCredsForm((prev) => ({
+                            ...prev,
+                            twilio_auth_token: e.target.value,
+                          }))
+                        }
+                        placeholder="Leave blank to keep existing"
+                        className="w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-xs font-mono text-white placeholder-slate-500 focus:border-emerald-500 focus:outline-none"
+                      />
+                    </div>
+                    <div className="grid grid-cols-3 gap-2">
+                      <div className="col-span-2">
+                        <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                          Default Twilio Number
+                        </label>
+                        <input
+                          type="text"
+                          value={voiceCredsForm.twilio_default_number}
+                          onChange={(e) =>
+                            setVoiceCredsForm((prev) => ({
+                              ...prev,
+                              twilio_default_number: e.target.value,
+                            }))
+                          }
+                          placeholder="+14155550100"
+                          className="w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-xs font-mono text-white placeholder-slate-500 focus:border-emerald-500 focus:outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                          Country
+                        </label>
+                        <input
+                          type="text"
+                          maxLength={5}
+                          value={voiceCredsForm.twilio_default_country}
+                          onChange={(e) =>
+                            setVoiceCredsForm((prev) => ({
+                              ...prev,
+                              twilio_default_country: e.target.value.toUpperCase(),
+                            }))
+                          }
+                          placeholder="US"
+                          className="w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-xs font-mono text-white focus:border-emerald-500 focus:outline-none"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-800">
+                    <span className="text-[11px] text-slate-400">
+                      Only non-empty fields are updated. Secrets are never returned in plaintext after saving.
+                    </span>
+                    <button
+                      type="submit"
+                      disabled={savingVoiceCreds}
+                      className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-500 disabled:opacity-50 transition"
+                    >
+                      <KeyRound className="h-3.5 w-3.5" />
+                      <span>
+                        {savingVoiceCreds
+                          ? "Encrypting & Saving..."
+                          : "Save Master Voice AI Credentials"}
+                      </span>
+                    </button>
+                  </div>
+                </form>
+              </div>
+
               <div className="rounded-xl border border-slate-800 bg-slate-950 p-6 space-y-4">
                 <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-slate-800 pb-4">
                   <div>
@@ -2276,6 +2657,32 @@ export default function AdminDashboardPage() {
                   placeholder="e.g. Apex Financial Partners"
                   className="w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-xs text-white placeholder-slate-500 focus:border-emerald-500 focus:outline-none"
                 />
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[11px] font-semibold text-slate-300">
+                  Primary Service Tier *
+                </label>
+                <select
+                  value={provisionForm.service_slug}
+                  onChange={(e) => {
+                    const slug = e.target.value;
+                    const price = slug === "office-receptionist" ? 399 : 249;
+                    setProvisionForm({ ...provisionForm, service_slug: slug, price });
+                  }}
+                  className="w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-xs text-white focus:border-emerald-500 focus:outline-none"
+                >
+                  <option value="office-receptionist">
+                    Office Receptionist (AI Voice Agent) — Retell AI + Twilio + Cal.com
+                  </option>
+                  {(ops?.services || [])
+                    .filter((s: any) => s.slug !== "office-receptionist")
+                    .map((s: any) => (
+                      <option key={s.slug} value={s.slug}>
+                        {s.name}
+                      </option>
+                    ))}
+                </select>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

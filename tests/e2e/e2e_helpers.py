@@ -22,6 +22,7 @@ CANONICAL_SERVICE_SLUGS: tuple[str, ...] = (
     "multi-agent-orchestration",
     "lead-crm-qualification",
     "executive-analytics-compliance",
+    "office-receptionist",
 )
 
 CANONICAL_MODULE_FLAGS: tuple[str, ...] = (
@@ -31,6 +32,7 @@ CANONICAL_MODULE_FLAGS: tuple[str, ...] = (
     "multi_agent_orchestration",
     "lead_crm",
     "executive_analytics_compliance",
+    "office_receptionist",
 )
 
 

@@ -28,6 +28,11 @@ import {
   Trash2,
   LifeBuoy,
   MessageSquare,
+  PhoneCall,
+  PhoneForwarded,
+  CalendarCheck2,
+  Copy,
+  Check,
 } from "lucide-react";
 
 interface PackageTier {
@@ -90,7 +95,24 @@ export default function OnboardingPage() {
   const [subscribedMap, setSubscribedMap] = useState<
     Record<string, { subscriptionId: string; planName: string }>
   >({});
+  const [purchasedSlugs, setPurchasedSlugs] = useState<string[]>([]);
   const subscribedServiceIds = Object.keys(subscribedMap);
+  const hasOfficeReceptionist = purchasedSlugs.includes("office-receptionist");
+
+  // Step 3: Dynamic Office Receptionist (AI Voice Agent) Setup
+  const [recepBusinessName, setRecepBusinessName] = useState("");
+  const [recepOperatingHours, setRecepOperatingHours] = useState("Mon-Fri 9:00 AM - 6:00 PM");
+  const [recepFallbackPhone, setRecepFallbackPhone] = useState("");
+  const [recepGreeting, setRecepGreeting] = useState(
+    "Hello! Thank you for calling. I'm your AI receptionist — how can I assist you today?"
+  );
+  const [recepFaqs, setRecepFaqs] = useState("");
+  const [recepCalcomUrl, setRecepCalcomUrl] = useState("");
+  const [recepCalcomEventTypeId, setRecepCalcomEventTypeId] = useState("");
+  const [recepCalcomApiKey, setRecepCalcomApiKey] = useState("");
+  const [recepSaving, setRecepSaving] = useState(false);
+  const [recepConfig, setRecepConfig] = useState<any>(null);
+  const [copiedCode, setCopiedCode] = useState<string | null>(null);
 
   // Step 3: Required Integrations
   const [requiredIntegrations, setRequiredIntegrations] = useState<RequiredIntegrationItem[]>([]);
@@ -123,6 +145,7 @@ export default function OnboardingPage() {
 
   const syncOnboardingRequirements = useCallback((reqData: any) => {
     const nextMap: Record<string, { subscriptionId: string; planName: string }> = {};
+    const slugs: string[] = [];
     const purchased = Array.isArray(reqData?.purchased_services) ? reqData.purchased_services : [];
     for (const p of purchased) {
       if (p?.service_id && p?.subscription_id) {
@@ -131,8 +154,12 @@ export default function OnboardingPage() {
           planName: (p.plan_name || "starter").toLowerCase(),
         };
       }
+      if (p?.service_slug) {
+        slugs.push(String(p.service_slug).toLowerCase());
+      }
     }
     setSubscribedMap(nextMap);
+    setPurchasedSlugs(slugs);
     setSelectedPackages((prev) => {
       const merged = { ...prev };
       for (const [serviceId, sub] of Object.entries(nextMap)) {
@@ -194,6 +221,30 @@ export default function OnboardingPage() {
           setIndustry(reqData.selected_industry);
         }
         const subIds = syncOnboardingRequirements(reqData);
+
+        const purchased = Array.isArray(reqData.purchased_services) ? reqData.purchased_services : [];
+        const hasRecep = purchased.some(
+          (p: any) => String(p?.service_slug || "").toLowerCase() === "office-receptionist"
+        );
+        if (hasRecep) {
+          const recepRes = await apiRequest("/api/v1/receptionist/config");
+          if (recepRes.success && recepRes.data) {
+            const rc = recepRes.data;
+            setRecepConfig(rc);
+            setRecepBusinessName(rc.business_name || activeTenant.name || "");
+            setRecepOperatingHours(rc.operating_hours || "Mon-Fri 9:00 AM - 6:00 PM");
+            setRecepFallbackPhone(rc.fallback_phone_number || "");
+            setRecepGreeting(
+              rc.greeting_message ||
+                `Hello! Thank you for calling ${activeTenant.name || "our office"}. How can I help you today?`
+            );
+            setRecepFaqs(rc.faqs_knowledge_base || "");
+            setRecepCalcomUrl(rc.calcom_booking_url || "");
+            setRecepCalcomEventTypeId(rc.calcom_event_type_id || "");
+          } else {
+            setRecepBusinessName(activeTenant.name || "");
+          }
+        }
 
         if (subIds.length > 0) {
           setStep(3);
@@ -576,6 +627,72 @@ export default function OnboardingPage() {
     }
   };
 
+  const handleSaveReceptionistOnboarding = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    setStatusMessage(null);
+    const effectiveBizName = (recepBusinessName || name || "").trim();
+    if (!effectiveBizName || !recepFallbackPhone.trim()) {
+      setError(
+        "Please enter your Business Name and Personal / Fallback Phone Number for live human transfers."
+      );
+      return;
+    }
+
+    setRecepSaving(true);
+    try {
+      const payload: Record<string, unknown> = {
+        business_name: effectiveBizName,
+        operating_hours: recepOperatingHours.trim() || "Mon-Fri 9:00 AM - 6:00 PM",
+        fallback_phone_number: recepFallbackPhone.trim(),
+        greeting_message:
+          recepGreeting.trim() ||
+          `Hello! Thank you for calling ${effectiveBizName}. How can I help you today?`,
+        faqs_knowledge_base: recepFaqs.trim(),
+        calcom_booking_url: recepCalcomUrl.trim() || null,
+        calcom_event_type_id: recepCalcomEventTypeId.trim() || null,
+        auto_provision: true,
+      };
+      if (recepCalcomApiKey.trim()) {
+        payload.calcom_api_key = recepCalcomApiKey.trim();
+      }
+
+      const res = await apiRequest("/api/v1/receptionist/config", {
+        method: "PUT",
+        body: JSON.stringify(payload),
+      });
+
+      if (res.success && res.data) {
+        setRecepConfig(res.data);
+        setRecepBusinessName(res.data.business_name || effectiveBizName);
+        setRecepCalcomApiKey("");
+        setStatusMessage(
+          `Office Receptionist provisioned! Your assigned Twilio AI number is ${
+            res.data.twilio_phone_number || "ready"
+          }. Follow the Call Forwarding guide below to go live.`
+        );
+      } else {
+        setError(
+          res.error?.message || res.message || "Failed to provision Office Receptionist AI Agent."
+        );
+      }
+    } catch (err: any) {
+      setError(err.message || "Error saving Office Receptionist onboarding details.");
+    } finally {
+      setRecepSaving(false);
+    }
+  };
+
+  const handleCopyDialCode = async (key: string, val: string) => {
+    try {
+      await navigator.clipboard.writeText(val);
+      setCopiedCode(key);
+      setTimeout(() => setCopiedCode(null), 2000);
+    } catch {
+      setStatusMessage(`Copy value: ${val}`);
+    }
+  };
+
   const currentIndustryServices = catalogByIndustry[industry] || [];
 
   return (
@@ -883,14 +1000,20 @@ export default function OnboardingPage() {
 
                       <div className="flex flex-wrap items-center gap-1.5 pt-1">
                         <span className="text-[10px] text-slate-500">Required Integrations:</span>
-                        {srv.required_integrations.map((reqProv) => (
-                          <span
-                            key={reqProv}
-                            className="rounded bg-slate-800 px-2 py-0.5 text-[10px] font-mono text-slate-300"
-                          >
-                            {reqProv}
+                        {srv.required_integrations.length > 0 ? (
+                          srv.required_integrations.map((reqProv) => (
+                            <span
+                              key={reqProv}
+                              className="rounded bg-slate-800 px-2 py-0.5 text-[10px] font-mono text-slate-300"
+                            >
+                              {reqProv}
+                            </span>
+                          ))
+                        ) : (
+                          <span className="rounded bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.5 text-[10px] font-semibold text-emerald-300">
+                            Guided Voice Setup (Retell AI + Twilio + Cal.com)
                           </span>
-                        ))}
+                        )}
                       </div>
 
                       {srv.onboarding_requirements && srv.onboarding_requirements.length > 0 && (
@@ -960,32 +1083,296 @@ export default function OnboardingPage() {
           </div>
         )}
 
-        {/* STEP 3: ONE-CLICK REQUIRED INTEGRATION CONNECTIONS */}
+        {/* STEP 3: DYNAMIC SERVICE SETUP & REQUIRED INTEGRATION CONNECTIONS */}
         {step === 3 && (
           <div className="space-y-6">
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 rounded-xl border border-slate-800 bg-slate-900 p-4">
               <div>
                 <h3 className="text-base font-bold text-white">
-                  Connect Required Service Integrations
+                  {hasOfficeReceptionist && requiredIntegrations.length === 0
+                    ? "Configure Your Office Receptionist (AI Voice Agent)"
+                    : hasOfficeReceptionist
+                    ? "Configure Office Receptionist & Connect Required Integrations"
+                    : "Connect Required Service Integrations"}
                 </h3>
                 <p className="text-xs text-slate-400">
-                  Credentials are encrypted at rest on the backend. Automation remains inactive until all required connections below are verified.
+                  {hasOfficeReceptionist && requiredIntegrations.length === 0
+                    ? "Enter only the details needed for your Retell AI Voice Receptionist, Twilio number assignment, Cal.com appointment booking, and live call transfer."
+                    : "Credentials are encrypted at rest on the backend. Automation remains inactive until all required connections below are verified."}
                 </p>
               </div>
               <div className="flex items-center gap-2">
                 <span
                   className={`rounded-full px-3 py-1 text-xs font-bold ${
-                    automationActive
+                    automationActive || Boolean(recepConfig?.twilio_phone_number)
                       ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
                       : "bg-amber-500/20 text-amber-300 border border-amber-500/30"
                   }`}
                 >
-                  {automationActive
-                    ? "Automation Active & Ready"
-                    : "Automation Inactive — Pending Connections"}
+                  {automationActive || Boolean(recepConfig?.twilio_phone_number)
+                    ? "Setup Active & Ready"
+                    : "Pending Setup"}
                 </span>
               </div>
             </div>
+
+            {/* DYNAMIC OFFICE RECEPTIONIST ONBOARDING FLOW (shown ONLY when Office Receptionist tier is selected) */}
+            {hasOfficeReceptionist && (
+              <div className="rounded-2xl border border-emerald-500/30 bg-slate-900/95 p-5 sm:p-6 space-y-5">
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border-b border-slate-800 pb-4">
+                  <div className="flex items-center gap-2.5">
+                    <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-emerald-500/20 border border-emerald-500/30 text-emerald-400">
+                      <PhoneCall className="h-4 w-4" />
+                    </div>
+                    <div>
+                      <h4 className="text-sm font-bold text-white">
+                        Office Receptionist — AI Voice Agent Onboarding
+                      </h4>
+                      <p className="text-[11px] text-slate-400">
+                        Automatically provisions your Twilio phone number, Retell AI voice agent,
+                        Cal.com appointment tools, and live emergency transfer routing.
+                      </p>
+                    </div>
+                  </div>
+                  {recepConfig?.twilio_phone_number && (
+                    <span className="rounded-full bg-emerald-500/20 border border-emerald-500/30 px-3 py-1 text-[11px] font-mono font-bold text-emerald-300">
+                      AI Number: {recepConfig.twilio_phone_number}
+                    </span>
+                  )}
+                </div>
+
+                <form onSubmit={handleSaveReceptionistOnboarding} className="space-y-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                    <div>
+                      <label className="block text-xs font-medium text-slate-300 mb-1">
+                        Business Name *
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={recepBusinessName || name}
+                        onChange={(e) => setRecepBusinessName(e.target.value)}
+                        placeholder="e.g. Al Noor Medical Center"
+                        className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white placeholder-slate-500 focus:border-emerald-500 focus:outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-300 mb-1">
+                        Operating Hours *
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={recepOperatingHours}
+                        onChange={(e) => setRecepOperatingHours(e.target.value)}
+                        placeholder="Mon-Fri 9:00 AM - 6:00 PM, Sat 10 AM - 2 PM"
+                        className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white placeholder-slate-500 focus:border-emerald-500 focus:outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-slate-300 mb-1">
+                      Personal / Fallback Phone Number (Call Forwarding &amp; Emergency Human Transfers) *
+                    </label>
+                    <input
+                      type="tel"
+                      required
+                      value={recepFallbackPhone}
+                      onChange={(e) => setRecepFallbackPhone(e.target.value)}
+                      placeholder="+14155550100 (or your business mobile number with country code)"
+                      className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs font-mono text-white placeholder-slate-500 focus:border-emerald-500 focus:outline-none"
+                    />
+                    <p className="text-[11px] text-slate-500 mt-1">
+                      If any caller requests a human or mentions an emergency, your AI Receptionist transfers the call live to this number.
+                    </p>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-slate-300 mb-1">
+                      Custom Greeting
+                    </label>
+                    <textarea
+                      rows={2}
+                      value={recepGreeting}
+                      onChange={(e) => setRecepGreeting(e.target.value)}
+                      placeholder="Hello! Thank you for calling Al Noor Medical Center. How can I help you today?"
+                      className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white placeholder-slate-500 focus:border-emerald-500 focus:outline-none"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-slate-300 mb-1">
+                      FAQs &amp; Business Knowledge Base
+                    </label>
+                    <textarea
+                      rows={4}
+                      value={recepFaqs}
+                      onChange={(e) => setRecepFaqs(e.target.value)}
+                      placeholder={
+                        "Q: What services do you offer?\nA: General consultations, checkups, and urgent care.\nQ: Where are you located?\nA: 120 Main St, Suite 400 (free parking available)."
+                      }
+                      className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white placeholder-slate-500 focus:border-emerald-500 focus:outline-none"
+                    />
+                  </div>
+
+                  <div className="rounded-xl border border-slate-800 bg-slate-950/80 p-4 space-y-3">
+                    <div className="flex items-center gap-2 text-xs font-bold text-emerald-300">
+                      <CalendarCheck2 className="h-4 w-4 text-emerald-400" />
+                      <span>Cal.com Automated Appointment Booking</span>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                      <div>
+                        <label className="block text-[11px] text-slate-400 mb-1">
+                          Cal.com Booking Link
+                        </label>
+                        <input
+                          type="url"
+                          value={recepCalcomUrl}
+                          onChange={(e) => setRecepCalcomUrl(e.target.value)}
+                          placeholder="https://cal.com/your-office/30min"
+                          className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-white placeholder-slate-500 focus:border-emerald-500 focus:outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] text-slate-400 mb-1">
+                          Event Type ID (optional)
+                        </label>
+                        <input
+                          type="text"
+                          value={recepCalcomEventTypeId}
+                          onChange={(e) => setRecepCalcomEventTypeId(e.target.value)}
+                          placeholder="e.g. 123456"
+                          className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs font-mono text-white placeholder-slate-500 focus:border-emerald-500 focus:outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] text-slate-400 mb-1">
+                          Cal.com API Key (encrypted)
+                        </label>
+                        <input
+                          type="password"
+                          value={recepCalcomApiKey}
+                          onChange={(e) => setRecepCalcomApiKey(e.target.value)}
+                          placeholder={
+                            recepConfig?.calcom_api_key_configured
+                              ? "•••••••• (saved)"
+                              : "cal_live_... (optional)"
+                          }
+                          className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs font-mono text-white placeholder-slate-500 focus:border-emerald-500 focus:outline-none"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={recepSaving}
+                    className="flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-600 px-5 py-2.5 text-xs font-bold text-white shadow-md hover:bg-emerald-500 disabled:opacity-50 transition"
+                  >
+                    <PhoneCall className="h-4 w-4" />
+                    <span>
+                      {recepSaving
+                        ? "Provisioning Twilio Number & Retell AI Voice Agent..."
+                        : recepConfig
+                        ? "Update Office Receptionist & Refresh Call Forwarding Guide"
+                        : "Provision AI Receptionist & Generate Call Forwarding Guide"}
+                    </span>
+                  </button>
+                </form>
+
+                {/* Automatically Generated Call Forwarding Setup Guide */}
+                {recepConfig?.call_forwarding_guide?.assigned_ai_number && (
+                  <div className="rounded-xl border border-emerald-500/40 bg-emerald-950/30 p-4 sm:p-5 space-y-3.5">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 text-sm font-bold text-emerald-300">
+                        <PhoneForwarded className="h-4 w-4 text-emerald-400" />
+                        <span>Your Automatic Call Forwarding Setup Guide</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          handleCopyDialCode(
+                            "onb-ai-num",
+                            recepConfig.call_forwarding_guide.assigned_ai_number
+                          )
+                        }
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/40 bg-slate-950 px-2.5 py-1 text-xs font-mono font-bold text-emerald-300 hover:bg-emerald-500/10"
+                      >
+                        <span>{recepConfig.call_forwarding_guide.assigned_ai_number}</span>
+                        {copiedCode === "onb-ai-num" ? (
+                          <Check className="h-3.5 w-3.5" />
+                        ) : (
+                          <Copy className="h-3.5 w-3.5" />
+                        )}
+                      </button>
+                    </div>
+
+                    {recepConfig.call_forwarding_guide.quick_dial_codes && (
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs">
+                        {[
+                          {
+                            k: "all",
+                            label: "Forward All Calls",
+                            val: recepConfig.call_forwarding_guide.quick_dial_codes
+                              .forward_all_calls_gsm,
+                          },
+                          {
+                            k: "missed",
+                            label: "Missed Calls Only",
+                            val: recepConfig.call_forwarding_guide.quick_dial_codes
+                              .forward_when_unanswered_gsm,
+                          },
+                          {
+                            k: "off",
+                            label: "Turn Off Forwarding",
+                            val: recepConfig.call_forwarding_guide.quick_dial_codes
+                              .disable_forwarding_gsm,
+                          },
+                        ].map((item) => (
+                          <div
+                            key={item.k}
+                            className="rounded-lg border border-slate-800 bg-slate-950 p-2.5 flex items-center justify-between gap-2"
+                          >
+                            <div>
+                              <p className="text-[10px] text-slate-400 uppercase">{item.label}</p>
+                              <p className="font-mono font-bold text-white">{item.val}</p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleCopyDialCode(item.k, item.val)}
+                              className="rounded p-1 text-slate-400 hover:text-emerald-400"
+                              title="Copy dial code"
+                            >
+                              {copiedCode === item.k ? (
+                                <Check className="h-3.5 w-3.5 text-emerald-400" />
+                              ) : (
+                                <Copy className="h-3.5 w-3.5" />
+                              )}
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {Array.isArray(recepConfig.call_forwarding_guide.steps) && (
+                      <ol className="space-y-1 text-xs text-slate-200 leading-relaxed">
+                        {recepConfig.call_forwarding_guide.steps.map((st: string, i: number) => (
+                          <li key={i}>{st}</li>
+                        ))}
+                      </ol>
+                    )}
+
+                    {recepConfig.call_forwarding_guide.ios_android_menu_tip && (
+                      <p className="text-[11px] text-emerald-200/90 border-t border-emerald-500/20 pt-2.5">
+                        <strong>iPhone / Android Settings:</strong>{" "}
+                        {recepConfig.call_forwarding_guide.ios_android_menu_tip}
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
 
             <div className="space-y-3">
               {requiredIntegrations.map((reqItem) => {
@@ -1174,13 +1561,24 @@ export default function OnboardingPage() {
                 <span>Zero secrets stored in browser. Encrypted with AES-128-Fernet at rest.</span>
               </div>
 
-              <a
-                href="/dashboard"
-                className="flex items-center justify-center gap-2 rounded-lg bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-emerald-500 transition"
-              >
-                <span>Open Client Performance Dashboard</span>
-                <ArrowRight className="h-4 w-4" />
-              </a>
+              <div className="flex flex-wrap items-center gap-2">
+                {hasOfficeReceptionist && (
+                  <a
+                    href="/receptionist"
+                    className="flex items-center justify-center gap-2 rounded-lg border border-emerald-500/40 bg-emerald-500/15 px-4 py-2.5 text-sm font-semibold text-emerald-300 hover:bg-emerald-500/25 transition"
+                  >
+                    <PhoneCall className="h-4 w-4" />
+                    <span>Open Office Receptionist</span>
+                  </a>
+                )}
+                <a
+                  href="/dashboard"
+                  className="flex items-center justify-center gap-2 rounded-lg bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-emerald-500 transition"
+                >
+                  <span>Open Client Performance Dashboard</span>
+                  <ArrowRight className="h-4 w-4" />
+                </a>
+              </div>
             </div>
           </div>
         )}

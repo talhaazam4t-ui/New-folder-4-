@@ -10,6 +10,7 @@ import {
   Link2,
   CheckCheck,
   Activity,
+  PhoneCall,
   LogOut,
   Users,
   Terminal,
@@ -73,6 +74,7 @@ export function AdminSidebar({
     { id: "agents", label: "Agent Controls", icon: Cpu },
     { id: "leads", label: "Lead Gen & Outreach", icon: Megaphone },
     { id: "integrations", label: "Integrations & OAuth", icon: Link2 },
+    { id: "voice_settings", label: "Voice AI Settings", icon: PhoneCall },
     { id: "approvals", label: "Approval Center", icon: CheckCheck },
     { id: "monitoring", label: "System Health & Logs", icon: Activity },
   ];

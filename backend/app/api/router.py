@@ -13,6 +13,7 @@ from app.api.v1.integrations import router as integrations_router
 from app.api.v1.marketing import router as marketing_router
 from app.api.v1.notifications import router as notifications_router
 from app.api.v1.payments import router as payments_router
+from app.api.v1.receptionist import router as receptionist_router
 from app.api.v1.services import router as services_router
 from app.api.v1.subscriptions import router as subscriptions_router
 from app.api.v1.support import router as support_router
@@ -41,4 +42,5 @@ api_v1_router.include_router(notifications_router)
 api_v1_router.include_router(analytics_router)
 api_v1_router.include_router(assistant_router)
 api_v1_router.include_router(support_router)
+api_v1_router.include_router(receptionist_router)
 api_v1_router.include_router(admin_router)

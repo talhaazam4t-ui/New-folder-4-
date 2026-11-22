@@ -11,6 +11,7 @@ import {
   ShieldCheck,
   Megaphone,
   Bot,
+  PhoneCall,
   X,
   LifeBuoy,
 } from "lucide-react";
@@ -64,6 +65,7 @@ export function Sidebar({
     { label: "Services & Packages", href: "/billing", icon: CreditCard },
     { label: "Financial Results", href: "/finance", icon: TrendingUp },
     { label: "Marketing & Leads", href: "/marketing", icon: Megaphone },
+    { label: "Office Receptionist", href: "/receptionist", icon: PhoneCall },
     { label: "AI Agents & Approvals", href: "/agents", icon: Bot },
     { label: "Integrations & Account", href: "/settings", icon: Settings },
   ];

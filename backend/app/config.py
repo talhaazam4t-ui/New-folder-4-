@@ -192,6 +192,17 @@ class Settings(BaseSettings):
     google_redirect_uri: Optional[str] = Field(default=None, alias="GOOGLE_REDIRECT_URI")
     google_places_api_key: Optional[str] = Field(default=None, alias="GOOGLE_PLACES_API_KEY")
 
+    # Office Receptionist — AI Voice Agent (Retell AI, Twilio, Cal.com)
+    retell_api_key: Optional[str] = Field(default=None, alias="RETELL_API_KEY")
+    retell_base_url: str = Field(default="https://api.retellai.com", alias="RETELL_BASE_URL")
+    retell_webhook_secret: Optional[str] = Field(default=None, alias="RETELL_WEBHOOK_SECRET")
+    twilio_account_sid: Optional[str] = Field(default=None, alias="TWILIO_ACCOUNT_SID")
+    twilio_auth_token: Optional[str] = Field(default=None, alias="TWILIO_AUTH_TOKEN")
+    twilio_default_number: Optional[str] = Field(default=None, alias="TWILIO_DEFAULT_NUMBER")
+    twilio_default_country: str = Field(default="US", alias="TWILIO_DEFAULT_COUNTRY")
+    calcom_api_key: Optional[str] = Field(default=None, alias="CALCOM_API_KEY")
+    calcom_base_url: str = Field(default="https://api.cal.com/v2", alias="CALCOM_BASE_URL")
+
     # Redis (Optional)
     redis_url: Optional[str] = Field(default=None, alias="REDIS_URL")
 

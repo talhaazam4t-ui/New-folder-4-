@@ -43,6 +43,7 @@ SERVICE_MODULE_MAP: Dict[str, List[str]] = {
     "multi-agent-orchestration": ["multi_agent_orchestration"],
     "lead-crm-qualification": ["lead_crm", "lead_funnel"],
     "executive-analytics-compliance": ["executive_analytics_compliance", "revenue_reports"],
+    "office-receptionist": ["office_receptionist", "appointments"],
 }
 
 
