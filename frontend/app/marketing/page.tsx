@@ -26,6 +26,11 @@ interface LeadItem {
   source: string;
   status: string;
   qualification_score: number;
+  metadata?: {
+    website?: string | null;
+    address?: string | null;
+    data_source?: string | null;
+  };
   created_at: string;
 }
 
@@ -58,6 +63,11 @@ export default function MarketingPage() {
   const [copyChannel, setCopyChannel] = useState("whatsapp");
   const [copyTopic, setCopyTopic] = useState("");
   const [generatedCopy, setGeneratedCopy] = useState<string | null>(null);
+  const [finderIndustry, setFinderIndustry] = useState("Real Estate / Property");
+  const [finderLocation, setFinderLocation] = useState("Dubai");
+  const [finderKeywords, setFinderKeywords] = useState("");
+  const [finderLimit, setFinderLimit] = useState("8");
+  const [findingLeads, setFindingLeads] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
@@ -192,6 +202,37 @@ export default function MarketingPage() {
     }
   };
 
+  const handleFindLiveLeads = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setStatusMessage(null);
+    setErrorMessage(null);
+    setFindingLeads(true);
+    try {
+      const res = await apiRequest("/api/v1/marketing/leads/generate", {
+        method: "POST",
+        body: JSON.stringify({
+          industry: finderIndustry,
+          location: finderLocation.trim() || "Dubai",
+          keywords: finderKeywords.trim() || undefined,
+          limit: Math.min(Math.max(parseInt(finderLimit, 10) || 8, 1), 20),
+        }),
+      });
+      const payload = res.data || res;
+      if (!res.error && payload && (payload.created_count !== undefined || Array.isArray(payload.leads))) {
+        const count = payload.created_count ?? payload.leads?.length ?? 0;
+        const src = payload.data_source || "live_directory";
+        setStatusMessage(
+          `Found and added ${count} real business lead${count === 1 ? "" : "s"} in ${finderLocation} (source: ${src}).`
+        );
+        loadMarketingWorkspace();
+      } else {
+        setErrorMessage(res.error?.message || "Failed to search business leads.");
+      }
+    } finally {
+      setFindingLeads(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
       <Navbar />
@@ -245,6 +286,66 @@ export default function MarketingPage() {
               />
             </div>
           )}
+
+          {/* Free Live Business Lead Finder (OpenStreetMap / Google Places) */}
+          <div className="bg-slate-900 border border-emerald-800/60 rounded-xl p-6">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-4">
+              <div>
+                <h2 className="text-lg font-semibold text-white">
+                  Find Real Business Leads (Free Live Maps Search)
+                </h2>
+                <p className="text-xs text-slate-400">
+                  Search any city &amp; niche to pull real companies (phone, website &amp; address) directly into your CRM — 100% free via OpenStreetMap or Google Places.
+                </p>
+              </div>
+              <span className="inline-flex items-center rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1 text-[11px] font-semibold text-emerald-300">
+                Zero Card Required
+              </span>
+            </div>
+            <form onSubmit={handleFindLiveLeads} className="grid grid-cols-1 md:grid-cols-5 gap-3">
+              <select
+                value={finderIndustry}
+                onChange={(e) => setFinderIndustry(e.target.value)}
+                className="rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-sm text-white"
+              >
+                <option value="Real Estate / Property">Real Estate / Property</option>
+                <option value="Clinics / Hospitals">Clinics / Hospitals</option>
+                <option value="Financing">Financing &amp; Accounting</option>
+                <option value="E-Commerce">E-Commerce &amp; Retail</option>
+              </select>
+              <input
+                type="text"
+                required
+                placeholder="City (e.g. Dubai, Lahore, London)"
+                value={finderLocation}
+                onChange={(e) => setFinderLocation(e.target.value)}
+                className="rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-sm text-white"
+              />
+              <input
+                type="text"
+                placeholder="Custom Keyword (e.g. dental clinic, salon)"
+                value={finderKeywords}
+                onChange={(e) => setFinderKeywords(e.target.value)}
+                className="rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-sm text-white"
+              />
+              <input
+                type="number"
+                min="1"
+                max="20"
+                value={finderLimit}
+                onChange={(e) => setFinderLimit(e.target.value)}
+                placeholder="Count (e.g. 8)"
+                className="rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-sm text-white"
+              />
+              <button
+                type="submit"
+                disabled={findingLeads}
+                className="py-2 px-4 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-sm font-semibold transition"
+              >
+                {findingLeads ? "Searching Maps..." : "Find Real Leads"}
+              </button>
+            </form>
+          </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             {/* Create Campaign */}
@@ -449,9 +550,27 @@ export default function MarketingPage() {
               <tbody className="divide-y divide-slate-800">
                 {leads.map((l) => (
                   <tr key={l.id}>
-                    <td className="py-3 px-4 font-medium text-white">{l.name}</td>
-                    <td className="py-3 px-4 text-xs text-slate-400">
-                      {l.email || l.phone || "—"}
+                    <td className="py-3 px-4">
+                      <div className="font-medium text-white">{l.name}</div>
+                      {l.metadata?.address && (
+                        <div className="text-[11px] text-slate-500 truncate max-w-xs" title={l.metadata.address}>
+                          {l.metadata.address}
+                        </div>
+                      )}
+                    </td>
+                    <td className="py-3 px-4 text-xs text-slate-400 space-y-0.5">
+                      <div>{l.phone || l.email || "—"}</div>
+                      {l.email && l.phone && <div className="text-[11px] text-slate-500">{l.email}</div>}
+                      {l.metadata?.website && (
+                        <a
+                          href={l.metadata.website}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="block text-[11px] text-emerald-400 hover:underline truncate max-w-[200px]"
+                        >
+                          {l.metadata.website.replace(/^https?:\/\//, "")}
+                        </a>
+                      )}
                     </td>
                     <td className="py-3 px-4 text-slate-300">{l.source}</td>
                     <td className="py-3 px-4 font-semibold text-indigo-300">
