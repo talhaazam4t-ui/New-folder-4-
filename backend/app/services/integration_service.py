@@ -1052,6 +1052,22 @@ class IntegrationService:
                     reference_id=msg_ref,
                 ),
             )
+            # Mirror into FinancialTransaction ledger so /finance and /dashboard stay in sync
+            from app.database.models.finance import FinancialTransaction
+            ft_type = "expense" if parsed.record_type == "expense" else ("rent" if parsed.record_type == "rent" else "income")
+            session.add(
+                FinancialTransaction(
+                    tenant_id=tenant_id,
+                    type=ft_type,
+                    category="WhatsApp Concierge",
+                    amount=parsed.amount,
+                    currency=parsed.currency,
+                    status="paid",
+                    counterparty_name=sender_name or "WhatsApp Contact",
+                    notes=f"WhatsApp ({sender_phone}): {message_text[:200]}",
+                )
+            )
+            await session.commit()
             await notification_service.send_notification(
                 session=session,
                 tenant_id=tenant_id,

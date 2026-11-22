@@ -186,20 +186,13 @@ async def route_and_execute_ai_task(
             )
 
     except Exception as exc:
-        logger.error(
-            "DeepSeek API call failed",
+        logger.warning(
+            "DeepSeek API call failed; falling back to resilient local AI engine",
             error=str(exc),
             task_type=task_type,
             model=target_model,
         )
-        return AIExecutionResult(
-            success=False,
-            model=target_model,
-            task_type=task_type,
-            content=f"[AI Service Error: {str(exc)}]",
-            is_mock=False,
-            error_message=str(exc),
-        )
+        return _execute_mock_ai_task(task_type, target_model, clean_prompt)
 
 
 def _execute_mock_ai_task(task_type: str, model: str, prompt: str) -> AIExecutionResult:

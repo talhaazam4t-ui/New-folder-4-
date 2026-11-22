@@ -10,6 +10,7 @@ from app.database.models.agent import TenantAgent
 from app.database.models.automation import AuditLog
 from app.database.models.billing import Payment
 from app.database.models.business import BusinessRecord
+from app.database.models.finance import FinancialTransaction
 from app.database.models.marketing import Lead
 from app.database.models.tenant import Profile, Tenant
 from app.database.supabase import get_db
@@ -69,32 +70,55 @@ async def get_tenant_overview(
     tenant = t_res.scalar_one_or_none()
     selected_industry = normalize_industry(tenant.industry if tenant else "Financing")
 
-    # 1. Total Income
+    # 1. Total Income (BusinessRecord + FinancialTransaction ledger)
     income_res = await session.execute(
         select(func.sum(BusinessRecord.amount)).where(
             BusinessRecord.tenant_id == tenant_id,
             BusinessRecord.record_type.in_(["income", "rent", "payment_received"]),
         )
     )
-    total_income = float(income_res.scalar() or 0.0)
+    ft_income_res = await session.execute(
+        select(func.sum(FinancialTransaction.amount)).where(
+            FinancialTransaction.tenant_id == tenant_id,
+            FinancialTransaction.type.in_(["income", "rent"]),
+            FinancialTransaction.status == "paid",
+            FinancialTransaction.category != "WhatsApp Concierge",
+        )
+    )
+    total_income = float(income_res.scalar() or 0.0) + float(ft_income_res.scalar() or 0.0)
 
-    # 2. Total Expenses
+    # 2. Total Expenses (BusinessRecord + FinancialTransaction ledger)
     expense_res = await session.execute(
         select(func.sum(BusinessRecord.amount)).where(
             BusinessRecord.tenant_id == tenant_id,
             BusinessRecord.record_type == "expense",
         )
     )
-    total_expenses = float(expense_res.scalar() or 0.0)
+    ft_expense_res = await session.execute(
+        select(func.sum(FinancialTransaction.amount)).where(
+            FinancialTransaction.tenant_id == tenant_id,
+            FinancialTransaction.type == "expense",
+            FinancialTransaction.status == "paid",
+            FinancialTransaction.category != "WhatsApp Concierge",
+        )
+    )
+    total_expenses = float(expense_res.scalar() or 0.0) + float(ft_expense_res.scalar() or 0.0)
 
-    # 3. Total Outstanding
+    # 3. Total Outstanding (BusinessRecord + pending/overdue FinancialTransaction)
     outstanding_res = await session.execute(
         select(func.sum(BusinessRecord.amount)).where(
             BusinessRecord.tenant_id == tenant_id,
             BusinessRecord.record_type == "outstanding",
         )
     )
-    total_outstanding = float(outstanding_res.scalar() or 0.0)
+    ft_outstanding_res = await session.execute(
+        select(func.sum(FinancialTransaction.amount)).where(
+            FinancialTransaction.tenant_id == tenant_id,
+            FinancialTransaction.status.in_(["pending", "overdue"]),
+            FinancialTransaction.category != "WhatsApp Concierge",
+        )
+    )
+    total_outstanding = float(outstanding_res.scalar() or 0.0) + float(ft_outstanding_res.scalar() or 0.0)
 
     # 4. Leads, Outreach Messages Sent, Meetings Booked & Conversion Rate
     leads_rows_res = await session.execute(
