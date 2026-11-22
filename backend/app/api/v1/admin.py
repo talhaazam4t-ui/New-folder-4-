@@ -972,6 +972,22 @@ async def admin_trigger_tenant_lead_generation(
     return {"success": True, "data": data}
 
 
+@router.post("/tenants/{tenant_id}/leads/{lead_id}/qualify")
+async def admin_qualify_tenant_lead(
+    tenant_id: uuid.UUID,
+    lead_id: uuid.UUID,
+    admin_user: Profile = Depends(verify_platform_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    """Owner-only control to AI-score and qualify a client's lead so scored results show on client dashboard."""
+    lead = await marketing_service.qualify_lead(
+        session=session,
+        tenant_id=tenant_id,
+        lead_id=lead_id,
+    )
+    return {"success": True, "data": lead.model_dump(mode="json")}
+
+
 @router.post("/integrations/{integration_id}/action")
 async def admin_manage_integration(
     integration_id: uuid.UUID,

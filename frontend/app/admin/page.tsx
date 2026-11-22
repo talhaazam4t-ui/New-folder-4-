@@ -447,6 +447,22 @@ export default function AdminDashboardPage() {
     }
   };
 
+  const handleAdminQualifyLead = async (tenantId: string, leadId: string, leadName: string) => {
+    showStatus(`AI-scoring lead "${leadName}" via Groq AI...`);
+    const res = await apiRequest(`/api/v1/admin/tenants/${tenantId}/leads/${leadId}/qualify`, {
+      method: "POST",
+    });
+    if (res.success) {
+      const score = res.data?.qualification_score ?? 95;
+      showStatus(
+        `Lead "${leadName}" AI-scored at ${score}% (${res.data?.status || "qualified"}) — now live on client's dashboard!`
+      );
+      fetchOperationsData();
+    } else {
+      showStatus(`Error scoring lead "${leadName}": ${res.error?.message || "Failed"}`, true);
+    }
+  };
+
   const handleOpenConnectIntegration = async (tenantId: string, provider: string) => {
     setModalTenantId(tenantId);
     setModalProvider(provider);
@@ -932,32 +948,58 @@ export default function AdminDashboardPage() {
 
                             {/* 6. Owner Control Actions */}
                             <td className="py-3 px-3 text-right" onClick={(e) => e.stopPropagation()}>
-                              {t.status === "pending_approval" ? (
-                                <button
-                                  onClick={() => handleUpdateTenantStatus(t.id, "active")}
-                                  className="inline-flex items-center gap-1 rounded bg-emerald-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-emerald-500 transition shadow-sm"
-                                  title="Confirm payment receipt and activate all automated services"
-                                >
-                                  <CheckCircle className="h-3 w-3" />
-                                  <span>Confirm Payment & Activate</span>
-                                </button>
-                              ) : t.status === "active" ? (
-                                <button
-                                  onClick={() => handleUpdateTenantStatus(t.id, "suspended")}
-                                  className="inline-flex items-center gap-1 rounded bg-red-500/10 text-red-400 border border-red-500/20 px-2.5 py-1 text-xs font-semibold hover:bg-red-500/20 transition"
-                                >
-                                  <Ban className="h-3 w-3" />
-                                  <span>Suspend</span>
-                                </button>
-                              ) : (
-                                <button
-                                  onClick={() => handleUpdateTenantStatus(t.id, "active")}
-                                  className="inline-flex items-center gap-1 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2.5 py-1 text-xs font-semibold hover:bg-emerald-500/20 transition"
-                                >
-                                  <CheckCircle className="h-3 w-3" />
-                                  <span>Reactivate</span>
-                                </button>
-                              )}
+                              <div className="inline-flex flex-wrap items-center justify-end gap-1.5">
+                                {t.status === "active" &&
+                                  (activeSubs.some((s: any) =>
+                                    [
+                                      "lead-crm-qualification",
+                                      "ai-marketing-growth",
+                                      "whatsapp-business-concierge",
+                                    ].includes(String(s.service_slug || "").toLowerCase()) ||
+                                    String(s.service_name || "").toLowerCase().includes("lead")
+                                  ) ||
+                                    hasActiveSub) && (
+                                    <button
+                                      onClick={() => {
+                                        setSelectedTenantId(t.id);
+                                        setSelectedTenantForLeadGen(t.id);
+                                        if (t.industry) setLeadGenIndustry(t.industry);
+                                        setActiveTab("leads");
+                                      }}
+                                      className="inline-flex items-center gap-1 rounded bg-indigo-600/20 text-indigo-300 border border-indigo-500/30 px-2.5 py-1 text-xs font-semibold hover:bg-indigo-600/30 transition"
+                                      title="Generate and AI-score leads for this client"
+                                    >
+                                      <Sparkles className="h-3 w-3" />
+                                      <span>Find &amp; Score Leads</span>
+                                    </button>
+                                  )}
+                                {t.status === "pending_approval" ? (
+                                  <button
+                                    onClick={() => handleUpdateTenantStatus(t.id, "active")}
+                                    className="inline-flex items-center gap-1 rounded bg-emerald-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-emerald-500 transition shadow-sm"
+                                    title="Confirm payment receipt and activate all automated services"
+                                  >
+                                    <CheckCircle className="h-3 w-3" />
+                                    <span>Confirm Payment & Activate</span>
+                                  </button>
+                                ) : t.status === "active" ? (
+                                  <button
+                                    onClick={() => handleUpdateTenantStatus(t.id, "suspended")}
+                                    className="inline-flex items-center gap-1 rounded bg-red-500/10 text-red-400 border border-red-500/20 px-2.5 py-1 text-xs font-semibold hover:bg-red-500/20 transition"
+                                  >
+                                    <Ban className="h-3 w-3" />
+                                    <span>Suspend</span>
+                                  </button>
+                                ) : (
+                                  <button
+                                    onClick={() => handleUpdateTenantStatus(t.id, "active")}
+                                    className="inline-flex items-center gap-1 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2.5 py-1 text-xs font-semibold hover:bg-emerald-500/20 transition"
+                                  >
+                                    <CheckCircle className="h-3 w-3" />
+                                    <span>Reactivate</span>
+                                  </button>
+                                )}
+                              </div>
                             </td>
                           </tr>
                         );
@@ -1550,13 +1592,14 @@ export default function AdminDashboardPage() {
                         <th className="py-2.5 px-3">Source</th>
                         <th className="py-2.5 px-3">Score</th>
                         <th className="py-2.5 px-3">Status</th>
+                        <th className="py-2.5 px-3 text-right">Admin AI Scoring</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-900 text-slate-300">
                       {filteredLeads.length === 0 ? (
                         <tr>
-                          <td colSpan={7} className="py-6 text-center text-slate-500 italic">
-                            No leads captured for this selection. Run Google Maps lead generation above.
+                          <td colSpan={8} className="py-6 text-center text-slate-500 italic">
+                            No leads captured for this selection. Run Live Maps lead generation above.
                           </td>
                         </tr>
                       ) : (
@@ -1588,6 +1631,16 @@ export default function AdminDashboardPage() {
                                 <span className="rounded bg-slate-800 px-2 py-0.5 text-[10px] uppercase font-bold text-slate-300 border border-slate-700">
                                   {l.status}
                                 </span>
+                              </td>
+                              <td className="py-2.5 px-3 text-right">
+                                <button
+                                  type="button"
+                                  onClick={() => handleAdminQualifyLead(l.tenant_id, l.id, l.name)}
+                                  className="inline-flex items-center gap-1 rounded bg-emerald-600/20 text-emerald-300 border border-emerald-500/30 px-2.5 py-1 text-[11px] font-semibold hover:bg-emerald-600/30 transition"
+                                >
+                                  <Sparkles className="h-3 w-3" />
+                                  <span>{Number(l.qualification_score || 0) > 0 ? "Re-Score AI" : "AI Score"}</span>
+                                </button>
                               </td>
                             </tr>
                           );

@@ -6,7 +6,7 @@ import { StatCard } from "../../components/dashboard/StatCard";
 import { Navbar } from "../../components/shared/Navbar";
 import { Sidebar } from "../../components/shared/Sidebar";
 import { apiRequest } from "../../lib/api";
-import { getActiveTenant, getAuthToken } from "../../lib/auth";
+import { getActiveTenant, getAuthToken, isSuperAdminUser } from "../../lib/auth";
 
 interface CampaignItem {
   id: string;
@@ -68,6 +68,7 @@ export default function MarketingPage() {
   const [finderKeywords, setFinderKeywords] = useState("");
   const [finderLimit, setFinderLimit] = useState("8");
   const [findingLeads, setFindingLeads] = useState(false);
+  const [isAdminUser, setIsAdminUser] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
@@ -100,6 +101,7 @@ export default function MarketingPage() {
       window.location.href = "/onboarding";
       return;
     }
+    setIsAdminUser(isSuperAdminUser());
     loadMarketingWorkspace();
   }, []);
 
@@ -287,7 +289,8 @@ export default function MarketingPage() {
             </div>
           )}
 
-          {/* Free Live Business Lead Finder (OpenStreetMap / Google Places) */}
+          {/* Admin-Only Live Business Lead Finder (OpenStreetMap / Google Places) */}
+          {isAdminUser && (
           <div className="bg-slate-900 border border-emerald-800/60 rounded-xl p-6">
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-4">
               <div>
@@ -346,6 +349,7 @@ export default function MarketingPage() {
               </button>
             </form>
           </div>
+          )}
 
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             {/* Create Campaign */}
@@ -582,12 +586,22 @@ export default function MarketingPage() {
                       </span>
                     </td>
                     <td className="py-3 px-4">
-                      <button
-                        onClick={() => handleQualifyLead(l.id)}
-                        className="px-3 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium"
-                      >
-                        AI Qualify
-                      </button>
+                      {isAdminUser ? (
+                        <button
+                          onClick={() => handleQualifyLead(l.id)}
+                          className="px-3 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium"
+                        >
+                          AI Qualify
+                        </button>
+                      ) : Number(l.qualification_score || 0) > 0 ? (
+                        <span className="inline-flex items-center rounded bg-emerald-950/80 border border-emerald-800 px-2.5 py-1 text-[11px] font-semibold text-emerald-300">
+                          Admin AI Verified ({l.qualification_score}%)
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center rounded bg-amber-950/60 border border-amber-800/60 px-2.5 py-1 text-[11px] font-medium text-amber-300">
+                          Pending Admin Scoring
+                        </span>
+                      )}
                     </td>
                   </tr>
                 ))}
