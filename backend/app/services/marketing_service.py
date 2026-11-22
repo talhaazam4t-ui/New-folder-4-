@@ -187,7 +187,7 @@ class MarketingService:
             else (
                 f"DeepSeek ({ai_res.model})"
                 if not ai_res.is_mock
-                else f"Talox AI ({ai_res.model})"
+                else f"Talox AI ({ai_res.model}{f' [{ai_res.error_message}]' if ai_res.error_message else ''})"
             )
         )
         return {

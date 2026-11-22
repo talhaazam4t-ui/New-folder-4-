@@ -97,6 +97,8 @@ async def _call_openai_compatible_chat(
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
+        "User-Agent": "OpenAI/Python 1.54.0",
+        "Accept": "application/json",
     }
     effective_max_tokens = max(max_tokens, 4096) if "reasoner" in model_name else max_tokens
     payload: Dict[str, Any] = {
@@ -213,9 +215,12 @@ async def route_and_execute_ai_task(
 
     # 2. Select baseline model tier
     target_model = select_model_for_task(task_type)
+    diag_notes = []
 
     # --- PRIORITY 1: Groq API (Free Primary Provider) ---
     resolved_groq_key = _resolve_groq_api_key()
+    if not resolved_groq_key:
+        diag_notes.append("no_groq_key")
     if resolved_groq_key and settings.app_env != "test":
         groq_candidates = [settings.groq_primary_model, settings.groq_fast_model]
         for groq_model in groq_candidates:
@@ -236,7 +241,16 @@ async def route_and_execute_ai_task(
                     temperature=temperature,
                     max_tokens=max_tokens,
                 )
+            except httpx.HTTPStatusError as groq_http_exc:
+                diag_notes.append(f"groq_{groq_model}_http_{groq_http_exc.response.status_code}")
+                logger.warning(
+                    "Groq model HTTP error; trying next fallback",
+                    model=groq_model,
+                    status_code=groq_http_exc.response.status_code,
+                    task_type=task_type,
+                )
             except Exception as groq_exc:
+                diag_notes.append(f"groq_{groq_model}_err_{type(groq_exc).__name__}")
                 logger.warning(
                     "Groq model execution failed; trying next fallback",
                     model=groq_model,
@@ -246,6 +260,8 @@ async def route_and_execute_ai_task(
 
     # --- PRIORITY 2: DeepSeek API (Paid Fallback Provider) ---
     resolved_deepseek_key = _resolve_deepseek_api_key()
+    if not resolved_deepseek_key:
+        diag_notes.append("no_ds_key")
     if resolved_deepseek_key and settings.ai_provider != "mock" and settings.app_env != "test":
         try:
             logger.info(
@@ -264,7 +280,16 @@ async def route_and_execute_ai_task(
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
+        except httpx.HTTPStatusError as ds_http_exc:
+            diag_notes.append(f"ds_{target_model}_http_{ds_http_exc.response.status_code}")
+            logger.warning(
+                "DeepSeek API HTTP error; routing to Priority 3 local safety net",
+                status_code=ds_http_exc.response.status_code,
+                task_type=task_type,
+                model=target_model,
+            )
         except Exception as ds_exc:
+            diag_notes.append(f"ds_{target_model}_err_{type(ds_exc).__name__}")
             logger.warning(
                 "DeepSeek API fallback failed; routing to Priority 3 local safety net",
                 error=str(ds_exc),
@@ -273,7 +298,10 @@ async def route_and_execute_ai_task(
             )
 
     # --- PRIORITY 3: Final Safety Net (Resilient Local AI Engine) ---
-    return _execute_mock_ai_task(task_type, target_model, clean_prompt)
+    fallback_res = _execute_mock_ai_task(task_type, target_model, clean_prompt)
+    if diag_notes:
+        fallback_res.error_message = ",".join(diag_notes)
+    return fallback_res
 
 
 def _execute_mock_ai_task(task_type: str, model: str, prompt: str) -> AIExecutionResult:
