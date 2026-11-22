@@ -144,7 +144,7 @@ async def test_marketing_leads_qualification_and_analytics():
         c_id = c_res.json()["id"]
         await client.post(f"/api/v1/marketing/campaigns/{c_id}/approve", headers=headers)
 
-        # 4. Verify Marketing Analytics
+        # 4. Verify Marketing Analytics (honest zero baseline on newly approved campaign — no fabricated numbers)
         ana_res = await client.get("/api/v1/marketing/analytics", headers=headers)
         assert ana_res.status_code == 200
         ana = ana_res.json()
@@ -152,5 +152,5 @@ async def test_marketing_leads_qualification_and_analytics():
         assert ana["active_campaigns"] == 1
         assert ana["total_leads"] == 1
         assert ana["qualified_leads"] == 1
-        assert ana["total_revenue"] > ana["total_spend"]
-        assert ana["roi_percentage"] > 0.0
+        assert ana["total_impressions"] == 0
+        assert ana["roi_percentage"] == 0.0

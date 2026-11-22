@@ -157,6 +157,16 @@ export default function AdminDashboardPage() {
   });
   const [savingSettings, setSavingSettings] = useState(false);
   const [resettingCircuit, setResettingCircuit] = useState(false);
+  const [editingCampaign, setEditingCampaign] = useState<any | null>(null);
+  const [campaignMetricsForm, setCampaignMetricsForm] = useState({
+    impressions: "0",
+    clicks: "0",
+    leads: "0",
+    conversions: "0",
+    spend: "0",
+    revenue: "0",
+  });
+  const [savingMetrics, setSavingMetrics] = useState(false);
 
   const fetchOperationsData = async () => {
     try {
@@ -460,6 +470,40 @@ export default function AdminDashboardPage() {
       fetchOperationsData();
     } else {
       showStatus(`Error scoring lead "${leadName}": ${res.error?.message || "Failed"}`, true);
+    }
+  };
+
+  const handleSaveCampaignMetrics = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingCampaign) return;
+    setSavingMetrics(true);
+    showStatus(`Updating real ad performance results for "${editingCampaign.name}"...`);
+    try {
+      const res = await apiRequest(
+        `/api/v1/admin/tenants/${editingCampaign.tenant_id}/campaigns/${editingCampaign.id}/metrics`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            impressions: parseInt(campaignMetricsForm.impressions, 10) || 0,
+            clicks: parseInt(campaignMetricsForm.clicks, 10) || 0,
+            leads: parseInt(campaignMetricsForm.leads, 10) || 0,
+            conversions: parseInt(campaignMetricsForm.conversions, 10) || 0,
+            spend: parseFloat(campaignMetricsForm.spend) || 0,
+            revenue: parseFloat(campaignMetricsForm.revenue) || 0,
+          }),
+        }
+      );
+      if (res.success) {
+        showStatus(
+          `Saved real ad results for "${editingCampaign.name}" (ROI: ${res.data?.roi_percentage ?? 0}%) — synced to client's Marketing & Dashboard!`
+        );
+        setEditingCampaign(null);
+        fetchOperationsData();
+      } else {
+        showStatus(`Error saving ad metrics: ${res.error?.message || "Failed"}`, true);
+      }
+    } finally {
+      setSavingMetrics(false);
     }
   };
 
@@ -1646,6 +1690,194 @@ export default function AdminDashboardPage() {
                           );
                         })
                       )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Client Ad Campaigns & Genuine Meta/Google Ads Results Tracker */}
+              <div className="rounded-xl border border-slate-800 bg-slate-950 p-6 space-y-4">
+                <div>
+                  <h2 className="text-base font-bold text-white">
+                    Client Ad Campaigns &amp; Real Ad Results Tracker
+                  </h2>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    After launching an approved campaign in Meta Ads Manager or Google Ads, log the real Impressions, Clicks, Ad Spend, and Revenue here so clients see 100% genuine ROI on their dashboard (never fabricated numbers).
+                  </p>
+                </div>
+
+                {editingCampaign && (
+                  <form
+                    onSubmit={handleSaveCampaignMetrics}
+                    className="rounded-xl border border-emerald-500/40 bg-emerald-950/20 p-4 space-y-3"
+                  >
+                    <div className="flex items-center justify-between">
+                      <p className="text-xs font-bold text-emerald-300">
+                        Updating Real Ad Results: {editingCampaign.name} ({editingCampaign.platform})
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setEditingCampaign(null)}
+                        className="text-xs text-slate-400 hover:text-white"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-2.5">
+                      <div>
+                        <label className="block text-[10px] text-slate-400 mb-1">Impressions</label>
+                        <input
+                          type="number"
+                          min="0"
+                          value={campaignMetricsForm.impressions}
+                          onChange={(e) =>
+                            setCampaignMetricsForm({ ...campaignMetricsForm, impressions: e.target.value })
+                          }
+                          className="w-full rounded bg-slate-900 border border-slate-700 px-2.5 py-1.5 text-xs text-white"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] text-slate-400 mb-1">Clicks</label>
+                        <input
+                          type="number"
+                          min="0"
+                          value={campaignMetricsForm.clicks}
+                          onChange={(e) =>
+                            setCampaignMetricsForm({ ...campaignMetricsForm, clicks: e.target.value })
+                          }
+                          className="w-full rounded bg-slate-900 border border-slate-700 px-2.5 py-1.5 text-xs text-white"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] text-slate-400 mb-1">Leads</label>
+                        <input
+                          type="number"
+                          min="0"
+                          value={campaignMetricsForm.leads}
+                          onChange={(e) =>
+                            setCampaignMetricsForm({ ...campaignMetricsForm, leads: e.target.value })
+                          }
+                          className="w-full rounded bg-slate-900 border border-slate-700 px-2.5 py-1.5 text-xs text-white"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] text-slate-400 mb-1">Conversions</label>
+                        <input
+                          type="number"
+                          min="0"
+                          value={campaignMetricsForm.conversions}
+                          onChange={(e) =>
+                            setCampaignMetricsForm({ ...campaignMetricsForm, conversions: e.target.value })
+                          }
+                          className="w-full rounded bg-slate-900 border border-slate-700 px-2.5 py-1.5 text-xs text-white"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] text-slate-400 mb-1">Real Spend ($)</label>
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={campaignMetricsForm.spend}
+                          onChange={(e) =>
+                            setCampaignMetricsForm({ ...campaignMetricsForm, spend: e.target.value })
+                          }
+                          className="w-full rounded bg-slate-900 border border-slate-700 px-2.5 py-1.5 text-xs text-white"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] text-slate-400 mb-1">Revenue ($)</label>
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={campaignMetricsForm.revenue}
+                          onChange={(e) =>
+                            setCampaignMetricsForm({ ...campaignMetricsForm, revenue: e.target.value })
+                          }
+                          className="w-full rounded bg-slate-900 border border-slate-700 px-2.5 py-1.5 text-xs text-white"
+                        />
+                      </div>
+                    </div>
+                    <div className="flex justify-end">
+                      <button
+                        type="submit"
+                        disabled={savingMetrics}
+                        className="rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 px-4 py-1.5 text-xs font-semibold text-white transition"
+                      >
+                        {savingMetrics ? "Saving..." : "Save Real Ad Results"}
+                      </button>
+                    </div>
+                  </form>
+                )}
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead>
+                      <tr className="border-b border-slate-800 text-slate-400 uppercase font-semibold">
+                        <th className="py-2.5 px-3">Campaign</th>
+                        <th className="py-2.5 px-3">Client</th>
+                        <th className="py-2.5 px-3">Platform</th>
+                        <th className="py-2.5 px-3">Planned Budget</th>
+                        <th className="py-2.5 px-3">Status</th>
+                        <th className="py-2.5 px-3 text-right">Real Results</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-900 text-slate-300">
+                      {((ops?.lead_gen?.campaigns || []) as any[])
+                        .filter(
+                          (c: any) =>
+                            !selectedTenantForLeadGen ||
+                            selectedTenantForLeadGen === "all" ||
+                            c.tenant_id === selectedTenantForLeadGen
+                        )
+                        .map((c: any) => {
+                          const campTenant = tenants.find((t: any) => t.id === c.tenant_id);
+                          return (
+                            <tr key={c.id} className="hover:bg-slate-900/50">
+                              <td className="py-2.5 px-3 font-semibold text-white">{c.name}</td>
+                              <td className="py-2.5 px-3 text-slate-400">
+                                {campTenant?.name || c.tenant_id}
+                              </td>
+                              <td className="py-2.5 px-3 font-mono uppercase text-[10px] text-indigo-300">
+                                {c.platform}
+                              </td>
+                              <td className="py-2.5 px-3 font-mono text-emerald-400">
+                                ${Number(c.budget || 0).toLocaleString()}
+                              </td>
+                              <td className="py-2.5 px-3">
+                                <span
+                                  className={`rounded px-2 py-0.5 text-[10px] uppercase font-bold ${
+                                    c.status === "active"
+                                      ? "bg-emerald-950 text-emerald-300 border border-emerald-800"
+                                      : "bg-amber-950 text-amber-300 border border-amber-800"
+                                  }`}
+                                >
+                                  {c.status}
+                                </span>
+                              </td>
+                              <td className="py-2.5 px-3 text-right">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setEditingCampaign(c);
+                                    setCampaignMetricsForm({
+                                      impressions: "0",
+                                      clicks: "0",
+                                      leads: "0",
+                                      conversions: "0",
+                                      spend: "0",
+                                      revenue: "0",
+                                    });
+                                  }}
+                                  className="inline-flex items-center gap-1 rounded bg-indigo-600/20 text-indigo-300 border border-indigo-500/30 px-2.5 py-1 text-[11px] font-semibold hover:bg-indigo-600/30 transition"
+                                >
+                                  <span>Update Real Ad Results</span>
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
                     </tbody>
                   </table>
                 </div>

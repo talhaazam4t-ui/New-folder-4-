@@ -329,16 +329,36 @@ class MarketingService:
         cfg["approved_at"] = datetime.now(timezone.utc).isoformat()
         campaign.configuration = cfg
 
-        # Seed initial performance metric baseline for active campaign
+        # Resolve linked pending approval if present so no stale approval remains
+        linked_approval_id = cfg.get("approval_id")
+        if linked_approval_id:
+            try:
+                from app.database.models.automation import Approval
+
+                app_res = await session.execute(
+                    select(Approval).where(
+                        Approval.id == uuid.UUID(str(linked_approval_id)),
+                        Approval.tenant_id == tenant_id,
+                    )
+                )
+                linked_approval = app_res.scalar_one_or_none()
+                if linked_approval and linked_approval.status == "pending":
+                    linked_approval.status = "approved"
+                    linked_approval.reviewed_by = reviewer_id
+                    linked_approval.reviewed_at = datetime.now(timezone.utc)
+            except Exception:
+                pass
+
+        # Seed honest zero baseline — never fabricate fake impressions, clicks, spend, or ROI
         metric = MarketingMetric(
             tenant_id=tenant_id,
             campaign_id=campaign.id,
-            impressions=1200,
-            clicks=95,
-            leads=14,
-            conversions=4,
-            spend=round(float(campaign.budget) * 0.25, 2),
-            revenue=round(float(campaign.budget) * 1.1, 2),
+            impressions=0,
+            clicks=0,
+            leads=0,
+            conversions=0,
+            spend=0.0,
+            revenue=0.0,
         )
         session.add(metric)
 
@@ -355,6 +375,94 @@ class MarketingService:
         await session.commit()
         await session.refresh(campaign)
         return self._to_campaign_response(campaign)
+
+    async def record_campaign_metrics(
+        self,
+        session: AsyncSession,
+        tenant_id: uuid.UUID,
+        campaign_id: uuid.UUID,
+        impressions: int,
+        clicks: int,
+        leads: int,
+        conversions: int,
+        spend: float,
+        revenue: float,
+        actor_id: Optional[uuid.UUID] = None,
+    ) -> Dict[str, Any]:
+        """Record or update genuine ad platform metrics (from Meta/Google Ads) for a campaign."""
+        c_res = await session.execute(
+            select(MarketingCampaign).where(
+                MarketingCampaign.id == campaign_id,
+                MarketingCampaign.tenant_id == tenant_id,
+            )
+        )
+        campaign = c_res.scalar_one_or_none()
+        if not campaign:
+            raise ResourceNotFoundError("MarketingCampaign", str(campaign_id))
+
+        m_res = await session.execute(
+            select(MarketingMetric)
+            .where(
+                MarketingMetric.tenant_id == tenant_id,
+                MarketingMetric.campaign_id == campaign_id,
+            )
+            .order_by(MarketingMetric.recorded_at.desc())
+        )
+        existing_metric = m_res.scalars().first()
+        if existing_metric:
+            existing_metric.impressions = impressions
+            existing_metric.clicks = clicks
+            existing_metric.leads = leads
+            existing_metric.conversions = conversions
+            existing_metric.spend = spend
+            existing_metric.revenue = revenue
+            metric = existing_metric
+        else:
+            metric = MarketingMetric(
+                tenant_id=tenant_id,
+                campaign_id=campaign_id,
+                impressions=impressions,
+                clicks=clicks,
+                leads=leads,
+                conversions=conversions,
+                spend=spend,
+                revenue=revenue,
+            )
+            session.add(metric)
+
+        session.add(
+            AuditLog(
+                tenant_id=tenant_id,
+                actor_id=actor_id,
+                actor_type="admin",
+                action="marketing.campaign.metrics_updated",
+                resource_type="marketing_campaign",
+                resource_id=campaign.id,
+                metadata_={
+                    "impressions": impressions,
+                    "clicks": clicks,
+                    "leads": leads,
+                    "conversions": conversions,
+                    "spend": spend,
+                    "revenue": revenue,
+                },
+            )
+        )
+        await session.commit()
+        await session.refresh(metric)
+
+        roi = round(((revenue - spend) / spend) * 100.0, 2) if spend > 0 else 0.0
+        return {
+            "campaign_id": str(campaign.id),
+            "campaign_name": campaign.name,
+            "impressions": int(metric.impressions),
+            "clicks": int(metric.clicks),
+            "leads": int(metric.leads),
+            "conversions": int(metric.conversions),
+            "spend": float(metric.spend),
+            "revenue": float(metric.revenue),
+            "roi_percentage": roi,
+        }
 
     async def create_lead(
         self,

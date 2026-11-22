@@ -220,6 +220,15 @@ class AdminApprovalReviewRequest(BaseModel):
     reason: Optional[str] = None
 
 
+class AdminCampaignMetricsRequest(BaseModel):
+    impressions: int = 0
+    clicks: int = 0
+    leads: int = 0
+    conversions: int = 0
+    spend: float = 0.0
+    revenue: float = 0.0
+
+
 class GlobalAdminStats(BaseModel):
     total_tenants: int
     active_tenants: int
@@ -986,6 +995,30 @@ async def admin_qualify_tenant_lead(
         lead_id=lead_id,
     )
     return {"success": True, "data": lead.model_dump(mode="json")}
+
+
+@router.post("/tenants/{tenant_id}/campaigns/{campaign_id}/metrics")
+async def admin_update_campaign_metrics(
+    tenant_id: uuid.UUID,
+    campaign_id: uuid.UUID,
+    request: AdminCampaignMetricsRequest,
+    admin_user: Profile = Depends(verify_platform_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    """Owner-only control to log genuine Meta/Google Ads performance metrics for a client's campaign."""
+    data = await marketing_service.record_campaign_metrics(
+        session=session,
+        tenant_id=tenant_id,
+        campaign_id=campaign_id,
+        impressions=max(0, request.impressions),
+        clicks=max(0, request.clicks),
+        leads=max(0, request.leads),
+        conversions=max(0, request.conversions),
+        spend=max(0.0, request.spend),
+        revenue=max(0.0, request.revenue),
+        actor_id=admin_user.id,
+    )
+    return {"success": True, "data": data}
 
 
 @router.post("/integrations/{integration_id}/action")
