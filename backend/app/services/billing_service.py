@@ -655,7 +655,7 @@ class BillingService:
         curr_settings["payment_notified_at"] = now.isoformat()
         tenant.settings = curr_settings
 
-        # Determine payment amount from outstanding invoice if not explicitly passed
+        # Determine payment amount from outstanding invoices if not explicitly passed
         amount = request.amount
         if not amount:
             inv_res = await session.execute(
@@ -663,8 +663,8 @@ class BillingService:
                 .where(Invoice.tenant_id == tenant_id, Invoice.status != "paid")
                 .order_by(Invoice.created_at.desc())
             )
-            inv = inv_res.scalar_one_or_none()
-            amount = float(inv.total) if inv else 249.0
+            unpaid_invoices = inv_res.scalars().all()
+            amount = round(sum(float(i.total) for i in unpaid_invoices), 2) if unpaid_invoices else 249.0
 
         payment = Payment(
             tenant_id=tenant_id,
@@ -672,7 +672,7 @@ class BillingService:
             currency="USD",
             payment_method="bank_transfer",
             provider_reference=request.transaction_reference,
-            status="pending_verification",
+            status="pending",
             paid_at=None,
         )
         session.add(payment)
