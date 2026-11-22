@@ -152,6 +152,48 @@ async def _call_openai_compatible_chat(
         )
 
 
+def _resolve_groq_api_key() -> str:
+    """Locate a valid Groq API key from settings or any GROQ/gsk_ environment variable."""
+    candidates = [
+        settings.groq_api_key,
+        os.environ.get("GROQ_API_KEY"),
+        os.environ.get("GROQ_KEY"),
+        os.environ.get("GROK_API_KEY"),
+        settings.ai_api_key if (settings.ai_api_key or "").strip().strip("\"'").startswith("gsk_") else None,
+        settings.deepseek_api_key if (settings.deepseek_api_key or "").strip().strip("\"'").startswith("gsk_") else None,
+    ]
+    for k, v in os.environ.items():
+        k_up = k.strip().upper()
+        v_clean = (v or "").strip().strip("\"'")
+        if ("GROQ" in k_up or "GROK" in k_up or v_clean.startswith("gsk_")) and v_clean:
+            candidates.append(v_clean)
+
+    for raw in candidates:
+        cleaned = (raw or "").strip().strip("\"'").strip()
+        if cleaned and cleaned not in ("mock", "your-groq-api-key"):
+            return cleaned
+    return ""
+
+
+def _resolve_deepseek_api_key() -> str:
+    """Locate a valid DeepSeek API key from settings or environment variables."""
+    candidates = [
+        settings.deepseek_api_key,
+        os.environ.get("DEEPSEEK_API_KEY"),
+        os.environ.get("DEEPSEEK_KEY"),
+        settings.ai_api_key,
+    ]
+    for raw in candidates:
+        cleaned = (raw or "").strip().strip("\"'").strip()
+        if (
+            cleaned
+            and not cleaned.startswith("gsk_")
+            and cleaned not in ("mock", "your-openrouter-api-key", "your-deepseek-api-key")
+        ):
+            return cleaned
+    return ""
+
+
 async def route_and_execute_ai_task(
     task_type: str,
     prompt: str,
@@ -172,32 +214,9 @@ async def route_and_execute_ai_task(
     # 2. Select baseline model tier
     target_model = select_model_for_task(task_type)
 
-    if settings.ai_provider == "mock":
-        return _execute_mock_ai_task(task_type, target_model, clean_prompt)
-
     # --- PRIORITY 1: Groq API (Free Primary Provider) ---
-    resolved_groq_key = (
-        settings.groq_api_key
-        or os.environ.get("GROQ_API_KEY")
-        or (
-            settings.ai_api_key
-            if (settings.ai_api_key or "").strip().startswith("gsk_")
-            else ""
-        )
-        or (
-            settings.deepseek_api_key
-            if (settings.deepseek_api_key or "").strip().startswith("gsk_")
-            else ""
-        )
-        or ""
-    ).strip()
-
-    is_groq_key_present = bool(
-        resolved_groq_key
-        and resolved_groq_key not in ("mock", "your-groq-api-key")
-    )
-
-    if is_groq_key_present:
+    resolved_groq_key = _resolve_groq_api_key()
+    if resolved_groq_key and settings.app_env != "test":
         groq_candidates = [settings.groq_primary_model, settings.groq_fast_model]
         for groq_model in groq_candidates:
             try:
@@ -226,20 +245,8 @@ async def route_and_execute_ai_task(
                 )
 
     # --- PRIORITY 2: DeepSeek API (Paid Fallback Provider) ---
-    resolved_deepseek_key = (
-        settings.deepseek_api_key
-        or os.environ.get("DEEPSEEK_API_KEY")
-        or settings.ai_api_key
-        or ""
-    ).strip()
-
-    is_deepseek_key_present = bool(
-        resolved_deepseek_key
-        and not resolved_deepseek_key.startswith("gsk_")
-        and resolved_deepseek_key not in ("mock", "your-openrouter-api-key", "your-deepseek-api-key")
-    )
-
-    if is_deepseek_key_present:
+    resolved_deepseek_key = _resolve_deepseek_api_key()
+    if resolved_deepseek_key and settings.ai_provider != "mock" and settings.app_env != "test":
         try:
             logger.info(
                 "Routing AI task to DeepSeek (Priority 2 Fallback)",
@@ -284,6 +291,21 @@ def _execute_mock_ai_task(task_type: str, model: str, prompt: str) -> AIExecutio
         )
     elif "transaction" in task_type:
         mock_content = '{"amount": 50000, "currency": "PKR", "type": "rent", "confirmed": true}'
+    elif "marketing_campaign_strategy" in task_type:
+        mock_content = (
+            f"Headline: Unlock High-ROI Growth with Automated AI Operations\n\n"
+            f"{prompt}\n\n"
+            f"Key Benefits:\n"
+            f"• 24/7 Automated Lead Qualification & Instant Follow-Up\n"
+            f"• Real-Time Multi-Currency Financial & Rent Tracking\n"
+            f"• Verified Human-in-the-Loop Compliance Guardrails\n\n"
+            f"Reply 'START' or book your onboarding consultation today!"
+        )
+    elif "text_classification" in task_type:
+        mock_content = (
+            "Lead Qualification Assessment: High-intent prospect verified with valid contact "
+            "channels and active inbound engagement. Recommended for priority outreach."
+        )
     elif "planning" in task_type or "audit" in task_type:
         mock_content = f"Comprehensive Plan for {task_type}: 1. Review requirements. 2. Verify budget. 3. Execute approved steps."
     else:

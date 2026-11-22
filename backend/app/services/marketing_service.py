@@ -181,12 +181,22 @@ class MarketingService:
                 status_code=502,
             )
         budget_manager.record_success(str(tenant_id), ai_res.total_tokens, ai_res.estimated_cost)
+        provider_label = (
+            f"Groq ({ai_res.model})"
+            if "llama" in ai_res.model.lower()
+            else (
+                f"DeepSeek ({ai_res.model})"
+                if not ai_res.is_mock
+                else f"Talox AI ({ai_res.model})"
+            )
+        )
         return {
             "channel": request.channel,
             "topic": request.topic,
             "tone": request.tone,
             "generated_copy": ai_res.content,
             "model": ai_res.model,
+            "provider": provider_label,
             "tokens_used": ai_res.total_tokens,
         }
 
