@@ -189,6 +189,10 @@ export default function Home() {
             ))}
           </div>
         </section>
+        <footer className="mt-10 flex justify-center gap-6 border-t border-slate-700/40 pt-4 text-xs text-slate-400">
+          <a href="/privacy/" className="hover:underline">Privacy Policy</a>
+          <a href="/terms/" className="hover:underline">Terms of Service</a>
+        </footer>
       </div>
     </main>
   );
