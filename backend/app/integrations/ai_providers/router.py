@@ -154,6 +154,16 @@ async def _call_openai_compatible_chat(
         )
 
 
+def _clean_api_key_value(raw: Optional[str]) -> str:
+    """Strip accidental quotes, 'Bearer ' prefix, or 'KEY=' assignment from an env var value."""
+    val = (raw or "").strip().strip("\"'").strip()
+    if "=" in val and val.split("=", 1)[0].strip().upper().endswith("KEY"):
+        val = val.split("=", 1)[1].strip().strip("\"'").strip()
+    if val.lower().startswith("bearer "):
+        val = val[7:].strip().strip("\"'").strip()
+    return val
+
+
 def _resolve_groq_api_key() -> str:
     """Locate a valid Groq API key from settings or any GROQ/gsk_ environment variable."""
     candidates = [
@@ -161,17 +171,17 @@ def _resolve_groq_api_key() -> str:
         os.environ.get("GROQ_API_KEY"),
         os.environ.get("GROQ_KEY"),
         os.environ.get("GROK_API_KEY"),
-        settings.ai_api_key if (settings.ai_api_key or "").strip().strip("\"'").startswith("gsk_") else None,
-        settings.deepseek_api_key if (settings.deepseek_api_key or "").strip().strip("\"'").startswith("gsk_") else None,
+        settings.ai_api_key if _clean_api_key_value(settings.ai_api_key).startswith("gsk_") else None,
+        settings.deepseek_api_key if _clean_api_key_value(settings.deepseek_api_key).startswith("gsk_") else None,
     ]
     for k, v in os.environ.items():
         k_up = k.strip().upper()
-        v_clean = (v or "").strip().strip("\"'")
+        v_clean = _clean_api_key_value(v)
         if ("GROQ" in k_up or "GROK" in k_up or v_clean.startswith("gsk_")) and v_clean:
             candidates.append(v_clean)
 
     for raw in candidates:
-        cleaned = (raw or "").strip().strip("\"'").strip()
+        cleaned = _clean_api_key_value(raw)
         if cleaned and cleaned not in ("mock", "your-groq-api-key"):
             return cleaned
     return ""
@@ -186,7 +196,7 @@ def _resolve_deepseek_api_key() -> str:
         settings.ai_api_key,
     ]
     for raw in candidates:
-        cleaned = (raw or "").strip().strip("\"'").strip()
+        cleaned = _clean_api_key_value(raw)
         if (
             cleaned
             and not cleaned.startswith("gsk_")
