@@ -83,6 +83,49 @@ def select_model_for_task(task_type: str) -> str:
     return settings.ai_default_fast_model
 
 
+_DISCOVERED_GROQ_MODELS: list[str] = []
+
+
+async def _discover_groq_chat_models(base_url: str, api_key: str) -> list[str]:
+    """Query Groq /models endpoint using the authenticated API key to discover active chat model IDs."""
+    if _DISCOVERED_GROQ_MODELS:
+        return list(_DISCOVERED_GROQ_MODELS)
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "User-Agent": "OpenAI/Python 1.54.0",
+        "Accept": "application/json",
+    }
+    skip_tokens = ("whisper", "guard", "tts", "playai", "embed", "rerank", "orpheus", " safeguard")
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(f"{base_url.rstrip('/')}/models", headers=headers)
+            if resp.status_code == 200:
+                items = resp.json().get("data", [])
+                all_ids = [str(m.get("id", "")).strip() for m in items if m.get("id")]
+                chat_ids = [
+                    mid for mid in all_ids
+                    if not any(tok in mid.lower() for tok in skip_tokens)
+                ]
+                # Sort so versatile / 70b / llama / qwen / gpt-oss chat models come first
+                def _rank(mid: str) -> int:
+                    low = mid.lower()
+                    if "llama-3.3" in low or "70b" in low:
+                        return 0
+                    if "llama" in low or "qwen" in low or "gpt" in low or "deepseek" in low:
+                        return 1
+                    if "gemma" in low or "mixtral" in low or "compound" in low:
+                        return 2
+                    return 3
+
+                chat_ids.sort(key=_rank)
+                if chat_ids:
+                    _DISCOVERED_GROQ_MODELS.extend(chat_ids[:6])
+                    return list(_DISCOVERED_GROQ_MODELS)
+    except Exception as exc:
+        logger.warning("Failed to auto-discover Groq models", error=str(exc))
+    return []
+
+
 async def _call_openai_compatible_chat(
     base_url: str,
     api_key: str,
@@ -178,7 +221,8 @@ def _resolve_groq_api_keys() -> list[str]:
     for k, v in os.environ.items():
         k_up = k.strip().upper()
         v_clean = _clean_api_key_value(v)
-        if ("GROQ" in k_up or "GROK" in k_up or v_clean.startswith("gsk_")) and v_clean:
+        is_groq_key_var = ("GROQ" in k_up or "GROK" in k_up) and ("KEY" in k_up or "TOKEN" in k_up)
+        if (is_groq_key_var or v_clean.startswith("gsk_")) and v_clean:
             if "SECOND" in k_up:
                 candidates.insert(0, v_clean)
             else:
@@ -189,7 +233,8 @@ def _resolve_groq_api_keys() -> list[str]:
         cleaned = _clean_api_key_value(raw)
         if (
             cleaned
-            and cleaned not in ("mock", "your-groq-api-key")
+            and len(cleaned) >= 16
+            and cleaned not in ("mock", "your-groq-api-key", "llama-3.3-70b-versatile", "llama-3.1-8b-instant")
             and not cleaned.lower().startswith("http")
             and cleaned not in keys
         ):
@@ -242,9 +287,17 @@ async def route_and_execute_ai_task(
     if not groq_keys:
         diag_notes.append("no_groq_key")
     if groq_keys and settings.app_env != "test":
-        groq_candidates = [settings.groq_primary_model, settings.groq_fast_model]
         for key_idx, groq_key in enumerate(groq_keys, start=1):
-            for groq_model in groq_candidates:
+            groq_candidates = list(dict.fromkeys([
+                *_DISCOVERED_GROQ_MODELS,
+                settings.groq_primary_model,
+                settings.groq_fast_model,
+            ]))
+            discovered_for_key = False
+            idx = 0
+            while idx < len(groq_candidates):
+                groq_model = groq_candidates[idx]
+                idx += 1
                 try:
                     logger.info(
                         "Routing AI task to Groq (Priority 1)",
@@ -265,17 +318,32 @@ async def route_and_execute_ai_task(
                     )
                 except httpx.HTTPStatusError as groq_http_exc:
                     code_val = groq_http_exc.response.status_code
-                    diag_notes.append(f"groq_k{key_idx}_{groq_model}_http_{code_val}")
+                    err_detail = ""
+                    try:
+                        err_json = groq_http_exc.response.json()
+                        err_detail = str((err_json.get("error") or {}).get("code") or (err_json.get("error") or {}).get("message") or "")[:36]
+                    except Exception:
+                        pass
+                    diag_notes.append(
+                        f"groq_k{key_idx}_{groq_model}_http_{code_val}{f'({err_detail})' if err_detail else ''}"
+                    )
                     logger.warning(
                         "Groq model HTTP error; trying next fallback",
                         model=groq_model,
                         key_slot=key_idx,
                         status_code=code_val,
+                        detail=err_detail,
                         task_type=task_type,
                     )
                     if code_val in (401, 403):
                         # Key is invalid/revoked; skip straight to next Groq key
                         break
+                    if code_val in (400, 404) and not discovered_for_key:
+                        discovered_for_key = True
+                        live_models = await _discover_groq_chat_models(settings.groq_base_url, groq_key)
+                        for lm in live_models:
+                            if lm not in groq_candidates:
+                                groq_candidates.append(lm)
                 except Exception as groq_exc:
                     diag_notes.append(f"groq_k{key_idx}_{groq_model}_err_{type(groq_exc).__name__}")
                     logger.warning(
