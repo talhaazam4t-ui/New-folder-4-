@@ -3,6 +3,8 @@
 import React, { useEffect, useState } from "react";
 import { AdminNavbar } from "../../components/admin/AdminNavbar";
 import { AdminSidebar } from "../../components/admin/AdminSidebar";
+import { Navbar } from "../../components/shared/Navbar";
+import { Sidebar } from "../../components/shared/Sidebar";
 import { apiRequest } from "../../lib/api";
 import { clearActiveTenant, getActiveTenant, getAuthToken, isSuperAdminUser, setActiveTenant } from "../../lib/auth";
 
@@ -61,6 +63,7 @@ export default function AgentsPage() {
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
+  const [isAdminView, setIsAdminView] = useState(false);
 
   const loadAgentWorkspace = async (tenantIdOverride?: string) => {
     const tId = tenantIdOverride || selectedTenantId || getActiveTenant()?.id;
@@ -91,13 +94,33 @@ export default function AgentsPage() {
       window.location.href = "/login";
       return;
     }
-    if (!isSuperAdminUser()) {
-      window.location.href = "/dashboard";
-      return;
-    }
+    const adminMode = isSuperAdminUser();
+    setIsAdminView(adminMode);
 
     (async () => {
       let currentTenant = getActiveTenant();
+      if (!adminMode) {
+        if (!currentTenant?.id) {
+          const tenantsRes = await apiRequest("/api/v1/tenants");
+          const list = Array.isArray(tenantsRes)
+            ? tenantsRes
+            : Array.isArray(tenantsRes?.data)
+            ? tenantsRes.data
+            : [];
+          if (list.length > 0) {
+            currentTenant = list[0];
+            setActiveTenant(list[0], true);
+          }
+        }
+        if (currentTenant?.id) {
+          setSelectedTenantId(currentTenant.id);
+          await loadAgentWorkspace(currentTenant.id);
+        } else {
+          window.location.href = "/onboarding";
+        }
+        return;
+      }
+
       const tenantsRes = await apiRequest("/api/v1/admin/tenants");
       const list = Array.isArray(tenantsRes?.data) ? tenantsRes.data : [];
       setTenants(list);
@@ -209,9 +232,13 @@ export default function AgentsPage() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
-      <AdminNavbar />
+      {isAdminView ? <AdminNavbar /> : <Navbar />}
       <div className="flex flex-1">
-        <AdminSidebar currentPath="/agents" activeTab="" />
+        {isAdminView ? (
+          <AdminSidebar currentPath="/agents" activeTab="" />
+        ) : (
+          <Sidebar currentPath="/agents" />
+        )}
         <main className="flex-1 min-w-0 p-4 sm:p-6 md:p-8 space-y-8 overflow-y-auto">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
             <div>
