@@ -183,7 +183,10 @@ class MarketingService:
         budget_manager.record_success(str(tenant_id), ai_res.total_tokens, ai_res.estimated_cost)
         provider_label = (
             f"Groq ({ai_res.model})"
-            if "llama" in ai_res.model.lower()
+            if (
+                not ai_res.is_mock
+                and any(tok in ai_res.model.lower() for tok in ("llama", "qwen", "gemma", "mixtral", "gpt", "compound"))
+            )
             else (
                 f"DeepSeek ({ai_res.model})"
                 if not ai_res.is_mock

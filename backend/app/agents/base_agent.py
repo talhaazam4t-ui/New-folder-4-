@@ -51,12 +51,13 @@ class BaseAgent:
 
     def build_prompt(self, objective: str, context_data: Optional[Dict[str, Any]] = None) -> str:
         """Construct the bounded system + objective prompt for this agent."""
-        ctx_str = f"\nContext: {context_data}" if context_data else ""
+        ctx_str = f"\nContext from previous stages: {context_data}" if context_data else ""
         return (
-            f"[{self.role} ({self.name})]\n"
-            f"Allowed Tools: {', '.join(sorted(self.allowed_tools))}\n"
-            f"Max Steps: {self.max_steps}\n"
-            f"Objective: {objective}{ctx_str}"
+            f"Role: {self.role} ({self.name})\n"
+            f"Authorized Capabilities: {', '.join(sorted(self.allowed_tools))}\n"
+            f"Objective: {objective}{ctx_str}\n\n"
+            f"Provide a clear, concise, actionable executive response in plain text/Markdown bullet points. "
+            f"Do NOT emit XML <tool_call> tags or raw JSON function calls."
         )
 
     async def execute_step(
@@ -72,12 +73,18 @@ class BaseAgent:
 
         budget_manager.check_execution_eligibility(str(tenant_id), estimated_tokens=500)
         prompt = self.build_prompt(objective, context_data)
+        system_instruction = (
+            f"You are {self.role} ({self.name}) inside the Talox Tech Stream SaaS platform. "
+            "Respond directly with clear, concise, actionable business analysis in plain text or Markdown bullet points. "
+            "Never output <tool_call>, <think>, XML tags, or raw function-call syntax."
+        )
 
         ai_result = await asyncio.wait_for(
             route_and_execute_ai_task(
                 task_type=self.default_task_type,
                 prompt=prompt,
                 tenant_id=str(tenant_id),
+                system_instruction=system_instruction,
             ),
             timeout=self.timeout_seconds,
         )
