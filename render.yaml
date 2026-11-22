@@ -50,9 +50,17 @@ services:
         value: mock
       - key: WHATSAPP_VERIFY_TOKEN
         value: talox_verify_token
+      - key: WHATSAPP_ACCESS_TOKEN
+        sync: false
+      - key: WHATSAPP_PHONE_NUMBER_ID
+        sync: false
+      - key: WHATSAPP_BUSINESS_ACCOUNT_ID
+        sync: false
       - key: WHATSAPP_APP_SECRET
         sync: false
       - key: META_APP_ID
+        sync: false
+      - key: META_CONFIG_ID
         sync: false
       - key: GOOGLE_CLIENT_ID
         sync: false

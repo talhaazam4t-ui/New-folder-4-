@@ -347,6 +347,7 @@ async def process_whatsapp_meta_webhook(
     results = []
 
     for entry in entries:
+        waba_id = str(entry.get("id") or "")
         for change in entry.get("changes", []):
             value = change.get("value", {})
             phone_number_id = value.get("metadata", {}).get("phone_number_id")
@@ -355,28 +356,44 @@ async def process_whatsapp_meta_webhook(
                 for c in value.get("contacts", [])
             }
 
-            # Find matching tenant by phone_number_id in integrations table
+            # Find matching tenant by phone_number_id or waba_id in integrations table
             tenant_id = None
-            if phone_number_id:
+            if phone_number_id or waba_id:
                 from app.database.models.automation import Integration
                 stmt = select(Integration).where(
                     Integration.provider == "whatsapp",
                     Integration.status == "connected",
                 )
                 res = await session.execute(stmt)
-                for integ_row in res.scalars().all():
+                connected_rows = res.scalars().all()
+                for integ_row in connected_rows:
                     cfg = integ_row.configuration or {}
                     if (
-                        integ_row.external_account_id == phone_number_id
-                        or cfg.get("phone_number_id") == phone_number_id
+                        (phone_number_id and (
+                            integ_row.external_account_id == phone_number_id
+                            or cfg.get("phone_number_id") == phone_number_id
+                        ))
+                        or (waba_id and (
+                            integ_row.external_account_id == waba_id
+                            or cfg.get("waba_id") == waba_id
+                        ))
                     ):
                         tenant_id = integ_row.tenant_id
                         break
+
+                # Platform System User phone_number_id / WABA fallback when configured globally
+                if not tenant_id and connected_rows:
+                    if (
+                        (phone_number_id and phone_number_id == settings.whatsapp_phone_number_id)
+                        or (waba_id and waba_id == settings.whatsapp_business_account_id)
+                    ):
+                        tenant_id = connected_rows[0].tenant_id
 
             if not tenant_id:
                 logger.warning(
                     "WhatsApp webhook event skipped: unmatched phone_number_id",
                     phone_number_id=phone_number_id,
+                    waba_id=waba_id,
                 )
                 continue
 
@@ -394,6 +411,7 @@ async def process_whatsapp_meta_webhook(
                         sender_name=sender_name,
                         message_text=msg_text,
                         message_id=msg_id,
+                        dispatch_live_reply=(settings.whatsapp_provider == "meta"),
                     )
                     results.append(res)
                     processed_count += 1
@@ -453,12 +471,16 @@ async def process_whatsapp_meta_webhook(
 async def send_whatsapp_message(
     request: WhatsAppOutboundRequest,
     context: TenantContext = Depends(require_permission("notifications.send")),
+    session: AsyncSession = Depends(get_db),
 ):
     """Send an outbound WhatsApp message to a customer or tenant member."""
+    wa_creds = await integration_service.get_tenant_whatsapp_credentials(session, context.tenant_id)
     result = await whatsapp_client.send_text_message(
         tenant_id=str(context.tenant_id),
         to_phone=request.to_phone,
         message_body=request.message_body,
+        phone_number_id=wa_creds.get("phone_number_id"),
+        access_token=wa_creds.get("access_token"),
     )
     return {"success": True, "data": result}
 

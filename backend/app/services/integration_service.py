@@ -714,6 +714,19 @@ class IntegrationService:
             raw_config["refresh_token"] = f"oauth_refresh_{provider_key}_{uuid.uuid4().hex[:16]}"
         if api_key:
             raw_config["api_key"] = api_key
+            if provider_key == "whatsapp":
+                raw_config["access_token"] = api_key
+                raw_config.setdefault(
+                    "phone_number_id",
+                    (extra_config or {}).get("phone_number_id")
+                    or account_identifier
+                    or settings.whatsapp_phone_number_id,
+                )
+                raw_config.setdefault(
+                    "waba_id",
+                    (extra_config or {}).get("waba_id")
+                    or settings.whatsapp_business_account_id,
+                )
         if extra_config:
             raw_config.update(extra_config)
 
@@ -854,8 +867,15 @@ class IntegrationService:
         decrypted_refresh_token = decrypt_secret(cfg.get("refresh_token", ""))
 
         if integ.provider == "whatsapp":
-            hc = await whatsapp_client.health_check()
+            wa_token = decrypted_access_token or decrypt_secret(cfg.get("api_key", ""))
+            wa_phone_id = cfg.get("phone_number_id") or integ.external_account_id
+            hc = await whatsapp_client.health_check(
+                access_token=wa_token or None,
+                phone_number_id=wa_phone_id or None,
+            )
             healthy = bool(hc.get("healthy", True))
+            if not healthy:
+                error_reason = hc.get("error") or "WhatsApp Cloud API verification failed"
         elif integ.provider in ("google_calendar", "gmail", "google_business"):
             if decrypted_access_token and not cfg.get("is_mock"):
                 try:
@@ -962,6 +982,40 @@ class IntegrationService:
         await self._sync_tenant_onboarding_state(session, tenant_id)
         return self._to_dict(integ)
 
+    async def get_tenant_whatsapp_credentials(
+        self,
+        session: AsyncSession,
+        tenant_id: uuid.UUID,
+    ) -> Dict[str, Optional[str]]:
+        """Resolve decrypted tenant-specific WhatsApp credentials with fallback to platform settings."""
+        res = await session.execute(
+            select(Integration).where(
+                Integration.tenant_id == tenant_id,
+                Integration.provider == "whatsapp",
+                Integration.status == "connected",
+            )
+        )
+        integ = res.scalar_one_or_none()
+        access_token: Optional[str] = None
+        phone_number_id: Optional[str] = None
+        waba_id: Optional[str] = None
+
+        if integ:
+            cfg = dict(integ.configuration or {})
+            access_token = (
+                decrypt_secret(cfg.get("access_token", ""))
+                or decrypt_secret(cfg.get("api_key", ""))
+                or None
+            )
+            phone_number_id = cfg.get("phone_number_id") or integ.external_account_id or None
+            waba_id = cfg.get("waba_id") or integ.external_account_id or None
+
+        return {
+            "access_token": access_token or settings.whatsapp_access_token,
+            "phone_number_id": phone_number_id or settings.whatsapp_phone_number_id,
+            "waba_id": waba_id or settings.whatsapp_business_account_id,
+        }
+
     async def process_inbound_whatsapp_message(
         self,
         session: AsyncSession,
@@ -971,6 +1025,7 @@ class IntegrationService:
         message_text: str,
         message_id: Optional[str] = None,
         user_id: Optional[uuid.UUID] = None,
+        dispatch_live_reply: bool = False,
     ) -> Dict[str, Any]:
         """Process an inbound WhatsApp message with financial ambiguity guardrails.
 
@@ -1066,11 +1121,28 @@ class IntegrationService:
         else:
             budget_manager.record_success(str(tenant_id), ai_reply.total_tokens, ai_reply.estimated_cost)
             reply_content = ai_reply.content
+
+        outbound_message_id: Optional[str] = None
+        if dispatch_live_reply and sender_phone:
+            try:
+                wa_creds = await self.get_tenant_whatsapp_credentials(session, tenant_id)
+                send_res = await whatsapp_client.send_text_message(
+                    tenant_id=str(tenant_id),
+                    to_phone=sender_phone,
+                    message_body=reply_content,
+                    phone_number_id=wa_creds.get("phone_number_id"),
+                    access_token=wa_creds.get("access_token"),
+                )
+                outbound_message_id = send_res.get("message_id")
+            except Exception as exc:
+                logger.warning("Failed to dispatch outbound WhatsApp auto-reply", error=str(exc))
+
         return {
             "classification": "lead_inquiry",
             "requires_confirmation": False,
             "lead_id": str(lead.id),
             "auto_reply": reply_content,
+            "outbound_message_id": outbound_message_id,
             "model_used": ai_reply.model,
         }
 

@@ -45,7 +45,53 @@ class WhatsAppCloudClient(BaseIntegrationAdapter):
     def __init__(self):
         self.graph_api_url = "https://graph.facebook.com/v21.0"
 
-    async def health_check(self) -> Dict[str, Any]:
+    async def health_check(
+        self,
+        access_token: Optional[str] = None,
+        phone_number_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        effective_token = access_token or settings.whatsapp_access_token
+        target_phone_id = phone_number_id or settings.whatsapp_phone_number_id
+        is_mock_token = (
+            not effective_token
+            or effective_token.startswith("meta_mock_")
+            or effective_token.startswith("meta_sys_token_waba_mock")
+            or effective_token.startswith("oauth_access_")
+        )
+        if settings.whatsapp_provider == "meta" and effective_token and target_phone_id and not is_mock_token:
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    resp = await client.get(
+                        f"{self.graph_api_url}/{target_phone_id}",
+                        params={"fields": "id,display_phone_number,verified_name,quality_rating"},
+                        headers={"Authorization": f"Bearer {effective_token}"},
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        return {
+                            "provider": self.provider_name,
+                            "mode": "meta",
+                            "healthy": True,
+                            "phone_number_id": data.get("id", target_phone_id),
+                            "display_phone_number": data.get("display_phone_number"),
+                            "verified_name": data.get("verified_name"),
+                            "quality_rating": data.get("quality_rating"),
+                        }
+                    return {
+                        "provider": self.provider_name,
+                        "mode": "meta",
+                        "healthy": False,
+                        "error": f"Meta Graph API returned HTTP {resp.status_code}",
+                    }
+            except Exception as exc:
+                logger.warning("WhatsApp live health check failed", error=str(exc))
+                if settings.app_env not in ("development", "test"):
+                    return {
+                        "provider": self.provider_name,
+                        "mode": "meta",
+                        "healthy": False,
+                        "error": str(exc),
+                    }
         return {
             "provider": self.provider_name,
             "mode": settings.whatsapp_provider,
@@ -88,9 +134,18 @@ class WhatsAppCloudClient(BaseIntegrationAdapter):
         to_phone: str,
         message_body: str,
         phone_number_id: Optional[str] = None,
+        access_token: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Send an outbound WhatsApp message via Meta Cloud API or sandbox mock."""
-        if settings.whatsapp_provider == "mock" or not settings.whatsapp_access_token:
+        effective_token = access_token or settings.whatsapp_access_token
+        target_phone_id = phone_number_id or settings.whatsapp_phone_number_id
+        is_mock_token = (
+            not effective_token
+            or effective_token.startswith("meta_mock_")
+            or effective_token.startswith("meta_sys_token_waba_mock")
+            or effective_token.startswith("oauth_access_")
+        )
+        if settings.whatsapp_provider == "mock" or is_mock_token or not target_phone_id:
             msg_id = f"wamid.mock.{uuid.uuid4().hex[:12]}"
             logger.info(
                 "Sent WhatsApp message (sandbox mock)",
@@ -106,11 +161,10 @@ class WhatsAppCloudClient(BaseIntegrationAdapter):
                 "is_mock": True,
             }
 
-        target_phone_id = phone_number_id or settings.whatsapp_phone_number_id
         async with httpx.AsyncClient(timeout=20.0) as client:
             resp = await client.post(
                 f"{self.graph_api_url}/{target_phone_id}/messages",
-                headers={"Authorization": f"Bearer {settings.whatsapp_access_token}"},
+                headers={"Authorization": f"Bearer {effective_token}"},
                 json={
                     "messaging_product": "whatsapp",
                     "to": to_phone,
