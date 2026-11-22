@@ -37,7 +37,9 @@ services:
       - key: SUPABASE_DATABASE_URL
         sync: false
       - key: AI_PROVIDER
-        value: deepseek
+        value: groq
+      - key: GROQ_API_KEY
+        sync: false
       - key: DEEPSEEK_API_KEY
         sync: false
       - key: DEEPSEEK_BASE_URL

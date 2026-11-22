@@ -114,9 +114,22 @@ class Settings(BaseSettings):
     db_pool_size: int = Field(default=5, alias="DB_POOL_SIZE")
     db_max_overflow: int = Field(default=10, alias="DB_MAX_OVERFLOW")
 
-    # AI Provider & Smart Model Routing
-    ai_provider: str = Field(default="deepseek", alias="AI_PROVIDER")  # deepseek | mock | openrouter
+    # AI Provider & Smart Model Routing (Priority 1: Groq Free API -> Priority 2: DeepSeek -> Priority 3: Local Safety Net)
+    ai_provider: str = Field(default="deepseek", alias="AI_PROVIDER")  # groq | deepseek | mock | openrouter
     ai_api_key: Optional[str] = Field(default=None, alias="AI_API_KEY")
+    groq_api_key: Optional[str] = Field(default=None, alias="GROQ_API_KEY")
+    groq_base_url: str = Field(
+        default="https://api.groq.com/openai/v1",
+        alias="GROQ_BASE_URL",
+    )
+    groq_primary_model: str = Field(
+        default="llama-3.3-70b-versatile",
+        alias="GROQ_PRIMARY_MODEL",
+    )
+    groq_fast_model: str = Field(
+        default="llama-3.1-8b-instant",
+        alias="GROQ_FAST_MODEL",
+    )
     gemini_api_key: Optional[str] = Field(default=None, alias="GEMINI_API_KEY")
     gemini_model: str = Field(default="gemini-2.5-flash-lite", alias="GEMINI_MODEL")
     deepseek_api_key: Optional[str] = Field(default=None, alias="DEEPSEEK_API_KEY")

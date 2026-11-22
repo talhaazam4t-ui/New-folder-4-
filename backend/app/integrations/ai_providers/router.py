@@ -41,10 +41,13 @@ class AIExecutionResult(BaseModel):
     raw_response: Optional[Dict[str, Any]] = None
 
 
-# Official DeepSeek Pricing per 1,000 tokens (USD)
+# Official Model Pricing per 1,000 tokens (USD)
+# Groq Free Tier: $0.00 / 1k tokens
 # deepseek-chat: $0.14 / 1M input ($0.00014/1k), $0.28 / 1M output ($0.00028/1k)
 # deepseek-reasoner: $0.55 / 1M input ($0.00055/1k), $2.19 / 1M output ($0.00219/1k)
 MODEL_PRICING = {
+    "llama-3.3-70b-versatile": {"input": 0.0, "output": 0.0},
+    "llama-3.1-8b-instant": {"input": 0.0, "output": 0.0},
     "deepseek-chat": {"input": 0.00014, "output": 0.00028},
     "deepseek-reasoner": {"input": 0.00055, "output": 0.00219},
     "mock": {"input": 0.0, "output": 0.0},
@@ -80,6 +83,75 @@ def select_model_for_task(task_type: str) -> str:
     return settings.ai_default_fast_model
 
 
+async def _call_openai_compatible_chat(
+    base_url: str,
+    api_key: str,
+    model_name: str,
+    task_type: str,
+    clean_system: str,
+    clean_prompt: str,
+    temperature: float,
+    max_tokens: int,
+) -> AIExecutionResult:
+    """Execute a chat completion call against an OpenAI-compatible endpoint (Groq or DeepSeek)."""
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    effective_max_tokens = max(max_tokens, 4096) if "reasoner" in model_name else max_tokens
+    payload: Dict[str, Any] = {
+        "model": model_name,
+        "messages": [
+            {"role": "system", "content": clean_system},
+            {"role": "user", "content": clean_prompt},
+        ],
+        "max_tokens": effective_max_tokens,
+    }
+    if "reasoner" not in model_name:
+        payload["temperature"] = temperature
+
+    async with httpx.AsyncClient(timeout=45.0) as client:
+        response = await client.post(
+            f"{base_url.rstrip('/')}/chat/completions",
+            headers=headers,
+            json=payload,
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        choices = data.get("choices") or []
+        if not choices:
+            raise ValueError(f"AI provider ({model_name}) returned an empty choices array")
+        choice = choices[0]
+        message_obj = choice.get("message") or {}
+        content = (message_obj.get("content") or "").strip()
+        reasoning_content = message_obj.get("reasoning_content")
+        if not content and reasoning_content:
+            content = reasoning_content
+
+        usage = data.get("usage", {})
+        prompt_tokens = usage.get("prompt_tokens", len(clean_prompt) // 4)
+        completion_tokens = usage.get("completion_tokens", len(content) // 4)
+        total_tokens = usage.get("total_tokens", prompt_tokens + completion_tokens)
+
+        pricing = MODEL_PRICING.get(model_name, {"input": 0.0, "output": 0.0})
+        cost = (prompt_tokens / 1000 * pricing["input"]) + (completion_tokens / 1000 * pricing["output"])
+
+        return AIExecutionResult(
+            success=True,
+            model=model_name,
+            task_type=task_type,
+            content=content,
+            reasoning_content=reasoning_content,
+            tokens_prompt=prompt_tokens,
+            tokens_completion=completion_tokens,
+            total_tokens=total_tokens,
+            estimated_cost=round(cost, 6),
+            is_mock=False,
+            raw_response=data,
+        )
+
+
 async def route_and_execute_ai_task(
     task_type: str,
     prompt: str,
@@ -88,111 +160,113 @@ async def route_and_execute_ai_task(
     temperature: float = 0.2,
     max_tokens: int = 1500,
 ) -> AIExecutionResult:
-    """Sanitize, route, and execute an AI task via DeepSeek API (or mock fallback)."""
+    """Sanitize, route, and execute an AI task with 3-tier priority cascade:
+    1. Priority 1 (Primary - Free): Groq API (`GROQ_API_KEY`, `llama-3.3-70b-versatile` -> `llama-3.1-8b-instant`)
+    2. Priority 2 (Paid Fallback): DeepSeek API (`DEEPSEEK_API_KEY`, `deepseek-chat` / `deepseek-reasoner`)
+    3. Priority 3 (Final Safety Net): Built-in resilient local AI engine (`_execute_mock_ai_task`)
+    """
     # 1. Sanitize prompt for data privacy & compliance
     clean_prompt = sanitize_ai_prompt(prompt)
     clean_system = sanitize_ai_prompt(system_instruction or "You are an AI assistant in Talox Tech Stream.")
 
-    # 2. Select target model
+    # 2. Select baseline model tier
     target_model = select_model_for_task(task_type)
-    resolved_api_key = (
+
+    if settings.ai_provider == "mock":
+        return _execute_mock_ai_task(task_type, target_model, clean_prompt)
+
+    # --- PRIORITY 1: Groq API (Free Primary Provider) ---
+    resolved_groq_key = (
+        settings.groq_api_key
+        or os.environ.get("GROQ_API_KEY")
+        or (
+            settings.ai_api_key
+            if (settings.ai_api_key or "").strip().startswith("gsk_")
+            else ""
+        )
+        or (
+            settings.deepseek_api_key
+            if (settings.deepseek_api_key or "").strip().startswith("gsk_")
+            else ""
+        )
+        or ""
+    ).strip()
+
+    is_groq_key_present = bool(
+        resolved_groq_key
+        and resolved_groq_key not in ("mock", "your-groq-api-key")
+    )
+
+    if is_groq_key_present:
+        groq_candidates = [settings.groq_primary_model, settings.groq_fast_model]
+        for groq_model in groq_candidates:
+            try:
+                logger.info(
+                    "Routing AI task to Groq (Priority 1)",
+                    task_type=task_type,
+                    model=groq_model,
+                    tenant_id=tenant_id,
+                )
+                return await _call_openai_compatible_chat(
+                    base_url=settings.groq_base_url,
+                    api_key=resolved_groq_key,
+                    model_name=groq_model,
+                    task_type=task_type,
+                    clean_system=clean_system,
+                    clean_prompt=clean_prompt,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+            except Exception as groq_exc:
+                logger.warning(
+                    "Groq model execution failed; trying next fallback",
+                    model=groq_model,
+                    task_type=task_type,
+                    error=str(groq_exc),
+                )
+
+    # --- PRIORITY 2: DeepSeek API (Paid Fallback Provider) ---
+    resolved_deepseek_key = (
         settings.deepseek_api_key
         or os.environ.get("DEEPSEEK_API_KEY")
         or settings.ai_api_key
         or ""
     ).strip()
 
-    is_live_key_present = bool(
-        resolved_api_key
-        and resolved_api_key not in ("mock", "your-openrouter-api-key", "your-deepseek-api-key")
+    is_deepseek_key_present = bool(
+        resolved_deepseek_key
+        and not resolved_deepseek_key.startswith("gsk_")
+        and resolved_deepseek_key not in ("mock", "your-openrouter-api-key", "your-deepseek-api-key")
     )
 
-    logger.info(
-        "Routing AI task to DeepSeek",
-        task_type=task_type,
-        model=target_model,
-        tenant_id=tenant_id,
-        is_live_key_present=is_live_key_present,
-    )
-
-    # 3. Fallback to mock adapter if no live API key is set or mock mode is requested
-    if settings.ai_provider == "mock" or not is_live_key_present:
-        return _execute_mock_ai_task(task_type, target_model, clean_prompt)
-
-    # 4. Live DeepSeek Execution via HTTP
-    headers = {
-        "Authorization": f"Bearer {resolved_api_key}",
-        "Content-Type": "application/json",
-    }
-
-    # deepseek-reasoner counts chain-of-thought reasoning tokens toward max_tokens
-    effective_max_tokens = max(max_tokens, 4096) if "reasoner" in target_model else max_tokens
-
-    payload: Dict[str, Any] = {
-        "model": target_model,
-        "messages": [
-            {"role": "system", "content": clean_system},
-            {"role": "user", "content": clean_prompt},
-        ],
-        "max_tokens": effective_max_tokens,
-    }
-
-    # deepseek-chat supports temperature customization
-    if target_model == "deepseek-chat":
-        payload["temperature"] = temperature
-
-    try:
-        base_url = settings.deepseek_base_url.rstrip("/")
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post(
-                f"{base_url}/chat/completions",
-                headers=headers,
-                json=payload,
-            )
-            response.raise_for_status()
-            data = response.json()
-
-            choices = data.get("choices") or []
-            if not choices:
-                raise ValueError("DeepSeek API returned an empty choices array")
-            choice = choices[0]
-            message_obj = choice.get("message") or {}
-            content = (message_obj.get("content") or "").strip()
-            reasoning_content = message_obj.get("reasoning_content")
-            if not content and reasoning_content:
-                content = reasoning_content
-
-            usage = data.get("usage", {})
-            prompt_tokens = usage.get("prompt_tokens", len(clean_prompt) // 4)
-            completion_tokens = usage.get("completion_tokens", len(content) // 4)
-            total_tokens = usage.get("total_tokens", prompt_tokens + completion_tokens)
-
-            # Accurate cost estimation from DeepSeek official rates
-            pricing = MODEL_PRICING.get(target_model, MODEL_PRICING["deepseek-chat"])
-            cost = (prompt_tokens / 1000 * pricing["input"]) + (completion_tokens / 1000 * pricing["output"])
-
-            return AIExecutionResult(
-                success=True,
-                model=target_model,
+    if is_deepseek_key_present:
+        try:
+            logger.info(
+                "Routing AI task to DeepSeek (Priority 2 Fallback)",
                 task_type=task_type,
-                content=content,
-                reasoning_content=reasoning_content,
-                tokens_prompt=prompt_tokens,
-                tokens_completion=completion_tokens,
-                total_tokens=total_tokens,
-                estimated_cost=round(cost, 6),
-                is_mock=False,
-                raw_response=data,
+                model=target_model,
+                tenant_id=tenant_id,
+            )
+            return await _call_openai_compatible_chat(
+                base_url=settings.deepseek_base_url,
+                api_key=resolved_deepseek_key,
+                model_name=target_model,
+                task_type=task_type,
+                clean_system=clean_system,
+                clean_prompt=clean_prompt,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+        except Exception as ds_exc:
+            logger.warning(
+                "DeepSeek API fallback failed; routing to Priority 3 local safety net",
+                error=str(ds_exc),
+                task_type=task_type,
+                model=target_model,
             )
 
-    except Exception as exc:
-        logger.warning(
-            "DeepSeek API call failed; falling back to resilient local AI engine",
-            error=str(exc),
-            task_type=task_type,
-            model=target_model,
-        )
-        return _execute_mock_ai_task(task_type, target_model, clean_prompt)
+    # --- PRIORITY 3: Final Safety Net (Resilient Local AI Engine) ---
+    return _execute_mock_ai_task(task_type, target_model, clean_prompt)
 
 
 def _execute_mock_ai_task(task_type: str, model: str, prompt: str) -> AIExecutionResult:
