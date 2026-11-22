@@ -164,9 +164,10 @@ def _clean_api_key_value(raw: Optional[str]) -> str:
     return val
 
 
-def _resolve_groq_api_key() -> str:
-    """Locate a valid Groq API key from settings or any GROQ/gsk_ environment variable."""
+def _resolve_groq_api_keys() -> list[str]:
+    """Locate all valid Groq API keys (prioritizing GROQ_SECOND_API_KEY first, then GROQ_API_KEY and any gsk_ vars)."""
     candidates = [
+        os.environ.get("GROQ_SECOND_API_KEY"),
         settings.groq_api_key,
         os.environ.get("GROQ_API_KEY"),
         os.environ.get("GROQ_KEY"),
@@ -178,13 +179,22 @@ def _resolve_groq_api_key() -> str:
         k_up = k.strip().upper()
         v_clean = _clean_api_key_value(v)
         if ("GROQ" in k_up or "GROK" in k_up or v_clean.startswith("gsk_")) and v_clean:
-            candidates.append(v_clean)
+            if "SECOND" in k_up:
+                candidates.insert(0, v_clean)
+            else:
+                candidates.append(v_clean)
 
+    keys: list[str] = []
     for raw in candidates:
         cleaned = _clean_api_key_value(raw)
-        if cleaned and cleaned not in ("mock", "your-groq-api-key"):
-            return cleaned
-    return ""
+        if (
+            cleaned
+            and cleaned not in ("mock", "your-groq-api-key")
+            and not cleaned.lower().startswith("http")
+            and cleaned not in keys
+        ):
+            keys.append(cleaned)
+    return keys
 
 
 def _resolve_deepseek_api_key() -> str:
@@ -227,46 +237,54 @@ async def route_and_execute_ai_task(
     target_model = select_model_for_task(task_type)
     diag_notes = []
 
-    # --- PRIORITY 1: Groq API (Free Primary Provider) ---
-    resolved_groq_key = _resolve_groq_api_key()
-    if not resolved_groq_key:
+    # --- PRIORITY 1: Groq API (Free Primary Provider — tries GROQ_SECOND_API_KEY first, rotates all Groq keys) ---
+    groq_keys = _resolve_groq_api_keys()
+    if not groq_keys:
         diag_notes.append("no_groq_key")
-    if resolved_groq_key and settings.app_env != "test":
+    if groq_keys and settings.app_env != "test":
         groq_candidates = [settings.groq_primary_model, settings.groq_fast_model]
-        for groq_model in groq_candidates:
-            try:
-                logger.info(
-                    "Routing AI task to Groq (Priority 1)",
-                    task_type=task_type,
-                    model=groq_model,
-                    tenant_id=tenant_id,
-                )
-                return await _call_openai_compatible_chat(
-                    base_url=settings.groq_base_url,
-                    api_key=resolved_groq_key,
-                    model_name=groq_model,
-                    task_type=task_type,
-                    clean_system=clean_system,
-                    clean_prompt=clean_prompt,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                )
-            except httpx.HTTPStatusError as groq_http_exc:
-                diag_notes.append(f"groq_{groq_model}_http_{groq_http_exc.response.status_code}")
-                logger.warning(
-                    "Groq model HTTP error; trying next fallback",
-                    model=groq_model,
-                    status_code=groq_http_exc.response.status_code,
-                    task_type=task_type,
-                )
-            except Exception as groq_exc:
-                diag_notes.append(f"groq_{groq_model}_err_{type(groq_exc).__name__}")
-                logger.warning(
-                    "Groq model execution failed; trying next fallback",
-                    model=groq_model,
-                    task_type=task_type,
-                    error=str(groq_exc),
-                )
+        for key_idx, groq_key in enumerate(groq_keys, start=1):
+            for groq_model in groq_candidates:
+                try:
+                    logger.info(
+                        "Routing AI task to Groq (Priority 1)",
+                        task_type=task_type,
+                        model=groq_model,
+                        key_slot=key_idx,
+                        tenant_id=tenant_id,
+                    )
+                    return await _call_openai_compatible_chat(
+                        base_url=settings.groq_base_url,
+                        api_key=groq_key,
+                        model_name=groq_model,
+                        task_type=task_type,
+                        clean_system=clean_system,
+                        clean_prompt=clean_prompt,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                    )
+                except httpx.HTTPStatusError as groq_http_exc:
+                    code_val = groq_http_exc.response.status_code
+                    diag_notes.append(f"groq_k{key_idx}_{groq_model}_http_{code_val}")
+                    logger.warning(
+                        "Groq model HTTP error; trying next fallback",
+                        model=groq_model,
+                        key_slot=key_idx,
+                        status_code=code_val,
+                        task_type=task_type,
+                    )
+                    if code_val in (401, 403):
+                        # Key is invalid/revoked; skip straight to next Groq key
+                        break
+                except Exception as groq_exc:
+                    diag_notes.append(f"groq_k{key_idx}_{groq_model}_err_{type(groq_exc).__name__}")
+                    logger.warning(
+                        "Groq model execution failed; trying next fallback",
+                        model=groq_model,
+                        key_slot=key_idx,
+                        task_type=task_type,
+                        error=str(groq_exc),
+                    )
 
     # --- PRIORITY 2: DeepSeek API (Paid Fallback Provider) ---
     resolved_deepseek_key = _resolve_deepseek_api_key()
