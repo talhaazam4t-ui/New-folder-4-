@@ -28,9 +28,15 @@ async def get_receptionist_config(
     context: TenantContext = Depends(get_current_tenant),
     session: AsyncSession = Depends(get_db),
 ):
-    """Retrieve the active tenant's Office Receptionist AI Voice configuration & Call Forwarding guide."""
+    """Retrieve the active tenant's Office Receptionist AI Voice configuration & access flags."""
     cfg = await receptionist_service.get_config(session, context.tenant_id)
-    return {"success": True, "data": cfg}
+    access = await receptionist_service.get_tenant_access_state(session, context.tenant_id)
+    return {
+        "success": True,
+        "data": cfg,
+        "payment_approved": access["payment_approved"],
+        "has_subscription": access["has_subscription"],
+    }
 
 
 @router.put("/config")
@@ -39,17 +45,27 @@ async def upsert_receptionist_config(
     context: TenantContext = Depends(get_current_tenant),
     session: AsyncSession = Depends(get_db),
 ):
-    """Create or update the client's Office Receptionist onboarding settings and provision Telnyx + Retell AI."""
+    """Save Office Receptionist settings; provision Telnyx + Retell AI only after payment approval."""
+    is_super = context.role == "super_admin"
     cfg = await receptionist_service.upsert_config(
         session=session,
         tenant_id=context.tenant_id,
         user_id=context.user_id,
         request=request,
+        is_super_admin=is_super,
+    )
+    access = await receptionist_service.get_tenant_access_state(session, context.tenant_id)
+    msg = (
+        "Office Receptionist draft saved. Complete your bank transfer payment on the Dashboard to activate your AI phone line."
+        if cfg.get("provisioning_status") == "awaiting_payment"
+        else "Office Receptionist configuration saved and voice agent synchronized."
     )
     return {
         "success": True,
         "data": cfg,
-        "message": "Office Receptionist configuration saved and voice agent synchronized.",
+        "payment_approved": access["payment_approved"],
+        "has_subscription": access["has_subscription"],
+        "message": msg,
     }
 
 
@@ -59,17 +75,24 @@ async def update_receptionist_faqs(
     context: TenantContext = Depends(get_current_tenant),
     session: AsyncSession = Depends(get_db),
 ):
-    """Update business FAQs, greeting, operating hours, fallback phone, or Cal.com settings and sync to Retell AI."""
+    """Update business FAQs, greeting, operating hours, fallback phone, or Cal.com settings."""
+    is_super = context.role == "super_admin"
     cfg = await receptionist_service.update_faqs(
         session=session,
         tenant_id=context.tenant_id,
         user_id=context.user_id,
         request=request,
+        is_super_admin=is_super,
+    )
+    msg = (
+        "FAQs draft saved. Live AI Voice Agent will sync automatically once payment is approved."
+        if cfg.get("provisioning_status") == "awaiting_payment"
+        else "FAQs and knowledge base updated and synced to your AI Voice Receptionist."
     )
     return {
         "success": True,
         "data": cfg,
-        "message": "FAQs and knowledge base updated and synced to your AI Voice Receptionist.",
+        "message": msg,
     }
 
 
@@ -79,6 +102,24 @@ async def provision_receptionist_agent(
     session: AsyncSession = Depends(get_db),
 ):
     """Provision or re-sync the tenant's Telnyx AI number, Retell AI voice agent, and Cal.com tools."""
+    if context.role != "super_admin":
+        access = await receptionist_service.get_tenant_access_state(session, context.tenant_id)
+        if not access["has_subscription"]:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "SUBSCRIPTION_REQUIRED",
+                    "message": "Please select an Office Receptionist subscription plan first.",
+                },
+            )
+        if not access["payment_approved"]:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "PAYMENT_APPROVAL_REQUIRED",
+                    "message": "Office Receptionist provisioning is locked until Admin approves your bank transfer payment.",
+                },
+            )
     cfg = await receptionist_service.provision_voice_stack(
         session=session,
         tenant_id=context.tenant_id,
@@ -113,6 +154,16 @@ async def simulate_receptionist_call(
     session: AsyncSession = Depends(get_db),
 ):
     """Run a realistic simulated voice call (Cal.com booking, FAQ inquiry, or live human transfer)."""
+    if context.role != "super_admin":
+        access = await receptionist_service.get_tenant_access_state(session, context.tenant_id)
+        if not access["payment_approved"]:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "PAYMENT_APPROVAL_REQUIRED",
+                    "message": "Test call simulation unlocks once your bank transfer payment is approved by Admin.",
+                },
+            )
     call = await receptionist_service.simulate_voice_call(
         session=session,
         tenant_id=context.tenant_id,
@@ -175,8 +226,11 @@ async def retell_call_event_webhook(
     """Receive Retell AI call_started / call_ended / call_analyzed webhooks and persist call logs."""
     body_bytes = await raw_request.body()
     master = await receptionist_service._resolve_master_credentials(session)
-    if master["retell_webhook_secret"] and not retell_ai_adapter.verify_webhook_signature(
-        body_bytes, x_retell_signature, master["retell_webhook_secret"]
+    if (master["retell_webhook_secret"] or master["retell_api_key"]) and not retell_ai_adapter.verify_webhook_signature(
+        body_bytes,
+        x_retell_signature,
+        master["retell_webhook_secret"],
+        fallback_api_key=master["retell_api_key"],
     ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

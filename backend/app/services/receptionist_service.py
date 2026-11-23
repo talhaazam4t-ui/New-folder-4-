@@ -24,6 +24,7 @@ from app.core.security import (
     encrypt_sensitive_config,
 )
 from app.database.models.automation import AuditLog
+from app.database.models.billing import Payment
 from app.database.models.receptionist import (
     PlatformVoiceCredential,
     ReceptionistCallLog,
@@ -44,6 +45,7 @@ from app.schemas.receptionist import (
     ReceptionistFaqsUpdateRequest,
     SimulateVoiceCallRequest,
 )
+from app.services.billing_service import billing_service
 from app.services.notification_service import notification_service
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -100,6 +102,14 @@ class ReceptionistService:
             _get_vault_val("telnyx", "default_country")
             or (settings.telnyx_default_country or "US").strip()
         )
+        telnyx_sip_username = (
+            _get_vault_val("telnyx", "sip_username")
+            or (settings.telnyx_sip_username or os.environ.get("TELNYX_SIP_USERNAME") or "").strip()
+        )
+        telnyx_sip_password = (
+            _get_vault_val("telnyx", "sip_password")
+            or (settings.telnyx_sip_password or os.environ.get("TELNYX_SIP_PASSWORD") or "").strip()
+        )
         calcom_api_key = (
             _get_vault_val("calcom", "api_key")
             or (settings.calcom_api_key or os.environ.get("CALCOM_API_KEY") or "").strip()
@@ -112,6 +122,8 @@ class ReceptionistService:
             "telnyx_connection_id": telnyx_connection_id,
             "telnyx_default_number": telnyx_default_number,
             "telnyx_default_country": telnyx_country or "US",
+            "telnyx_sip_username": telnyx_sip_username,
+            "telnyx_sip_password": telnyx_sip_password,
             "calcom_api_key": calcom_api_key,
             "sources": {
                 "retell": "encrypted_vault"
@@ -265,6 +277,40 @@ class ReceptionistService:
             or "https://teloxtech.stream"
         ).rstrip("/")
 
+    async def get_tenant_access_state(
+        self,
+        session: AsyncSession,
+        tenant_id: uuid.UUID,
+    ) -> Dict[str, bool]:
+        """Determine whether tenant has active Office Receptionist subscription and approved payment."""
+        t_res = await session.execute(select(Tenant).where(Tenant.id == tenant_id))
+        tenant = t_res.scalar_one_or_none()
+        t_settings = dict(tenant.settings or {}) if tenant else {}
+        raw_payment_approved = t_settings.get("payment_approved")
+
+        completed_pay = await session.execute(
+            select(Payment).where(Payment.tenant_id == tenant_id, Payment.status == "completed").limit(1)
+        )
+        has_completed_payment = completed_pay.scalar_one_or_none() is not None
+
+        if raw_payment_approved is True:
+            payment_approved = True
+        elif has_completed_payment:
+            payment_approved = True
+        elif raw_payment_approved is None and tenant is not None and tenant.status == "active":
+            payment_approved = True
+        else:
+            payment_approved = False
+
+        has_subscription = await billing_service.is_service_enabled_for_tenant(
+            session, tenant_id, "office-receptionist"
+        )
+        return {
+            "payment_approved": payment_approved,
+            "has_subscription": has_subscription,
+            "can_provision": bool(payment_approved and has_subscription),
+        }
+
     async def get_config(self, session: AsyncSession, tenant_id: uuid.UUID) -> Optional[Dict[str, Any]]:
         res = await session.execute(
             select(ReceptionistConfig).where(ReceptionistConfig.tenant_id == tenant_id)
@@ -278,8 +324,9 @@ class ReceptionistService:
         tenant_id: uuid.UUID,
         user_id: uuid.UUID,
         request: ReceptionistConfigUpsertRequest,
+        is_super_admin: bool = False,
     ) -> Dict[str, Any]:
-        """Save client's Office Receptionist onboarding details, encrypt Cal.com key, and optionally provision."""
+        """Save client's Office Receptionist onboarding details; provision Telnyx + Retell AI only after payment approval."""
         res = await session.execute(
             select(ReceptionistConfig).where(ReceptionistConfig.tenant_id == tenant_id)
         )
@@ -315,7 +362,7 @@ class ReceptionistService:
                 calcom_event_type_id=(request.calcom_event_type_id or "").strip() or None,
                 encrypted_calcom_api_key=encrypted_cal_key,
                 voice_id=(request.voice_id or "11labs-Adrian").strip(),
-                provisioning_status="pending_onboarding",
+                provisioning_status="awaiting_payment",
             )
             session.add(row)
 
@@ -335,8 +382,22 @@ class ReceptionistService:
         await session.commit()
         await session.refresh(row)
 
-        if request.auto_provision:
+        access = await self.get_tenant_access_state(session, tenant_id)
+        can_provision = is_super_admin or access["can_provision"]
+
+        if request.auto_provision and can_provision:
             return await self.provision_voice_stack(session, tenant_id, user_id)
+
+        if not can_provision:
+            if row.provisioning_status != "active":
+                row.provisioning_status = "awaiting_payment"
+            row.provisioning_notes = (
+                "Draft saved. Complete your bank transfer payment on the Dashboard — once Admin confirms "
+                "payment, your Telnyx AI phone number and Retell AI voice agent will be provisioned automatically."
+            )
+            await session.commit()
+            await session.refresh(row)
+            return self._to_config_dict(row)
 
         if row.telnyx_phone_number:
             row.call_forwarding_guide = generate_call_forwarding_guide(
@@ -354,8 +415,9 @@ class ReceptionistService:
         tenant_id: uuid.UUID,
         user_id: uuid.UUID,
         request: ReceptionistFaqsUpdateRequest,
+        is_super_admin: bool = False,
     ) -> Dict[str, Any]:
-        """Update client's FAQs/Greeting/Fallback/Cal.com settings and immediately re-sync Retell AI agent."""
+        """Update client's FAQs/Greeting/Fallback/Cal.com settings and sync to Retell AI if provisioned."""
         res = await session.execute(
             select(ReceptionistConfig).where(ReceptionistConfig.tenant_id == tenant_id)
         )
@@ -378,7 +440,12 @@ class ReceptionistService:
             row.encrypted_calcom_api_key = encrypt_secret(request.calcom_api_key.strip())
 
         await session.commit()
-        return await self.provision_voice_stack(session, tenant_id, user_id)
+        access = await self.get_tenant_access_state(session, tenant_id)
+        if is_super_admin or access["can_provision"]:
+            return await self.provision_voice_stack(session, tenant_id, user_id)
+
+        await session.refresh(row)
+        return self._to_config_dict(row)
 
     async def provision_voice_stack(
         self,
@@ -413,7 +480,19 @@ class ReceptionistService:
         voice_webhook_url = f"{public_base}/api/v1/receptionist/webhooks/telnyx/voice"
         status_callback_url = f"{public_base}/api/v1/receptionist/webhooks/telnyx/status"
 
-        # 1. Provision or assign Telnyx number + attach TeXML Voice Application
+        other_nums_res = await session.execute(
+            select(ReceptionistConfig.telnyx_phone_number).where(
+                ReceptionistConfig.tenant_id != tenant_id,
+                ReceptionistConfig.telnyx_phone_number.is_not(None),
+            )
+        )
+        assigned_phones = {
+            normalize_e164(num)
+            for num in other_nums_res.scalars().all()
+            if num and normalize_e164(num)
+        }
+
+        # 1. Provision or assign dedicated Telnyx number + attach TeXML Voice Application
         telnyx_res = await telnyx_voice_adapter.provision_or_assign_number(
             tenant_id=str(tenant_id),
             api_key=master["telnyx_api_key"],
@@ -424,6 +503,7 @@ class ReceptionistService:
             country_code=master["telnyx_default_country"],
             existing_phone=row.telnyx_phone_number,
             existing_phone_id=row.telnyx_phone_id,
+            assigned_phones=assigned_phones,
         )
         row.telnyx_phone_number = telnyx_res["phone_number"]
         row.telnyx_phone_id = telnyx_res["phone_id"]
@@ -443,6 +523,8 @@ class ReceptionistService:
             voice_id=row.voice_id,
             existing_llm_id=row.retell_llm_id,
             existing_agent_id=row.retell_agent_id,
+            telnyx_sip_username=master["telnyx_sip_username"],
+            telnyx_sip_password=master["telnyx_sip_password"],
         )
         row.retell_llm_id = retell_res["retell_llm_id"]
         row.retell_agent_id = retell_res["retell_agent_id"]
@@ -489,17 +571,15 @@ class ReceptionistService:
         tenant_id: uuid.UUID,
         date_str: str,
     ) -> Dict[str, Any]:
-        """Retell AI custom function endpoint: check open Cal.com slots for the tenant."""
+        """Retell AI custom function endpoint: check open Cal.com slots strictly using the tenant's own Cal.com credentials."""
         res = await session.execute(
             select(ReceptionistConfig).where(ReceptionistConfig.tenant_id == tenant_id)
         )
         cfg = res.scalar_one_or_none()
-        master = await self._resolve_master_credentials(session)
         client_cal_key = decrypt_secret(cfg.encrypted_calcom_api_key or "") if cfg else ""
-        effective_key = client_cal_key or master["calcom_api_key"]
-        event_type_id = cfg.calcom_event_type_id if cfg else None
+        event_type_id = (cfg.calcom_event_type_id or "").strip() if cfg and cfg.calcom_event_type_id else None
         return await calcom_adapter.check_availability(
-            api_key=effective_key,
+            api_key=client_cal_key,
             event_type_id=event_type_id,
             date_str=date_str,
         )
@@ -510,24 +590,34 @@ class ReceptionistService:
         tenant_id: uuid.UUID,
         request: CalComBookToolRequest,
     ) -> Dict[str, Any]:
-        """Retell AI custom function endpoint: book appointment into Cal.com and log it in call history."""
+        """Retell AI custom function endpoint: book appointment strictly into client's own Cal.com (or tenant-isolated dashboard log)."""
         res = await session.execute(
             select(ReceptionistConfig).where(ReceptionistConfig.tenant_id == tenant_id)
         )
         cfg = res.scalar_one_or_none()
-        master = await self._resolve_master_credentials(session)
         client_cal_key = decrypt_secret(cfg.encrypted_calcom_api_key or "") if cfg else ""
-        effective_key = client_cal_key or master["calcom_api_key"]
-        event_type_id = cfg.calcom_event_type_id if cfg else None
+        event_type_id = (cfg.calcom_event_type_id or "").strip() if cfg and cfg.calcom_event_type_id else None
 
         booking = await calcom_adapter.create_booking(
-            api_key=effective_key,
+            api_key=client_cal_key,
             event_type_id=event_type_id,
             start_iso=request.start_iso,
             attendee_name=request.attendee_name,
             attendee_email=request.attendee_email,
             attendee_phone=request.attendee_phone,
             notes=request.notes,
+        )
+
+        is_live_cal = bool(booking.get("is_live"))
+        summary_msg = (
+            f"Appointment booked for {request.attendee_name} via Cal.com ({request.start_iso})."
+            if is_live_cal
+            else f"Appointment request logged for {request.attendee_name} ({request.start_iso}) — connect personal Cal.com API Key & Event Type ID for calendar sync."
+        )
+        notif_msg = (
+            f"{request.attendee_name} booked an appointment for {request.start_iso} via Cal.com."
+            if is_live_cal
+            else f"{request.attendee_name} requested an appointment for {request.start_iso} (logged in your dashboard)."
         )
 
         # Attach booking to existing call log or create a new call log entry
@@ -561,7 +651,7 @@ class ReceptionistService:
                 booking_status="booked",
                 booked_appointment_at=appt_dt,
                 calcom_booking_uid=booking["booking_uid"],
-                summary=f"Appointment booked for {request.attendee_name} via Cal.com ({request.start_iso}).",
+                summary=summary_msg,
             )
             session.add(call_log)
 
@@ -569,7 +659,7 @@ class ReceptionistService:
             session=session,
             tenant_id=tenant_id,
             title="New Appointment Booked by AI Receptionist",
-            message=f"{request.attendee_name} booked an appointment for {request.start_iso} via Cal.com.",
+            message=notif_msg,
             channel="in_app",
         )
         await session.commit()
@@ -698,6 +788,7 @@ class ReceptionistService:
             greeting=cfg.greeting_message,
             fallback_phone=cfg.fallback_phone_number,
             retell_agent_id=cfg.retell_agent_id,
+            telnyx_phone_number=cfg.telnyx_phone_number,
         )
 
     async def simulate_voice_call(

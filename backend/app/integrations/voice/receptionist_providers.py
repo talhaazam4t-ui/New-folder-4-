@@ -11,7 +11,7 @@ import hmac
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 from xml.sax.saxutils import escape as xml_escape
 
 import httpx
@@ -148,15 +148,31 @@ class TelnyxVoiceAdapter:
         country_code: str = "US",
         existing_phone: Optional[str] = None,
         existing_phone_id: Optional[str] = None,
+        assigned_phones: Optional[Set[str]] = None,
     ) -> Dict[str, Any]:
-        """Provision or assign a Telnyx phone number and attach the TeXML Voice Application."""
+        """Provision or assign a dedicated Telnyx phone number and attach the TeXML Voice Application."""
         key = (api_key or "").strip()
+        blocked = {normalize_e164(p) for p in (assigned_phones or set()) if p}
+
+        def _pick_sandbox_number() -> str:
+            if existing_phone:
+                return normalize_e164(existing_phone)
+            norm_def = normalize_e164(default_number or "")
+            if norm_def and norm_def not in blocked:
+                return norm_def
+            try:
+                candidate = f"+1555{uuid.UUID(tenant_id).int % 10000000:07d}"
+            except Exception:
+                candidate = f"+1555{abs(hash(tenant_id)) % 10000000:07d}"
+            while candidate in blocked:
+                candidate = f"+1555{uuid.uuid4().int % 10000000:07d}"
+            return candidate
 
         if not key or key.startswith("your-"):
-            sandbox_num = existing_phone or default_number or f"+1555{str(abs(hash(tenant_id)))[:7]}"
+            sandbox_num = _pick_sandbox_number()
             return {
                 "success": True,
-                "phone_number": normalize_e164(sandbox_num),
+                "phone_number": sandbox_num,
                 "phone_id": existing_phone_id or f"TN_SANDBOX_{tenant_id[:8]}",
                 "is_live": False,
                 "note": "Telnyx master API key not configured yet; assigned sandbox AI number.",
@@ -198,7 +214,7 @@ class TelnyxVoiceAdapter:
                                 "note": "Existing Telnyx phone number TeXML voice routing synced.",
                             }
 
-                # 2. Check existing owned Telnyx phone numbers (match default_number or unassigned)
+                # 2. Check existing unassigned owned Telnyx phone numbers (never steal another tenant's number)
                 list_resp = await client.get(
                     f"{self.base_url}/phone_numbers",
                     headers=headers,
@@ -206,17 +222,26 @@ class TelnyxVoiceAdapter:
                 )
                 if list_resp.status_code == 200:
                     owned = list_resp.json().get("data") or []
+                    available_owned = [
+                        n
+                        for n in owned
+                        if normalize_e164(n.get("phone_number", "")) not in blocked
+                    ]
                     chosen = None
                     if default_number:
                         norm_def = normalize_e164(default_number)
                         chosen = next(
-                            (n for n in owned if normalize_e164(n.get("phone_number", "")) == norm_def),
+                            (
+                                n
+                                for n in available_owned
+                                if normalize_e164(n.get("phone_number", "")) == norm_def
+                            ),
                             None,
                         )
-                    if not chosen and owned:
+                    if not chosen and available_owned:
                         chosen = next(
-                            (n for n in owned if not n.get("connection_id")),
-                            owned[0],
+                            (n for n in available_owned if not n.get("connection_id")),
+                            None,
                         )
                     if chosen:
                         chosen_id = str(chosen["id"])
@@ -281,10 +306,10 @@ class TelnyxVoiceAdapter:
 
         except Exception as exc:
             logger.warning("Telnyx live provisioning failed; keeping sandbox assignment", error=str(exc))
-            sandbox_num = existing_phone or default_number or f"+1555{str(abs(hash(tenant_id)))[:7]}"
+            sandbox_num = _pick_sandbox_number()
             return {
                 "success": False,
-                "phone_number": normalize_e164(sandbox_num),
+                "phone_number": sandbox_num,
                 "phone_id": existing_phone_id or f"TN_SANDBOX_{tenant_id[:8]}",
                 "is_live": False,
                 "note": f"Telnyx live call failed ({str(exc)[:140]}); sandbox number retained.",
@@ -314,10 +339,16 @@ class TelnyxVoiceAdapter:
         greeting: str,
         fallback_phone: str,
         retell_agent_id: Optional[str] = None,
+        telnyx_phone_number: Optional[str] = None,
     ) -> str:
         """Build Telnyx inbound voice TeXML routing to Retell SIP or fallback live transfer."""
         if retell_agent_id and not retell_agent_id.startswith("agent_sandbox_"):
-            safe_sip = xml_escape(f"sip:{retell_agent_id}@5t4n6j0wnrl.sip.livekit.cloud")
+            norm_phone = normalize_e164(telnyx_phone_number or "")
+            if norm_phone and not norm_phone.startswith("+1555"):
+                sip_target = f"sip:{norm_phone}@sip.retellai.com;transport=tcp"
+            else:
+                sip_target = f"sip:{retell_agent_id}@5t4n6j0wnrl.sip.livekit.cloud"
+            safe_sip = xml_escape(sip_target)
             return (
                 '<?xml version="1.0" encoding="UTF-8"?>'
                 "<Response>"
@@ -435,6 +466,8 @@ class RetellAIAdapter:
         existing_llm_id: Optional[str] = None,
         existing_agent_id: Optional[str] = None,
         base_url: Optional[str] = None,
+        telnyx_sip_username: Optional[str] = None,
+        telnyx_sip_password: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Provision or update a dedicated Retell AI LLM + Voice Agent and bind it to the Telnyx number."""
         key = (api_key or "").strip()
@@ -518,26 +551,36 @@ class RetellAIAdapter:
 
                 # 3. Link Telnyx phone number to Retell AI Agent if live E.164 number is present
                 if telnyx_phone_number and not telnyx_phone_number.startswith("+1555"):
+                    norm_phone = normalize_e164(telnyx_phone_number)
                     try:
-                        await client.patch(
-                            f"{retell_base}/update-phone-number/{normalize_e164(telnyx_phone_number)}",
+                        upd_resp = await client.patch(
+                            f"{retell_base}/update-phone-number/{norm_phone}",
                             headers=headers,
                             json={"inbound_agent_id": agent_id},
                         )
-                    except Exception:
-                        # Attempt import if phone number isn't imported in Retell yet
-                        try:
-                            await client.post(
+                        if upd_resp.status_code not in (200, 201):
+                            import_payload: Dict[str, Any] = {
+                                "phone_number": norm_phone,
+                                "termination_uri": "sip.telnyx.com",
+                                "inbound_agent_id": agent_id,
+                                "nickname": f"{business_name} AI Line",
+                            }
+                            if telnyx_sip_username and telnyx_sip_password:
+                                import_payload["sip_trunk_auth_username"] = telnyx_sip_username
+                                import_payload["sip_trunk_auth_password"] = telnyx_sip_password
+                            imp_resp = await client.post(
                                 f"{retell_base}/import-phone-number",
                                 headers=headers,
-                                json={
-                                    "phone_number": normalize_e164(telnyx_phone_number),
-                                    "inbound_agent_id": agent_id,
-                                    "nickname": f"{business_name} AI Line",
-                                },
+                                json=import_payload,
                             )
-                        except Exception as link_exc:
-                            logger.warning("Retell phone number link skipped", error=str(link_exc))
+                            if imp_resp.status_code not in (200, 201):
+                                logger.warning(
+                                    "Retell import-phone-number returned non-2xx",
+                                    status_code=imp_resp.status_code,
+                                    body=imp_resp.text[:200],
+                                )
+                    except Exception as link_exc:
+                        logger.warning("Retell phone number link skipped", error=str(link_exc))
 
                 return {
                     "success": True,
@@ -561,15 +604,39 @@ class RetellAIAdapter:
         body_bytes: bytes,
         signature_header: Optional[str],
         webhook_secret: Optional[str],
+        fallback_api_key: Optional[str] = None,
     ) -> bool:
-        secret = (webhook_secret or "").strip()
-        if not secret:
+        keys = [k.strip() for k in (webhook_secret, fallback_api_key) if k and k.strip()]
+        if not keys:
             return True
         if not signature_header:
             return False
-        expected = hmac.new(secret.encode("utf-8"), body_bytes, hashlib.sha256).hexdigest()
-        sig_clean = signature_header.split("=")[-1].strip()
-        return hmac.compare_digest(expected, sig_clean)
+        sig_str = signature_header.strip()
+
+        # Official Retell AI signature format: "v=<timestamp>,d=<hmac_sha256(raw_body + timestamp)>"
+        if "v=" in sig_str and "d=" in sig_str:
+            parts: Dict[str, str] = {}
+            for segment in sig_str.split(","):
+                if "=" in segment:
+                    k, v = segment.split("=", 1)
+                    parts[k.strip()] = v.strip()
+            ts = parts.get("v", "")
+            digest = parts.get("d", "")
+            if ts and digest:
+                signed_payload = body_bytes + ts.encode("utf-8")
+                for key in keys:
+                    expected = hmac.new(key.encode("utf-8"), signed_payload, hashlib.sha256).hexdigest()
+                    if hmac.compare_digest(expected, digest):
+                        return True
+                return False
+
+        # Backward-compatible raw hex / "sha256=<hex>" format over body_bytes
+        sig_clean = sig_str.split("=")[-1].strip()
+        for key in keys:
+            expected = hmac.new(key.encode("utf-8"), body_bytes, hashlib.sha256).hexdigest()
+            if hmac.compare_digest(expected, sig_clean):
+                return True
+        return False
 
 
 class CalComAdapter:
@@ -623,6 +690,7 @@ class CalComAdapter:
                             "date": target_dt.strftime("%Y-%m-%d"),
                             "slots": flat_slots[:8],
                             "is_live": True,
+                            "calcom_connected": True,
                         }
             except Exception as exc:
                 logger.warning("Cal.com availability check failed; returning default business slots", error=str(exc))
@@ -638,6 +706,7 @@ class CalComAdapter:
                 f"{day_prefix}T16:00:00Z",
             ],
             "is_live": False,
+            "calcom_connected": False,
         }
 
     async def create_booking(
@@ -651,7 +720,7 @@ class CalComAdapter:
         notes: Optional[str] = None,
         base_url: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Create a real Cal.com booking (or sandbox confirmation when API key is not configured)."""
+        """Create a real isolated Cal.com booking (or log a tenant-isolated in-app request)."""
         key = (api_key or "").strip()
         cal_base = (base_url or settings.calcom_base_url).rstrip("/")
         safe_email = (attendee_email or "").strip() or "caller@teloxtech.stream"
@@ -690,16 +759,22 @@ class CalComAdapter:
                             "start_iso": start_iso,
                             "status": "booked",
                             "is_live": True,
+                            "calcom_connected": True,
                         }
             except Exception as exc:
                 logger.warning("Cal.com live booking failed; recording fallback confirmation", error=str(exc))
 
         return {
             "success": True,
-            "booking_uid": f"cal_sbx_{uuid.uuid4().hex[:10]}",
+            "booking_uid": f"local_req_{uuid.uuid4().hex[:10]}",
             "start_iso": start_iso,
             "status": "booked",
             "is_live": False,
+            "calcom_connected": False,
+            "note": (
+                "Appointment request logged inside your Teloxtech dashboard. "
+                "Connect your personal Cal.com API Key and Event Type ID to sync directly to your Cal.com calendar."
+            ),
         }
 
 

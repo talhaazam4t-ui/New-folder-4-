@@ -15,6 +15,9 @@ import {
   AlertCircle,
   RefreshCw,
   XCircle,
+  Building2,
+  Copy,
+  Check,
 } from "lucide-react";
 
 interface ServiceItem {
@@ -71,6 +74,21 @@ export default function BillingPage() {
   const [cancelingSubId, setCancelingSubId] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [actionError, setActionError] = useState<boolean>(false);
+  const [copiedField, setCopiedField] = useState<string | null>(null);
+  const [bankDetails, setBankDetails] = useState({
+    bank_name: "Faysal Bank",
+    account_name: "Talha Azam",
+    account_number: "3398701000005292",
+    iban: "PK97FAYS3398701000005292",
+  });
+
+  const handleCopyBankField = (label: string, val: string) => {
+    if (navigator?.clipboard) {
+      navigator.clipboard.writeText(val);
+      setCopiedField(label);
+      setTimeout(() => setCopiedField(null), 2000);
+    }
+  };
 
   const fetchBillingData = async () => {
     const tenant = getActiveTenant();
@@ -78,11 +96,15 @@ export default function BillingPage() {
     setFetchError(null);
     setLoading(true);
     try {
-      const [servicesRes, subsRes, invoicesRes] = await Promise.all([
+      const [servicesRes, subsRes, invoicesRes, bankRes] = await Promise.all([
         apiRequest<ServiceItem[]>(`/api/v1/services?ensure_seeded=true${indParam}`),
         apiRequest<SubscriptionItem[]>("/api/v1/services/subscriptions"),
         apiRequest<InvoiceItem[]>("/api/v1/payments/invoices"),
+        apiRequest<any>("/api/v1/payments/bank-details"),
       ]);
+      if (bankRes?.data?.account_number) {
+        setBankDetails(bankRes.data);
+      }
 
       const errors: string[] = [];
       if (servicesRes && !Array.isArray(servicesRes) && servicesRes.error) {
@@ -455,6 +477,75 @@ export default function BillingPage() {
                   </div>
                 );
               })}
+            </div>
+          </div>
+
+          {/* Direct Bank Transfer Instructions Banner */}
+          <div className="rounded-xl border border-emerald-500/30 bg-slate-900 p-5 text-white shadow-sm space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-500 text-slate-950 font-bold">
+                  <Building2 className="h-5 w-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-white">
+                    Direct Bank Transfer Instructions ({bankDetails.bank_name})
+                  </h3>
+                  <p className="text-xs text-slate-400">
+                    Transfer your invoice amount below, then submit your Transaction Reference on the
+                    Dashboard for instant Admin approval.
+                  </p>
+                </div>
+              </div>
+              <a
+                href="/dashboard"
+                className="shrink-0 inline-flex items-center gap-1.5 rounded-lg bg-emerald-500 px-3.5 py-2 text-xs font-bold text-slate-950 hover:bg-emerald-400 transition"
+              >
+                <span>Submit Transfer Reference on Dashboard →</span>
+              </a>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+              <div className="rounded-lg border border-slate-800 bg-slate-950/70 p-3">
+                <p className="text-[10px] uppercase text-slate-400">Bank Name</p>
+                <p className="font-bold text-white mt-0.5">{bankDetails.bank_name}</p>
+              </div>
+              <div className="rounded-lg border border-slate-800 bg-slate-950/70 p-3">
+                <p className="text-[10px] uppercase text-slate-400">Account Title</p>
+                <p className="font-bold text-white mt-0.5">{bankDetails.account_name}</p>
+              </div>
+              <div className="rounded-lg border border-slate-800 bg-slate-950/70 p-3 flex items-center justify-between gap-2">
+                <div>
+                  <p className="text-[10px] uppercase text-slate-400">Account Number</p>
+                  <p className="font-mono font-bold text-emerald-400 mt-0.5">
+                    {bankDetails.account_number}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleCopyBankField("acc", bankDetails.account_number)}
+                  className="rounded border border-slate-700 bg-slate-800 p-1.5 text-slate-300 hover:text-emerald-400"
+                  title="Copy Account Number"
+                >
+                  {copiedField === "acc" ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
+                </button>
+              </div>
+              <div className="rounded-lg border border-slate-800 bg-slate-950/70 p-3 flex items-center justify-between gap-2">
+                <div>
+                  <p className="text-[10px] uppercase text-slate-400">IBAN</p>
+                  <p className="font-mono font-bold text-emerald-400 mt-0.5">
+                    {bankDetails.iban}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleCopyBankField("iban", bankDetails.iban)}
+                  className="rounded border border-slate-700 bg-slate-800 p-1.5 text-slate-300 hover:text-emerald-400"
+                  title="Copy IBAN"
+                >
+                  {copiedField === "iban" ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
+                </button>
+              </div>
             </div>
           </div>
 

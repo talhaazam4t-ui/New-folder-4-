@@ -25,6 +25,7 @@ from app.automation.budget_manager import budget_manager
 from app.automation.retry import dead_letter_queue
 from app.config import settings
 from app.core.exceptions import PermissionDeniedError, ResourceNotFoundError
+from app.core.logging import logger
 from app.core.security import (
     encrypt_secret,
     encrypt_sensitive_config,
@@ -583,13 +584,40 @@ async def admin_approve_tenant_payment(
     admin_user: Profile = Depends(verify_platform_admin),
     session: AsyncSession = Depends(get_db),
 ):
-    """Owner verification and approval of client bank transfer, activating AI services."""
-    return await billing_service.approve_tenant_payment(
+    """Owner verification and approval of client bank transfer, activating AI services and provisioning pending Office Receptionist."""
+    result = await billing_service.approve_tenant_payment(
         session=session,
         tenant_id=tenant_id,
         admin_user_id=admin_user.id,
         notes=request.notes,
     )
+    recep_res = await session.execute(
+        select(ReceptionistConfig).where(ReceptionistConfig.tenant_id == tenant_id)
+    )
+    recep_cfg = recep_res.scalar_one_or_none()
+    has_recep_sub = await billing_service.is_service_enabled_for_tenant(
+        session, tenant_id, "office-receptionist"
+    )
+    receptionist_provisioned = False
+    if recep_cfg and (
+        recep_cfg.provisioning_status in ("awaiting_payment", "pending_onboarding")
+        or (has_recep_sub and not recep_cfg.telnyx_phone_number)
+    ):
+        try:
+            await receptionist_service.provision_voice_stack(
+                session=session,
+                tenant_id=tenant_id,
+                actor_id=admin_user.id,
+            )
+            receptionist_provisioned = True
+        except Exception as exc:
+            logger.warning(
+                "Auto-provisioning Office Receptionist after payment approval failed",
+                tenant_id=str(tenant_id),
+                error=str(exc),
+            )
+    result["receptionist_provisioned"] = receptionist_provisioned
+    return result
 
 
 @router.post("/tenants/{tenant_id}/reset-circuit")

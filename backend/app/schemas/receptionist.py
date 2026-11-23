@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class ReceptionistConfigUpsertRequest(BaseModel):
@@ -45,6 +45,17 @@ class SimulateVoiceCallRequest(BaseModel):
 class CalComAvailabilityToolRequest(BaseModel):
     date: str = Field(default="2026-11-25")
 
+    @model_validator(mode="before")
+    @classmethod
+    def _unwrap_retell_args(cls, data: Any) -> Any:
+        if isinstance(data, dict) and isinstance(data.get("args"), dict):
+            merged: Dict[str, Any] = {
+                k: v for k, v in data.items() if k not in ("args", "call", "name")
+            }
+            merged.update(data["args"])
+            return merged
+        return data
+
 
 class CalComBookToolRequest(BaseModel):
     start_iso: str
@@ -53,6 +64,21 @@ class CalComBookToolRequest(BaseModel):
     attendee_phone: Optional[str] = None
     notes: Optional[str] = None
     call_id: Optional[str] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _unwrap_retell_args(cls, data: Any) -> Any:
+        if isinstance(data, dict) and isinstance(data.get("args"), dict):
+            merged: Dict[str, Any] = {
+                k: v for k, v in data.items() if k not in ("args", "call", "name")
+            }
+            merged.update(data["args"])
+            if not merged.get("call_id") and isinstance(data.get("call"), dict):
+                retell_call_id = data["call"].get("call_id")
+                if retell_call_id:
+                    merged["call_id"] = str(retell_call_id)
+            return merged
+        return data
 
 
 class AdminVoiceCredentialsUpdateRequest(BaseModel):

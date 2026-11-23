@@ -449,10 +449,15 @@ DEFAULT_SERVICES = [
                 "E-Commerce",
             ],
             "required_integrations": [],
+            "onboarding_requirements": [
+                "Enter Business Name, Operating Hours, Greeting & FAQs",
+                "Provide Personal / Fallback Phone Number for live human transfers",
+                "Connect your free Cal.com API Key & Event Type ID for isolated live appointment booking",
+            ],
             "features": [
-                "Dedicated Telnyx AI phone number with automatic TeXML Voice Webhook & Call Forwarding guide",
+                "Dedicated Telnyx AI phone number with automatic Voice Routing & Call Forwarding guide",
                 "Custom Retell AI voice agent trained on your business hours, greeting, and FAQs",
-                "Real-time Cal.com availability lookup & live call appointment booking",
+                "Isolated Cal.com availability lookup & live call appointment booking",
                 "Instant live call transfer to your personal/fallback number for emergencies or human requests",
                 "Full call logs, duration, AI call summaries, and booked appointments dashboard",
             ],

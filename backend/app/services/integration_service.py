@@ -30,6 +30,7 @@ from app.core.security import (
     mask_sensitive_config,
 )
 from app.database.models.automation import AuditLog, Integration
+from app.database.models.receptionist import ReceptionistConfig
 from app.database.models.service import Service, ServiceSubscription
 from app.database.models.tenant import Tenant
 from app.integrations.ai_providers.router import route_and_execute_ai_task
@@ -519,10 +520,17 @@ class IntegrationService:
                 "external_account_id": existing.external_account_id if existing else None,
             })
 
-        all_connected = (
-            len(required_integrations_status) > 0
-            and all(item["status"] == "connected" for item in required_integrations_status)
-        )
+        if len(required_integrations_status) > 0:
+            all_connected = all(
+                item["status"] == "connected" for item in required_integrations_status
+            )
+        elif len(purchased_services) > 0:
+            recep_res = await session.execute(
+                select(ReceptionistConfig.id).where(ReceptionistConfig.tenant_id == tenant_id).limit(1)
+            )
+            all_connected = recep_res.scalar_one_or_none() is not None
+        else:
+            all_connected = False
         t_settings = dict(tenant.settings or {})
         owner_approved = bool(t_settings.get("automation_approved_by_owner", True))
         payment_approved = bool(t_settings.get("payment_approved", tenant.status == "active"))

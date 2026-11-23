@@ -112,6 +112,7 @@ export default function OnboardingPage() {
   const [recepCalcomApiKey, setRecepCalcomApiKey] = useState("");
   const [recepSaving, setRecepSaving] = useState(false);
   const [recepConfig, setRecepConfig] = useState<any>(null);
+  const [recepPaymentApproved, setRecepPaymentApproved] = useState<boolean>(false);
   const [copiedCode, setCopiedCode] = useState<string | null>(null);
 
   // Step 3: Required Integrations
@@ -232,6 +233,7 @@ export default function OnboardingPage() {
         );
         if (hasRecep) {
           const recepRes = await apiRequest("/api/v1/receptionist/config");
+          setRecepPaymentApproved(Boolean(recepRes.payment_approved));
           if (recepRes.success && recepRes.data) {
             const rc = recepRes.data;
             setRecepConfig(rc);
@@ -351,6 +353,19 @@ export default function OnboardingPage() {
 
     checkOAuthCallback();
   }, [loadCatalogAndExistingState]);
+
+  useEffect(() => {
+    if (step === 3 && hasOfficeReceptionist) {
+      apiRequest("/api/v1/receptionist/config").then((recepRes) => {
+        if (typeof recepRes.payment_approved === "boolean") {
+          setRecepPaymentApproved(recepRes.payment_approved);
+        }
+        if (recepRes.success && recepRes.data) {
+          setRecepConfig((prev: any) => prev || recepRes.data);
+        }
+      });
+    }
+  }, [step, hasOfficeReceptionist]);
 
   const handleNameChange = (val: string) => {
     setName(val);
@@ -670,11 +685,20 @@ export default function OnboardingPage() {
         setRecepConfig(res.data);
         setRecepBusinessName(res.data.business_name || effectiveBizName);
         setRecepCalcomApiKey("");
-        setStatusMessage(
-          `Office Receptionist provisioned! Your assigned Telnyx AI number is ${
-            res.data.telnyx_phone_number || "ready"
-          }. Follow the Call Forwarding guide below to go live.`
-        );
+        if (typeof res.payment_approved === "boolean") {
+          setRecepPaymentApproved(res.payment_approved);
+        }
+        if (res.data.provisioning_status === "awaiting_payment") {
+          setStatusMessage(
+            "Office Receptionist draft saved! Complete your bank transfer on the Dashboard — once Admin confirms payment, your Telnyx AI number and Retell AI voice agent will activate automatically."
+          );
+        } else {
+          setStatusMessage(
+            `Office Receptionist provisioned! Your assigned Telnyx AI number is ${
+              res.data.telnyx_phone_number || "ready"
+            }. Follow the Call Forwarding guide below to go live.`
+          );
+        }
       } else {
         setError(
           res.error?.message || res.message || "Failed to provision Office Receptionist AI Agent."
@@ -1153,13 +1177,19 @@ export default function OnboardingPage() {
               <div className="flex items-center gap-2">
                 <span
                   className={`rounded-full px-3 py-1 text-xs font-bold ${
-                    automationActive || Boolean(recepConfig?.telnyx_phone_number)
+                    automationActive ||
+                    (Boolean(recepConfig?.telnyx_phone_number) &&
+                      recepConfig?.provisioning_status !== "awaiting_payment")
                       ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
                       : "bg-amber-500/20 text-amber-300 border border-amber-500/30"
                   }`}
                 >
-                  {automationActive || Boolean(recepConfig?.telnyx_phone_number)
+                  {automationActive ||
+                  (Boolean(recepConfig?.telnyx_phone_number) &&
+                    recepConfig?.provisioning_status !== "awaiting_payment")
                     ? "Setup Active & Ready"
+                    : recepConfig?.provisioning_status === "awaiting_payment"
+                    ? "Draft Saved — Payment Pending"
                     : "Pending Setup"}
                 </span>
               </div>
@@ -1178,8 +1208,8 @@ export default function OnboardingPage() {
                         Office Receptionist — AI Voice Agent Onboarding
                       </h4>
                       <p className="text-[11px] text-slate-400">
-                        Automatically provisions your Telnyx phone number, Retell AI voice agent,
-                        Cal.com appointment tools, and live emergency transfer routing.
+                        Configure your Voice Receptionist details below. Once payment is confirmed by
+                        Admin, we automatically provision your Telnyx AI number and Retell AI agent.
                       </p>
                     </div>
                   </div>
@@ -1189,6 +1219,28 @@ export default function OnboardingPage() {
                     </span>
                   )}
                 </div>
+
+                {!recepPaymentApproved && (
+                  <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3.5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 text-xs">
+                    <div className="space-y-0.5">
+                      <p className="font-bold text-amber-300">
+                        Payment Required to Activate Live Voice Line
+                      </p>
+                      <p className="text-amber-100/80 leading-relaxed">
+                        Save your Office Receptionist setup draft now, then submit your bank transfer
+                        reference on the Dashboard. Once Admin approves payment, your live Telnyx AI
+                        number and Retell AI agent activate automatically.
+                      </p>
+                    </div>
+                    <a
+                      href="/dashboard"
+                      className="shrink-0 inline-flex items-center gap-1.5 rounded-lg bg-amber-500 px-3 py-2 text-xs font-bold text-slate-950 hover:bg-amber-400 transition"
+                    >
+                      <span>Open Payment Instructions</span>
+                      <ArrowRight className="h-3.5 w-3.5" />
+                    </a>
+                  </div>
+                )}
 
                 <form onSubmit={handleSaveReceptionistOnboarding} className="space-y-4">
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
@@ -1268,8 +1320,14 @@ export default function OnboardingPage() {
                   <div className="rounded-xl border border-slate-800 bg-slate-950/80 p-4 space-y-3">
                     <div className="flex items-center gap-2 text-xs font-bold text-emerald-300">
                       <CalendarCheck2 className="h-4 w-4 text-emerald-400" />
-                      <span>Cal.com Automated Appointment Booking</span>
+                      <span>Cal.com Automated Appointment Booking (Private to Your Account)</span>
                     </div>
+                    <p className="text-[11px] text-slate-400 leading-relaxed">
+                      For live automated Cal.com bookings (100% private to your calendar), create a
+                      free Cal.com account and enter both your Event Type ID and API Key. If left
+                      blank, appointments are logged inside your Teloxtech dashboard for manual
+                      follow-up.
+                    </p>
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                       <div>
                         <label className="block text-[11px] text-slate-400 mb-1">
@@ -1285,7 +1343,7 @@ export default function OnboardingPage() {
                       </div>
                       <div>
                         <label className="block text-[11px] text-slate-400 mb-1">
-                          Event Type ID (optional)
+                          Event Type ID (for live sync)
                         </label>
                         <input
                           type="text"
@@ -1306,7 +1364,7 @@ export default function OnboardingPage() {
                           placeholder={
                             recepConfig?.calcom_api_key_configured
                               ? "•••••••• (saved)"
-                              : "cal_live_... (optional)"
+                              : "cal_live_... (for live sync)"
                           }
                           className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs font-mono text-white placeholder-slate-500 focus:border-emerald-500 focus:outline-none"
                         />
@@ -1322,7 +1380,11 @@ export default function OnboardingPage() {
                     <PhoneCall className="h-4 w-4" />
                     <span>
                       {recepSaving
-                        ? "Provisioning Telnyx Number & Retell AI Voice Agent..."
+                        ? recepPaymentApproved
+                          ? "Provisioning Telnyx Number & Retell AI Voice Agent..."
+                          : "Saving Office Receptionist Draft..."
+                        : !recepPaymentApproved
+                        ? "Save Office Receptionist Draft (Activates After Payment)"
                         : recepConfig
                         ? "Update Office Receptionist & Refresh Call Forwarding Guide"
                         : "Provision AI Receptionist & Generate Call Forwarding Guide"}

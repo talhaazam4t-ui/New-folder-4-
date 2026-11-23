@@ -96,6 +96,8 @@ export default function OfficeReceptionistPage() {
   const [provisioning, setProvisioning] = useState(false);
   const [simulating, setSimulating] = useState(false);
   const [config, setConfig] = useState<ReceptionistConfig | null>(null);
+  const [paymentApproved, setPaymentApproved] = useState<boolean>(false);
+  const [hasSubscription, setHasSubscription] = useState<boolean>(false);
   const [calls, setCalls] = useState<ReceptionistCallLog[]>([]);
   const [bookedAppointments, setBookedAppointments] = useState<ReceptionistCallLog[]>([]);
   const [summary, setSummary] = useState<CallsSummary>({
@@ -168,6 +170,8 @@ export default function OfficeReceptionistPage() {
       apiRequest("/api/v1/receptionist/calls?limit=100"),
     ]);
 
+    setPaymentApproved(Boolean(cfgRes.payment_approved));
+    setHasSubscription(Boolean(cfgRes.has_subscription));
     if (cfgRes.success && cfgRes.data) {
       setConfig(cfgRes.data);
       hydrateFormFromConfig(cfgRes.data, currentTenant?.name);
@@ -252,8 +256,16 @@ export default function OfficeReceptionistPage() {
       if (res.success && res.data) {
         setConfig(res.data);
         hydrateFormFromConfig(res.data);
+        if (typeof res.payment_approved === "boolean") {
+          setPaymentApproved(res.payment_approved);
+        }
+        if (typeof res.has_subscription === "boolean") {
+          setHasSubscription(res.has_subscription);
+        }
         setStatusMessage(
-          "Office Receptionist settings, FAQs, and Cal.com tools saved and synced to your AI Voice Agent!"
+          res.data.provisioning_status === "awaiting_payment"
+            ? "Office Receptionist draft saved! Complete your bank transfer payment on the Dashboard to unlock your live Telnyx AI phone number and Retell AI voice agent."
+            : "Office Receptionist settings, FAQs, and Cal.com tools saved and synced to your AI Voice Agent!"
         );
       } else {
         setErrorMessage(
@@ -356,6 +368,11 @@ export default function OfficeReceptionistPage() {
           label: "Live AI Voice Receptionist",
           cls: "bg-emerald-50 text-emerald-700 border-emerald-200",
         }
+      : config?.provisioning_status === "awaiting_payment"
+      ? {
+          label: "Draft Saved — Awaiting Payment Approval",
+          cls: "bg-amber-50 text-amber-700 border-amber-200",
+        }
       : config?.provisioning_status === "sandbox_ready"
       ? {
           label: "Sandbox Ready (Awaiting Master Voice Keys)",
@@ -398,7 +415,14 @@ export default function OfficeReceptionistPage() {
               <button
                 type="button"
                 onClick={handleProvisionVoiceStack}
-                disabled={provisioning}
+                disabled={provisioning || !paymentApproved || !hasSubscription}
+                title={
+                  !paymentApproved
+                    ? "Unlocks after Admin approves your bank transfer payment"
+                    : !hasSubscription
+                    ? "Subscribe to Office Receptionist in Onboarding or Billing first"
+                    : "Provision or re-sync Telnyx + Retell AI voice agent"
+                }
                 className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-semibold text-white shadow-sm hover:bg-emerald-500 disabled:opacity-50 transition"
               >
                 <RefreshCw className={`h-3.5 w-3.5 ${provisioning ? "animate-spin" : ""}`} />
@@ -425,6 +449,27 @@ export default function OfficeReceptionistPage() {
             <div className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
               <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" />
               <span>{statusMessage}</span>
+            </div>
+          )}
+
+          {!loading && !paymentApproved && (
+            <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+              <div className="space-y-1">
+                <p className="text-sm font-bold text-amber-900">
+                  Payment Approval Required to Activate Live Voice Line
+                </p>
+                <p className="text-xs text-amber-800 leading-relaxed">
+                  Save or edit your Office Receptionist draft below anytime. Live Telnyx number
+                  provisioning, Retell AI voice calls, and test simulations unlock automatically once
+                  Admin confirms your bank transfer payment.
+                </p>
+              </div>
+              <a
+                href="/dashboard"
+                className="shrink-0 inline-flex items-center justify-center rounded-lg bg-amber-600 px-4 py-2 text-xs font-bold text-white shadow-sm hover:bg-amber-500 transition"
+              >
+                View Bank Details &amp; Submit Payment →
+              </a>
             </div>
           )}
 
@@ -725,7 +770,7 @@ export default function OfficeReceptionistPage() {
                   <div className="flex items-center justify-between">
                     <span className="font-bold text-slate-800 flex items-center gap-1.5">
                       <CalendarCheck2 className="h-3.5 w-3.5 text-emerald-600" />
-                      Cal.com Live Appointment Booking
+                      Cal.com Live Appointment Booking (Private Account)
                     </span>
                     {config?.calcom_api_key_configured && (
                       <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-800">
@@ -733,6 +778,12 @@ export default function OfficeReceptionistPage() {
                       </span>
                     )}
                   </div>
+                  <p className="text-[11px] text-slate-600 leading-relaxed">
+                    For live automated Cal.com bookings (100% private to your calendar), create a
+                    free Cal.com account and enter both your Event Type ID and API Key. If left
+                    blank, appointments are logged inside your Teloxtech dashboard for manual
+                    follow-up.
+                  </p>
 
                   <div>
                     <label className="block text-[11px] font-medium text-slate-600 mb-1">
@@ -750,7 +801,7 @@ export default function OfficeReceptionistPage() {
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                     <div>
                       <label className="block text-[11px] font-medium text-slate-600 mb-1">
-                        Event Type ID (optional)
+                        Event Type ID (for live sync)
                       </label>
                       <input
                         type="text"
@@ -787,6 +838,8 @@ export default function OfficeReceptionistPage() {
                   >
                     {saving
                       ? "Saving & Syncing..."
+                      : !paymentApproved
+                      ? "Save Receptionist Draft (Unlocks After Payment)"
                       : config
                       ? "Save Settings & Re-Sync AI Agent"
                       : "Activate & Provision Office Receptionist"}
@@ -848,7 +901,12 @@ export default function OfficeReceptionistPage() {
                   </select>
                   <button
                     type="button"
-                    disabled={simulating || !config}
+                    disabled={simulating || !config || !paymentApproved}
+                    title={
+                      !paymentApproved
+                        ? "Test call simulator unlocks after payment approval"
+                        : "Run test call simulation"
+                    }
                     onClick={handleSimulateCall}
                     className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-slate-900 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-50 transition"
                   >

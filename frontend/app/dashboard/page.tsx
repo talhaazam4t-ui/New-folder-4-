@@ -26,6 +26,7 @@ import {
   Send,
   Clock,
   RefreshCw,
+  PhoneCall,
 } from "lucide-react";
 
 interface OverviewPayload {
@@ -258,6 +259,7 @@ export default function ClientDashboardPage() {
     showAllByDefault ||
     enabledModules.includes("financial_ledger") ||
     enabledModules.includes("executive_analytics_compliance");
+  const showReceptionistModule = enabledModules.includes("office_receptionist");
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col">
@@ -829,6 +831,44 @@ export default function ClientDashboardPage() {
                           </div>
                         ))
                       )}
+                    </div>
+                  </div>
+                )}
+
+                {showReceptionistModule && (
+                  <div className="rounded-xl border border-emerald-200 bg-gradient-to-br from-emerald-50/70 via-white to-white p-6 shadow-sm flex flex-col justify-between space-y-4">
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-600 text-white">
+                            <PhoneCall className="h-4 w-4" />
+                          </div>
+                          <div>
+                            <h3 className="text-base font-bold text-slate-900">
+                              Office Receptionist (AI Voice Agent)
+                            </h3>
+                            <p className="text-xs text-slate-500">
+                              24/7 Retell AI + Telnyx Voice + Cal.com Booking &amp; Call Logs
+                            </p>
+                          </div>
+                        </div>
+                        <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 text-[10px] font-bold uppercase text-emerald-800">
+                          Active
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-600 leading-relaxed">
+                        View your assigned Telnyx AI phone number, Call Forwarding dial codes, live
+                        call transcripts, FAQs, and booked appointments in the Receptionist console.
+                      </p>
+                    </div>
+                    <div>
+                      <a
+                        href="/receptionist"
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-500 transition"
+                      >
+                        <PhoneCall className="h-3.5 w-3.5" />
+                        <span>Open AI Voice Receptionist Console →</span>
+                      </a>
                     </div>
                   </div>
                 )}

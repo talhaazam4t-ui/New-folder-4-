@@ -198,6 +198,8 @@ class Settings(BaseSettings):
     telnyx_connection_id: Optional[str] = Field(default=None, alias="TELNYX_CONNECTION_ID")
     telnyx_default_number: Optional[str] = Field(default=None, alias="TELNYX_DEFAULT_NUMBER")
     telnyx_default_country: str = Field(default="US", alias="TELNYX_DEFAULT_COUNTRY")
+    telnyx_sip_username: Optional[str] = Field(default=None, alias="TELNYX_SIP_USERNAME")
+    telnyx_sip_password: Optional[str] = Field(default=None, alias="TELNYX_SIP_PASSWORD")
     calcom_api_key: Optional[str] = Field(default=None, alias="CALCOM_API_KEY")
     calcom_base_url: str = Field(default="https://api.cal.com/v2", alias="CALCOM_BASE_URL")
 
