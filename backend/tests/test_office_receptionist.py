@@ -308,6 +308,15 @@ async def test_office_receptionist_full_lifecycle_and_security():
         assert b_calls.status_code == 200
         assert b_calls.json()["data"]["summary"]["total_calls"] == 0
 
+        # Verify Admin /operations endpoint returns arranged 7 services + platform_keys_status cleanly
+        ops_res = await client.get("/api/v1/admin/operations", headers=admin_headers)
+        assert ops_res.status_code == 200, ops_res.text
+        ops_data = ops_res.json()["data"]
+        assert len(ops_data["services"]) == 7
+        assert ops_data["services"][0]["tier_number"] == 1
+        assert len(ops_data["platform_keys_status"]) == 7
+        assert ops_data["services_performance"]["total_services"] == 7
+
         # Spoofing Client A's X-Tenant-ID with Client B's JWT is blocked with 403
         spoof = await client.get(
             "/api/v1/receptionist/calls",
