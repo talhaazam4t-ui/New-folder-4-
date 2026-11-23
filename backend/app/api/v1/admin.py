@@ -13,6 +13,7 @@ Provides complete operational control over the managed AI SaaS platform:
    backend errors, execution logs, audit logs, and failed integration alerts.
 """
 
+import os
 import re
 import uuid
 from datetime import datetime, timezone
@@ -33,8 +34,10 @@ from app.core.security import (
 from app.database.models.agent import AgentExecution, AgentRegistry, AgentTask
 from app.database.models.automation import Approval, AuditLog, Integration, UsageRecord
 from app.database.models.billing import Payment
+from app.database.models.business import BusinessRecord
+from app.database.models.finance import FinancialTransaction
 from app.database.models.marketing import Lead, MarketingCampaign
-from app.database.models.receptionist import ReceptionistConfig
+from app.database.models.receptionist import ReceptionistCallLog, ReceptionistConfig
 from app.database.models.service import Service, ServiceSubscription
 from app.database.models.tenant import Profile, Tenant, TenantMember
 from app.database.supabase import get_db
@@ -754,24 +757,242 @@ async def get_owner_operations_control_center(
         1 for lead in leads_rows if lead.status in ("qualified", "converted") or float(lead.qualification_score or 0) >= 70.0
     )
 
+    # Real platform-wide master credentials & keys readiness (boolean/masked ONLY — zero plaintext secrets)
+    voice_creds_status = await receptionist_service.get_admin_voice_credentials_status(session)
+    groq_ok = bool(
+        (settings.groq_second_api_key or os.environ.get("GROQ_SECOND_API_KEY") or "").strip()
+        or (settings.groq_api_key or os.environ.get("GROQ_API_KEY") or "").strip()
+    )
+    gemini_ok = bool((settings.gemini_api_key or os.environ.get("GEMINI_API_KEY") or "").strip())
+    deepseek_ok = bool((settings.deepseek_api_key or os.environ.get("DEEPSEEK_API_KEY") or "").strip())
+    supabase_ok = bool(
+        (settings.supabase_url or os.environ.get("SUPABASE_URL") or "").strip()
+        and (settings.supabase_service_role_key or os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    )
+    whatsapp_ok = bool(
+        (settings.whatsapp_access_token or os.environ.get("WHATSAPP_ACCESS_TOKEN") or "").strip()
+        and (settings.whatsapp_phone_number_id or os.environ.get("WHATSAPP_PHONE_NUMBER_ID") or "").strip()
+    )
+    google_oauth_ok = bool(
+        (settings.google_client_id or os.environ.get("GOOGLE_CLIENT_ID") or "").strip()
+        and (settings.google_client_secret or os.environ.get("GOOGLE_CLIENT_SECRET") or "").strip()
+    )
+    retell_ok = bool(voice_creds_status.get("retell", {}).get("configured"))
+    telnyx_ok = bool(voice_creds_status.get("telnyx", {}).get("configured"))
+    calcom_ok = bool(voice_creds_status.get("calcom", {}).get("configured"))
+
+    platform_keys_status = [
+        {
+            "key": "ai_llm",
+            "label": "AI Brain (Groq / Gemini / DeepSeek)",
+            "configured": groq_ok or gemini_ok or deepseek_ok,
+            "detail": (
+                "Groq Live" if groq_ok else ("Gemini Live" if gemini_ok else ("DeepSeek Live" if deepseek_ok else "Not Configured"))
+            ),
+            "services": ["All AI Services"],
+        },
+        {
+            "key": "supabase",
+            "label": "Supabase PostgreSQL & Auth",
+            "configured": supabase_ok,
+            "detail": "Connected (RLS Active)" if supabase_ok else "Local / Unconfigured",
+            "services": ["Core Platform & Finance"],
+        },
+        {
+            "key": "whatsapp_cloud",
+            "label": "Meta WhatsApp Business Cloud API",
+            "configured": whatsapp_ok,
+            "detail": (
+                f"Live ({settings.whatsapp_provider})" if whatsapp_ok else "Mock / Pending Token"
+            ),
+            "services": ["WhatsApp Concierge"],
+        },
+        {
+            "key": "google_oauth",
+            "label": "Google OAuth 2.0 (Gmail & Calendar)",
+            "configured": google_oauth_ok,
+            "detail": "OAuth Live" if google_oauth_ok else "Pending Client Secret",
+            "services": ["Marketing, CRM & Calendar"],
+        },
+        {
+            "key": "retell_ai",
+            "label": "Retell AI (Voice Receptionist)",
+            "configured": retell_ok,
+            "detail": (
+                f"{voice_creds_status['retell'].get('api_key_masked') or 'Configured'} • Webhook {'Active' if voice_creds_status['retell'].get('webhook_secret_configured') else 'Open'}"
+                if retell_ok
+                else "Not Set"
+            ),
+            "services": ["Office Receptionist"],
+        },
+        {
+            "key": "telnyx_voice",
+            "label": "Telnyx Voice (Telephony & TeXML)",
+            "configured": telnyx_ok,
+            "detail": (
+                f"{voice_creds_status['telnyx'].get('api_key_masked') or 'Configured'} • Conn: {voice_creds_status['telnyx'].get('connection_id') or 'Auto'}"
+                if telnyx_ok
+                else "Not Set"
+            ),
+            "services": ["Office Receptionist"],
+        },
+        {
+            "key": "calcom",
+            "label": "Cal.com Master Booking API",
+            "configured": calcom_ok,
+            "detail": (
+                f"{voice_creds_status['calcom'].get('api_key_masked') or 'Configured'}"
+                if calcom_ok
+                else "Per-Client / Optional"
+            ),
+            "services": ["Office Receptionist"],
+        },
+    ]
+
+    # Real aggregate activity metrics for per-service performance overview
+    fin_tx_count = int((await session.execute(select(func.count(FinancialTransaction.id)))).scalar() or 0)
+    biz_rec_count = int((await session.execute(select(func.count(BusinessRecord.id)))).scalar() or 0)
+    recep_cfg_count = int((await session.execute(select(func.count(ReceptionistConfig.id)))).scalar() or 0)
+    recep_call_count = int((await session.execute(select(func.count(ReceptionistCallLog.id)))).scalar() or 0)
+    connected_int_count = sum(1 for i in all_integrations if i.status == "connected")
+
+    # Aggregate subscriptions per service_id in 1 query
+    sub_agg_res = await session.execute(
+        select(
+            ServiceSubscription.service_id,
+            func.count(ServiceSubscription.id),
+            func.count(ServiceSubscription.id).filter(ServiceSubscription.status == "active"),
+            func.coalesce(
+                func.sum(ServiceSubscription.price).filter(ServiceSubscription.status == "active"),
+                0.0,
+            ),
+        ).group_by(ServiceSubscription.service_id)
+    )
+    sub_metrics_by_service: Dict[uuid.UUID, Dict[str, Any]] = {
+        srv_id: {
+            "total_subscriptions": int(total_cnt or 0),
+            "active_subscribers": int(active_cnt or 0),
+            "monthly_mrr": round(float(active_mrr or 0.0), 2),
+        }
+        for srv_id, total_cnt, active_cnt, active_mrr in sub_agg_res.all()
+    }
+
+    LEGACY_DUPLICATE_SLUGS = {"whatsapp-automation", "marketing-growth", "business-finance"}
+    CANONICAL_SERVICE_SPEC: Dict[str, Dict[str, Any]] = {
+        "business-financial-tracking": {
+            "order": 1,
+            "stack": "Supabase Ledger + Groq AI + WhatsApp Logging",
+            "activity_count": fin_tx_count + biz_rec_count,
+            "activity_label": f"{fin_tx_count} transactions • {biz_rec_count} records",
+            "ready": supabase_ok and (groq_ok or gemini_ok or deepseek_ok),
+            "ready_note": "Live & Operational",
+        },
+        "ai-marketing-growth": {
+            "order": 2,
+            "stack": "Groq AI Strategist + Approval Gate + Ad Results Tracker",
+            "activity_count": len(campaigns_rows),
+            "activity_label": f"{len(campaigns_rows)} campaign(s) tracked",
+            "ready": groq_ok or gemini_ok or deepseek_ok,
+            "ready_note": "AI Ready (Admin logs live ad stats)",
+        },
+        "whatsapp-business-concierge": {
+            "order": 3,
+            "stack": "Meta WhatsApp Cloud API + Groq AI Responder",
+            "activity_count": connected_int_count,
+            "activity_label": f"{connected_int_count} connected client integration(s)",
+            "ready": whatsapp_ok and (groq_ok or gemini_ok or deepseek_ok),
+            "ready_note": "WhatsApp Webhook Live" if whatsapp_ok else "Needs WhatsApp Token",
+        },
+        "lead-crm-qualification": {
+            "order": 4,
+            "stack": "OpenStreetMap Live Finder + Groq AI Scorer + Gmail",
+            "activity_count": total_leads_cnt,
+            "activity_label": f"{total_leads_cnt} leads ({qualified_leads_cnt} qualified)",
+            "ready": groq_ok or gemini_ok or deepseek_ok,
+            "ready_note": "100% Free Live Finder + AI Scorer Ready",
+        },
+        "office-receptionist": {
+            "order": 5,
+            "stack": "Retell AI + Telnyx Voice (TeXML) + Cal.com",
+            "activity_count": recep_call_count,
+            "activity_label": f"{recep_cfg_count} workspace(s) • {recep_call_count} call(s)",
+            "ready": retell_ok and telnyx_ok and calcom_ok,
+            "ready_note": (
+                "All 3 Voice Keys Configured"
+                if (retell_ok and telnyx_ok and calcom_ok)
+                else "Check Retell / Telnyx / Cal.com Keys"
+            ),
+        },
+        "multi-agent-orchestration": {
+            "order": 6,
+            "stack": "6-Agent Pipeline + Human Approval Gate + Circuit Breaker",
+            "activity_count": len(exec_rows),
+            "activity_label": f"{len(exec_rows)} run(s) • {len(agents_rows)} agents registered",
+            "ready": groq_ok or gemini_ok or deepseek_ok,
+            "ready_note": "Orchestrator Ready",
+        },
+        "executive-analytics-compliance": {
+            "order": 7,
+            "stack": "RLS Multi-Tenant Audit Logs + Approval Governance",
+            "activity_count": len(audit_rows),
+            "activity_label": f"{len(audit_rows)} audit events • {len(approvals_rows)} approvals",
+            "ready": True,
+            "ready_note": "Governance & Audit Trail Live",
+        },
+    }
+
+    arranged_services: List[Dict[str, Any]] = []
+    for s in services_rows:
+        slug_lower = (s.slug or "").lower()
+        if slug_lower in LEGACY_DUPLICATE_SLUGS and not s.active:
+            continue
+        spec = CANONICAL_SERVICE_SPEC.get(slug_lower)
+        metrics = sub_metrics_by_service.get(
+            s.id,
+            {"total_subscriptions": 0, "active_subscribers": 0, "monthly_mrr": 0.0},
+        )
+        arranged_services.append({
+            "id": str(s.id),
+            "tier_number": spec["order"] if spec else 99,
+            "name": s.name,
+            "slug": s.slug,
+            "category": s.category,
+            "description": s.description,
+            "active": s.active,
+            "configuration_schema": s.configuration_schema or {},
+            "provider_stack": spec["stack"] if spec else "Managed AI Service",
+            "active_subscribers": metrics["active_subscribers"],
+            "total_subscriptions": metrics["total_subscriptions"],
+            "monthly_mrr": metrics["monthly_mrr"],
+            "activity_count": spec["activity_count"] if spec else 0,
+            "activity_label": spec["activity_label"] if spec else "Active",
+            "readiness_status": "ready" if (spec and spec["ready"]) else "action_needed",
+            "readiness_note": spec["ready_note"] if spec else "Verify configuration",
+        })
+
+    arranged_services.sort(key=lambda item: (item["tier_number"], item["name"]))
+    total_service_mrr = round(sum(s["monthly_mrr"] for s in arranged_services), 2)
+    total_active_subs = sum(s["active_subscribers"] for s in arranged_services)
+    top_service = max(arranged_services, key=lambda x: (x["monthly_mrr"], x["active_subscribers"]), default=None)
+
     return {
         "success": True,
         "data": {
             "stats": stats.model_dump(),
             "platform_settings": _PLATFORM_RUNTIME_SETTINGS,
+            "platform_keys_status": platform_keys_status,
+            "services_performance": {
+                "total_services": len(arranged_services),
+                "active_services": sum(1 for s in arranged_services if s["active"]),
+                "ready_services": sum(1 for s in arranged_services if s["readiness_status"] == "ready"),
+                "total_active_subscriptions": total_active_subs,
+                "total_service_mrr": total_service_mrr,
+                "top_service_name": top_service["name"] if top_service and top_service["monthly_mrr"] > 0 else "None yet",
+                "keys_configured_count": sum(1 for k in platform_keys_status if k["configured"]),
+                "keys_total_count": len(platform_keys_status),
+            },
             "tenants": tenant_list,
-            "services": [
-                {
-                    "id": str(s.id),
-                    "name": s.name,
-                    "slug": s.slug,
-                    "category": s.category,
-                    "description": s.description,
-                    "active": s.active,
-                    "configuration_schema": s.configuration_schema or {},
-                }
-                for s in services_rows
-            ],
+            "services": arranged_services,
             "ai_agents": {
                 "agents": [
                     {

@@ -1200,37 +1200,134 @@ export default function AdminDashboardPage() {
                 </div>
               </div>
 
-              {/* Dynamic Industry Service Catalog & Pricing Control */}
-              <div id="admin-services-section" className="rounded-xl border border-slate-800 bg-slate-950 p-6 space-y-4">
-                <div>
-                  <h2 className="text-base font-bold text-white">
-                    Industry Service Catalog, Packages & Pricing Control
-                  </h2>
-                  <p className="text-xs text-slate-400">
-                    Control managed service availability, supported industry verticals, required integration dependencies, and package tiers.
-                  </p>
+              {/* Arranged Service Catalog, Pricing Control & Live Services Performance Overview */}
+              <div id="admin-services-section" className="rounded-xl border border-slate-800 bg-slate-950 p-6 space-y-5">
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-slate-800 pb-4">
+                  <div>
+                    <h2 className="text-base font-bold text-white flex items-center gap-2">
+                      <Layers className="h-4 w-4 text-emerald-400" />
+                      Arranged Service Catalog (7 Core Tiers) &amp; Live Services Performance
+                    </h2>
+                    <p className="text-xs text-slate-400">
+                      Canonical services ordered #1–#7 with real subscriber counts, monthly MRR, live platform activity, and API key readiness.
+                    </p>
+                  </div>
+                  {ops?.services_performance && (
+                    <div className="flex flex-wrap items-center gap-2 text-[11px] font-mono">
+                      <span className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-emerald-300">
+                        Services Ready: {ops.services_performance.ready_services}/{ops.services_performance.total_services}
+                      </span>
+                      <span className="rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-1 text-slate-200">
+                        Active Subs: {ops.services_performance.total_active_subscriptions}
+                      </span>
+                      <span className="rounded-lg border border-emerald-500/30 bg-slate-900 px-2.5 py-1 text-emerald-400 font-bold">
+                        MRR: ${Number(ops.services_performance.total_service_mrr || 0).toFixed(2)}/mo
+                      </span>
+                      <span className="rounded-lg border border-indigo-500/30 bg-indigo-500/10 px-2.5 py-1 text-indigo-300">
+                        Master Keys: {ops.services_performance.keys_configured_count}/{ops.services_performance.keys_total_count}
+                      </span>
+                    </div>
+                  )}
                 </div>
 
+                {/* Live Services Performance Overview Table */}
+                <div className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-900/60">
+                  <table className="w-full text-left text-xs">
+                    <thead>
+                      <tr className="border-b border-slate-800 bg-slate-900 text-[11px] uppercase tracking-wider text-slate-400">
+                        <th className="py-2.5 px-3"># / Service Tier</th>
+                        <th className="py-2.5 px-3">Category &amp; Provider Stack</th>
+                        <th className="py-2.5 px-3 text-right">Active Subs</th>
+                        <th className="py-2.5 px-3 text-right">Monthly MRR</th>
+                        <th className="py-2.5 px-3">Live Performance / Activity</th>
+                        <th className="py-2.5 px-3 text-right">Readiness</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/80">
+                      {(ops?.services || []).map((srv: any, idx: number) => (
+                        <tr key={`perf-${srv.id}`} className="hover:bg-slate-900/80 transition">
+                          <td className="py-2.5 px-3">
+                            <div className="flex items-center gap-2">
+                              <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-emerald-500/15 border border-emerald-500/30 text-[10px] font-bold text-emerald-300">
+                                {srv.tier_number && srv.tier_number < 99 ? srv.tier_number : idx + 1}
+                              </span>
+                              <div>
+                                <p className="font-bold text-white">{srv.name}</p>
+                                <p className="text-[10px] font-mono text-slate-500">{srv.slug}</p>
+                              </div>
+                            </div>
+                          </td>
+                          <td className="py-2.5 px-3">
+                            <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] uppercase font-semibold text-slate-300">
+                              {srv.category}
+                            </span>
+                            <p className="text-[10px] text-slate-400 mt-0.5">
+                              {srv.provider_stack || "Managed AI Service"}
+                            </p>
+                          </td>
+                          <td className="py-2.5 px-3 text-right font-mono font-bold text-white">
+                            {srv.active_subscribers ?? 0}
+                            <span className="text-[10px] font-normal text-slate-500">
+                              {" "}
+                              / {srv.total_subscriptions ?? 0}
+                            </span>
+                          </td>
+                          <td className="py-2.5 px-3 text-right font-mono font-bold text-emerald-400">
+                            ${Number(srv.monthly_mrr || 0).toFixed(2)}
+                          </td>
+                          <td className="py-2.5 px-3 text-slate-300">
+                            {srv.activity_label || "Operational"}
+                          </td>
+                          <td className="py-2.5 px-3 text-right">
+                            <span
+                              className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${
+                                srv.readiness_status === "ready"
+                                  ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+                                  : "bg-amber-500/20 text-amber-300 border border-amber-500/30"
+                              }`}
+                              title={srv.readiness_note || ""}
+                            >
+                              {srv.readiness_status === "ready" ? "Ready" : "Check Keys"}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Arranged Service Catalog Cards (#1 to #7) */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {(ops?.services || []).map((srv: any) => {
+                  {(ops?.services || []).map((srv: any, idx: number) => {
                     const schema = srv.configuration_schema || {};
                     const packages = schema.packages || [];
+                    const tierNum = srv.tier_number && srv.tier_number < 99 ? srv.tier_number : idx + 1;
                     return (
                       <div
                         key={srv.id}
                         className="rounded-xl border border-slate-800 bg-slate-900 p-4 space-y-2.5"
                       >
-                        <div className="flex items-center justify-between">
-                          <span className="text-sm font-bold text-white">{srv.name}</span>
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex items-center gap-2">
+                            <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-emerald-500/15 border border-emerald-500/30 text-xs font-bold text-emerald-300">
+                              #{tierNum}
+                            </span>
+                            <div>
+                              <span className="text-sm font-bold text-white block">{srv.name}</span>
+                              <span className="text-[10px] uppercase tracking-wider text-slate-400">
+                                {srv.category} • {srv.readiness_note || "Live"}
+                              </span>
+                            </div>
+                          </div>
                           <button
                             onClick={() => handleToggleServiceActive(srv.id, srv.active)}
-                            className={`rounded px-2.5 py-0.5 text-[10px] font-bold uppercase ${
+                            className={`rounded px-2.5 py-0.5 text-[10px] font-bold uppercase shrink-0 ${
                               srv.active
                                 ? "bg-emerald-500/20 text-emerald-300"
                                 : "bg-slate-800 text-slate-400"
                             }`}
                           >
-                            {srv.active ? "Active (Click to Disable)" : "Disabled (Click to Enable)"}
+                            {srv.active ? "Active" : "Disabled"}
                           </button>
                         </div>
                         <p className="text-xs text-slate-400">{srv.description}</p>
@@ -2035,6 +2132,57 @@ export default function AdminDashboardPage() {
           {/* TAB 4: INTEGRATION MANAGEMENT & MASTER VOICE AI SETTINGS */}
           {activeTab === "integrations" && (
             <div className="space-y-6">
+              {/* Complete Platform Master Keys & Credentials Readiness Grid */}
+              {(ops?.platform_keys_status || []).length > 0 && (
+                <div className="rounded-xl border border-slate-800 bg-slate-950 p-6 space-y-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border-b border-slate-800 pb-3">
+                    <div>
+                      <h2 className="text-base font-bold text-white flex items-center gap-2">
+                        <KeyRound className="h-4 w-4 text-emerald-400" />
+                        All Platform Master API Keys &amp; Environment Readiness
+                      </h2>
+                      <p className="text-xs text-slate-400">
+                        Live verification of every required server credential powering all 7 services (masked status only — zero plaintext secrets exposed).
+                      </p>
+                    </div>
+                    <span className="rounded-full bg-emerald-500/15 border border-emerald-500/30 px-3 py-1 text-[11px] font-bold text-emerald-300">
+                      {ops?.services_performance?.keys_configured_count ?? 0} /{" "}
+                      {ops?.services_performance?.keys_total_count ?? 0} Master Keys Ready
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+                    {(ops?.platform_keys_status || []).map((k: any) => (
+                      <div
+                        key={k.key}
+                        className={`rounded-xl border p-3.5 space-y-1.5 ${
+                          k.configured
+                            ? "border-emerald-500/25 bg-slate-900"
+                            : "border-amber-500/30 bg-amber-950/10"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-bold text-white text-[12px]">{k.label}</span>
+                          <span
+                            className={`rounded-full px-2 py-0.5 text-[9px] font-bold uppercase shrink-0 ${
+                              k.configured
+                                ? "bg-emerald-500/20 text-emerald-300"
+                                : "bg-amber-500/20 text-amber-300"
+                            }`}
+                          >
+                            {k.configured ? "Configured" : "Pending"}
+                          </span>
+                        </div>
+                        <p className="text-[11px] font-mono text-slate-400 truncate">{k.detail}</p>
+                        <p className="text-[10px] text-slate-500">
+                          Powers: {(k.services || []).join(", ")}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {/* Secure Admin Settings: Master Voice AI Credentials (Retell AI, Telnyx, Cal.com) */}
               <div
                 id="admin-voice-settings-section"

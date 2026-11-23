@@ -218,6 +218,17 @@ class BillingService:
             )
         ]
 
+        CANONICAL_ORDER = {
+            "business-financial-tracking": 1,
+            "ai-marketing-growth": 2,
+            "whatsapp-business-concierge": 3,
+            "lead-crm-qualification": 4,
+            "office-receptionist": 5,
+            "multi-agent-orchestration": 6,
+            "executive-analytics-compliance": 7,
+        }
+        services.sort(key=lambda s: (CANONICAL_ORDER.get((s.slug or "").lower(), 99), s.name))
+
         if industry:
             norm_ind = normalize_industry(industry)
             filtered: List[Service] = []
