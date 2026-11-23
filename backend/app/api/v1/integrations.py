@@ -35,7 +35,10 @@ router = APIRouter(prefix="/integrations", tags=["Integrations & WhatsApp"])
 
 
 class WhatsAppConnectRequest(BaseModel):
-    oauth_code: str = Field(min_length=3, max_length=500, description="Meta Embedded Signup OAuth code")
+    oauth_code: Optional[str] = Field(default=None, min_length=3, max_length=500, description="Meta Embedded Signup OAuth code")
+    api_key: Optional[str] = Field(default=None, min_length=6, max_length=2000, description="Direct Meta WhatsApp Cloud API Permanent Access Token")
+    account_identifier: Optional[str] = Field(default=None, max_length=255, description="Meta WhatsApp Phone Number ID or business number")
+    configuration: Optional[Dict[str, Any]] = None
 
 
 class ProviderConnectRequest(BaseModel):
@@ -229,14 +232,35 @@ async def connect_whatsapp_embedded_signup(
     context: TenantContext = Depends(require_permission("integrations.manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    """Authorize and connect WhatsApp Business via Meta Embedded Signup OAuth code."""
-    data = await integration_service.connect_whatsapp(
-        session=session,
-        tenant_id=context.tenant_id,
-        user_id=context.user_id,
-        oauth_code=request.oauth_code,
-    )
-    return {"success": True, "data": data, "message": "WhatsApp Business connected successfully"}
+    """Authorize and connect WhatsApp Business via Meta Embedded Signup OAuth code or Direct Cloud API Token."""
+    if request.api_key and not request.oauth_code:
+        data = await integration_service.connect_provider(
+            session=session,
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+            provider="whatsapp",
+            api_key=request.api_key,
+            account_identifier=request.account_identifier,
+            extra_config=request.configuration,
+        )
+        return {
+            "success": data["status"] == "connected",
+            "data": data,
+            "message": "WhatsApp Business Cloud API connected successfully",
+        }
+    elif request.oauth_code:
+        data = await integration_service.connect_whatsapp(
+            session=session,
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+            oauth_code=request.oauth_code,
+        )
+        return {"success": True, "data": data, "message": "WhatsApp Business connected successfully"}
+    else:
+        raise HTTPException(
+            status_code=422,
+            detail="Either oauth_code or api_key is required to connect WhatsApp.",
+        )
 
 
 @router.post("/{provider}/connect", status_code=status.HTTP_201_CREATED)

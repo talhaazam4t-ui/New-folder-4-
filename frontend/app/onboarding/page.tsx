@@ -124,6 +124,10 @@ export default function OnboardingPage() {
   const [oauthUnavailableByProvider, setOauthUnavailableByProvider] = useState<
     Record<string, string>
   >({});
+  const [showDirectWhatsApp, setShowDirectWhatsApp] = useState(false);
+  const [directWaPhoneId, setDirectWaPhoneId] = useState("");
+  const [directWaWabaId, setDirectWaWabaId] = useState("");
+  const [directWaToken, setDirectWaToken] = useState("");
 
   // Support Modal State
   const [supportModalOpen, setSupportModalOpen] = useState(false);
@@ -690,6 +694,51 @@ export default function OnboardingPage() {
       setTimeout(() => setCopiedCode(null), 2000);
     } catch {
       setStatusMessage(`Copy value: ${val}`);
+    }
+  };
+
+  const handleDirectWhatsAppConnect = async () => {
+    setError(null);
+    setStatusMessage(null);
+    const phoneId = directWaPhoneId.trim();
+    const token = directWaToken.trim();
+    if (!phoneId || !token) {
+      setError("Please enter your Meta WhatsApp Phone Number ID and Permanent Access Token.");
+      return;
+    }
+    setLoading(true);
+    try {
+      const connRes = await apiRequest("/api/v1/integrations/whatsapp/connect", {
+        method: "POST",
+        body: JSON.stringify({
+          api_key: token,
+          account_identifier: phoneId,
+          configuration: {
+            phone_number_id: phoneId,
+            ...(directWaWabaId.trim() ? { waba_id: directWaWabaId.trim() } : {}),
+            connection_mode: "direct_cloud_api",
+          },
+        }),
+      });
+      if (connRes.success && connRes.data?.status === "connected") {
+        setDirectWaToken("");
+        setShowDirectWhatsApp(false);
+        setStatusMessage("WhatsApp Business Cloud API credentials encrypted and connected!");
+      } else {
+        setError(
+          connRes.error?.message ||
+            connRes.message ||
+            "Failed to connect WhatsApp Cloud API credentials."
+        );
+      }
+      const reqRes = await apiRequest("/api/v1/integrations/onboarding-requirements");
+      if (reqRes.data) {
+        syncOnboardingRequirements(reqRes.data);
+      }
+    } catch (err: any) {
+      setError(err.message || "Error connecting WhatsApp Cloud API.");
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -1510,8 +1559,66 @@ export default function OnboardingPage() {
                             </span>
                           </button>
                         )}
+                        {reqItem.provider === "whatsapp" && (
+                          <button
+                            type="button"
+                            onClick={() => setShowDirectWhatsApp((prev) => !prev)}
+                            className="text-[11px] font-semibold text-emerald-400 hover:text-emerald-300 text-center underline underline-offset-2"
+                          >
+                            {showDirectWhatsApp
+                              ? "Hide Direct Cloud API Form"
+                              : "Or Connect via WhatsApp Cloud API Token"}
+                          </button>
+                        )}
                       </div>
                     </div>
+
+                    {reqItem.provider === "whatsapp" && showDirectWhatsApp && (
+                      <div className="rounded-xl border border-emerald-500/30 bg-slate-950/90 p-4 space-y-3 text-xs">
+                        <div>
+                          <p className="font-bold text-emerald-300">
+                            Direct WhatsApp Business Cloud API Connection (Instant)
+                          </p>
+                          <p className="text-[11px] text-slate-400">
+                            Paste your Meta Cloud API Phone Number ID and Permanent System User Token — encrypted at rest on the backend without waiting for Meta Embedded Signup review.
+                          </p>
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                          <input
+                            type="text"
+                            placeholder="Phone Number ID *"
+                            value={directWaPhoneId}
+                            onChange={(e) => setDirectWaPhoneId(e.target.value)}
+                            className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs font-mono text-white placeholder-slate-500 focus:border-emerald-500 focus:outline-none"
+                          />
+                          <input
+                            type="text"
+                            placeholder="WABA ID (optional)"
+                            value={directWaWabaId}
+                            onChange={(e) => setDirectWaWabaId(e.target.value)}
+                            className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs font-mono text-white placeholder-slate-500 focus:border-emerald-500 focus:outline-none"
+                          />
+                          <input
+                            type="password"
+                            placeholder="Permanent Access Token *"
+                            value={directWaToken}
+                            onChange={(e) => setDirectWaToken(e.target.value)}
+                            className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs font-mono text-white placeholder-slate-500 focus:border-emerald-500 focus:outline-none"
+                          />
+                        </div>
+                        <div className="flex justify-end">
+                          <button
+                            type="button"
+                            disabled={loading}
+                            onClick={handleDirectWhatsAppConnect}
+                            className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-500 disabled:opacity-50 transition"
+                          >
+                            <Lock className="h-3.5 w-3.5" />
+                            <span>Save &amp; Connect WhatsApp Cloud API</span>
+                          </button>
+                        </div>
+                      </div>
+                    )}
 
                     {isOAuthUnavailable && (
                       <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 space-y-2.5 text-xs">

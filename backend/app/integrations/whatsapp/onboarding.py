@@ -41,16 +41,17 @@ class MetaEmbeddedSignupAdapter:
         redirect_uri: Optional[str] = None,
     ) -> MetaOnboardingResult:
         """Exchange OAuth authorization code for system access token and configure WABA."""
+        app_secret = (settings.whatsapp_app_secret or settings.meta_app_secret or "").strip()
         logger.info(
             "Processing Meta Embedded Signup code exchange",
             tenant_id=tenant_id,
-            is_mock_mode=(settings.whatsapp_provider == "mock" or not settings.whatsapp_app_secret),
+            is_mock_mode=(settings.whatsapp_provider == "mock" or not app_secret),
         )
 
         # 1. Fallback to mock adapter if in development or missing Meta secrets
         if (
             settings.whatsapp_provider == "mock"
-            or not settings.whatsapp_app_secret
+            or not app_secret
             or not settings.meta_app_id
         ):
             return self._mock_onboarding(tenant_id, oauth_code)
@@ -60,7 +61,7 @@ class MetaEmbeddedSignupAdapter:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 token_params: Dict[str, Any] = {
                     "client_id": settings.meta_app_id,
-                    "client_secret": settings.whatsapp_app_secret,
+                    "client_secret": app_secret,
                     "code": oauth_code,
                 }
                 if redirect_uri:
@@ -80,7 +81,7 @@ class MetaEmbeddedSignupAdapter:
                     f"{self.graph_api_url}/debug_token",
                     params={
                         "input_token": access_token,
-                        "access_token": f"{settings.meta_app_id}|{settings.whatsapp_app_secret}",
+                        "access_token": f"{settings.meta_app_id}|{app_secret}",
                     },
                 )
                 debug_resp.raise_for_status()
