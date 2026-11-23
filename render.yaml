@@ -74,15 +74,19 @@ services:
         sync: false
       - key: GOOGLE_PLACES_API_KEY
         sync: false
+      - key: VOICE_TELEPHONY_PROVIDER
+        value: retell_native
       - key: RETELL_API_KEY
         sync: false
       - key: RETELL_WEBHOOK_SECRET
         sync: false
-      - key: TWILIO_ACCOUNT_SID
+      - key: RETELL_DEFAULT_NUMBER
         sync: false
-      - key: TWILIO_AUTH_TOKEN
+      - key: TELNYX_API_KEY
         sync: false
-      - key: TWILIO_DEFAULT_NUMBER
+      - key: TELNYX_CONNECTION_ID
+        sync: false
+      - key: TELNYX_DEFAULT_NUMBER
         sync: false
       - key: CALCOM_API_KEY
         sync: false

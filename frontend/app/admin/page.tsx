@@ -113,15 +113,18 @@ export default function AdminDashboardPage() {
   });
   const [provisioning, setProvisioning] = useState(false);
 
-  // Admin Master Voice AI Credentials (Retell AI, Twilio, Cal.com)
+  // Admin Master Voice AI Credentials (Retell AI Native Telephony, Telnyx Voice, Cal.com)
   const [voiceCredsStatus, setVoiceCredsStatus] = useState<any>(null);
   const [voiceCredsForm, setVoiceCredsForm] = useState({
+    telephony_provider: "retell_native",
     retell_api_key: "",
     retell_webhook_secret: "",
-    twilio_account_sid: "",
-    twilio_auth_token: "",
-    twilio_default_number: "",
-    twilio_default_country: "US",
+    retell_default_number: "",
+    retell_area_code: "415",
+    telnyx_api_key: "",
+    telnyx_connection_id: "",
+    telnyx_default_number: "",
+    telnyx_default_country: "US",
     calcom_api_key: "",
   });
   const [savingVoiceCreds, setSavingVoiceCreds] = useState(false);
@@ -192,8 +195,12 @@ export default function AdminDashboardPage() {
       setVoiceCredsStatus(res.data);
       setVoiceCredsForm((prev) => ({
         ...prev,
-        twilio_default_number: res.data.twilio?.default_number || prev.twilio_default_number,
-        twilio_default_country: res.data.twilio?.default_country || prev.twilio_default_country || "US",
+        telephony_provider: res.data.telephony_provider || prev.telephony_provider || "retell_native",
+        retell_default_number: res.data.retell?.default_number || prev.retell_default_number,
+        retell_area_code: String(res.data.retell?.area_code || prev.retell_area_code || "415"),
+        telnyx_connection_id: res.data.telnyx?.connection_id || prev.telnyx_connection_id,
+        telnyx_default_number: res.data.telnyx?.default_number || prev.telnyx_default_number,
+        telnyx_default_country: res.data.telnyx?.default_country || prev.telnyx_default_country || "US",
       }));
     }
   };
@@ -202,24 +209,35 @@ export default function AdminDashboardPage() {
     e.preventDefault();
     setSavingVoiceCreds(true);
     try {
-      const payload: Record<string, string> = {};
+      const payload: Record<string, string | number> = {
+        telephony_provider: voiceCredsForm.telephony_provider,
+      };
       if (voiceCredsForm.retell_api_key.trim()) {
         payload.retell_api_key = voiceCredsForm.retell_api_key.trim();
       }
       if (voiceCredsForm.retell_webhook_secret.trim()) {
         payload.retell_webhook_secret = voiceCredsForm.retell_webhook_secret.trim();
       }
-      if (voiceCredsForm.twilio_account_sid.trim()) {
-        payload.twilio_account_sid = voiceCredsForm.twilio_account_sid.trim();
+      if (voiceCredsForm.retell_default_number.trim()) {
+        payload.retell_default_number = voiceCredsForm.retell_default_number.trim();
       }
-      if (voiceCredsForm.twilio_auth_token.trim()) {
-        payload.twilio_auth_token = voiceCredsForm.twilio_auth_token.trim();
+      if (voiceCredsForm.retell_area_code.trim()) {
+        const parsedArea = Number(voiceCredsForm.retell_area_code.trim());
+        if (parsedArea >= 200 && parsedArea <= 999) {
+          payload.retell_area_code = parsedArea;
+        }
       }
-      if (voiceCredsForm.twilio_default_number.trim()) {
-        payload.twilio_default_number = voiceCredsForm.twilio_default_number.trim();
+      if (voiceCredsForm.telnyx_api_key.trim()) {
+        payload.telnyx_api_key = voiceCredsForm.telnyx_api_key.trim();
       }
-      if (voiceCredsForm.twilio_default_country.trim()) {
-        payload.twilio_default_country = voiceCredsForm.twilio_default_country.trim().toUpperCase();
+      if (voiceCredsForm.telnyx_connection_id.trim()) {
+        payload.telnyx_connection_id = voiceCredsForm.telnyx_connection_id.trim();
+      }
+      if (voiceCredsForm.telnyx_default_number.trim()) {
+        payload.telnyx_default_number = voiceCredsForm.telnyx_default_number.trim();
+      }
+      if (voiceCredsForm.telnyx_default_country.trim()) {
+        payload.telnyx_default_country = voiceCredsForm.telnyx_default_country.trim().toUpperCase();
       }
       if (voiceCredsForm.calcom_api_key.trim()) {
         payload.calcom_api_key = voiceCredsForm.calcom_api_key.trim();
@@ -232,15 +250,18 @@ export default function AdminDashboardPage() {
       if (res.success && res.data) {
         setVoiceCredsStatus(res.data);
         setVoiceCredsForm({
+          telephony_provider: res.data.telephony_provider || "retell_native",
           retell_api_key: "",
           retell_webhook_secret: "",
-          twilio_account_sid: "",
-          twilio_auth_token: "",
-          twilio_default_number: res.data.twilio?.default_number || "",
-          twilio_default_country: res.data.twilio?.default_country || "US",
+          retell_default_number: res.data.retell?.default_number || "",
+          retell_area_code: String(res.data.retell?.area_code || "415"),
+          telnyx_api_key: "",
+          telnyx_connection_id: res.data.telnyx?.connection_id || "",
+          telnyx_default_number: res.data.telnyx?.default_number || "",
+          telnyx_default_country: res.data.telnyx?.default_country || "US",
           calcom_api_key: "",
         });
-        showStatus("Master Voice AI credentials (Retell AI, Twilio, Cal.com) encrypted and saved!");
+        showStatus("Master Voice AI credentials (Retell AI, Telnyx/Native Telephony, Cal.com) encrypted and saved!");
       } else {
         showStatus(
           `Error: ${res.error?.message || "Failed to save master voice credentials."}`,
@@ -254,7 +275,7 @@ export default function AdminDashboardPage() {
 
   const handleAdminProvisionVoice = async (tenantId: string, tenantName: string) => {
     setProvisioningVoiceTenantId(tenantId);
-    showStatus(`Provisioning Twilio number & Retell AI Voice Receptionist for "${tenantName}"...`);
+    showStatus(`Provisioning AI Phone Number & Retell AI Voice Receptionist for "${tenantName}"...`);
     try {
       const res = await apiRequest(`/api/v1/admin/tenants/${tenantId}/receptionist/provision`, {
         method: "POST",
@@ -2034,7 +2055,7 @@ export default function AdminDashboardPage() {
           {/* TAB 4: INTEGRATION MANAGEMENT & MASTER VOICE AI SETTINGS */}
           {activeTab === "integrations" && (
             <div className="space-y-6">
-              {/* Secure Admin Settings: Master Voice AI Credentials (Retell AI, Twilio, Cal.com) */}
+              {/* Secure Admin Settings: Master Voice AI Credentials (Retell AI Built-in Telephony, Telnyx, Cal.com) */}
               <div
                 id="admin-voice-settings-section"
                 className="rounded-xl border border-emerald-500/30 bg-slate-950 p-6 space-y-5"
@@ -2046,7 +2067,7 @@ export default function AdminDashboardPage() {
                       Office Receptionist — Master Voice AI Credentials Vault
                     </h2>
                     <p className="text-xs text-slate-400">
-                      Store master Retell AI, Twilio, and Cal.com API keys securely with AES-Fernet encryption (automatically falls back to server environment variables when blank).
+                      Powered by Retell AI (with Built-in Phone Numbers — no Twilio account required!), optional Telnyx Voice API v2 (works globally incl. Pakistan), and Cal.com. All secrets are encrypted with AES-Fernet.
                     </p>
                   </div>
                   <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 px-3 py-1 text-[11px] font-semibold text-emerald-300">
@@ -2059,7 +2080,7 @@ export default function AdminDashboardPage() {
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
                   <div className="rounded-xl border border-slate-800 bg-slate-900 p-4 space-y-1.5">
                     <div className="flex items-center justify-between">
-                      <span className="font-bold text-white">Retell AI</span>
+                      <span className="font-bold text-white">Retell AI (Voice + Built-in Phone)</span>
                       <span
                         className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${
                           voiceCredsStatus?.retell?.configured
@@ -2081,23 +2102,31 @@ export default function AdminDashboardPage() {
 
                   <div className="rounded-xl border border-slate-800 bg-slate-900 p-4 space-y-1.5">
                     <div className="flex items-center justify-between">
-                      <span className="font-bold text-white">Twilio Voice</span>
+                      <span className="font-bold text-white">Telephony Provider</span>
                       <span
                         className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${
-                          voiceCredsStatus?.twilio?.configured
+                          voiceCredsStatus?.telnyx?.configured || voiceCredsStatus?.retell?.native_telephony_ready
                             ? "bg-emerald-500/20 text-emerald-300"
                             : "bg-amber-500/20 text-amber-300"
                         }`}
                       >
-                        {voiceCredsStatus?.twilio?.configured ? "Configured" : "Not Set"}
+                        {voiceCredsStatus?.telephony_provider === "telnyx" && voiceCredsStatus?.telnyx?.configured
+                          ? "Telnyx Active"
+                          : voiceCredsStatus?.retell?.native_telephony_ready
+                          ? "Retell Built-in Ready"
+                          : "Awaiting Key"}
                       </span>
                     </div>
                     <p className="text-[11px] text-slate-400 font-mono">
-                      SID: {voiceCredsStatus?.twilio?.account_sid_masked || "—"}
+                      {voiceCredsStatus?.telephony_provider === "telnyx"
+                        ? `Telnyx Key: ${voiceCredsStatus?.telnyx?.api_key_masked || "Not set"}`
+                        : `Mode: Retell Native (Area ${voiceCredsStatus?.retell?.area_code || 415})`}
                     </p>
                     <p className="text-[10px] text-slate-500">
-                      Source: {voiceCredsStatus?.twilio?.source || "unconfigured"} • Pool:{" "}
-                      {voiceCredsStatus?.twilio?.default_number || "Auto-buy (" + (voiceCredsStatus?.twilio?.default_country || "US") + ")"}
+                      Pool Number:{" "}
+                      {voiceCredsStatus?.retell?.default_number ||
+                        voiceCredsStatus?.telnyx?.default_number ||
+                        "Auto-assign via Retell / Web Calls Ready"}
                     </p>
                   </div>
 
@@ -2125,6 +2154,28 @@ export default function AdminDashboardPage() {
 
                 <form onSubmit={handleSaveVoiceCredentials} className="space-y-4 text-xs">
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                        Telephony Provider Mode
+                      </label>
+                      <select
+                        value={voiceCredsForm.telephony_provider}
+                        onChange={(e) =>
+                          setVoiceCredsForm((prev) => ({
+                            ...prev,
+                            telephony_provider: e.target.value,
+                          }))
+                        }
+                        className="w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-xs text-white focus:border-emerald-500 focus:outline-none"
+                      >
+                        <option value="retell_native">
+                          Retell Built-in Telephony (Recommended — No Twilio Needed)
+                        </option>
+                        <option value="telnyx">
+                          Telnyx Voice API v2 (Global Custom Numbers / TeXML)
+                        </option>
+                      </select>
+                    </div>
                     <div>
                       <label className="block text-[11px] font-semibold text-slate-300 mb-1">
                         Retell AI API Key (RETELL_API_KEY)
@@ -2155,7 +2206,7 @@ export default function AdminDashboardPage() {
                             retell_webhook_secret: e.target.value,
                           }))
                         }
-                        placeholder="whsec_... (HMAC verification)"
+                        placeholder="key_... (HMAC verification)"
                         className="w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-xs font-mono text-white placeholder-slate-500 focus:border-emerald-500 focus:outline-none"
                       />
                     </div>
@@ -2176,52 +2227,89 @@ export default function AdminDashboardPage() {
                         className="w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-xs font-mono text-white placeholder-slate-500 focus:border-emerald-500 focus:outline-none"
                       />
                     </div>
+                    <div className="grid grid-cols-3 gap-2">
+                      <div className="col-span-2">
+                        <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                          Default AI Phone Number
+                        </label>
+                        <input
+                          type="text"
+                          value={voiceCredsForm.retell_default_number}
+                          onChange={(e) =>
+                            setVoiceCredsForm((prev) => ({
+                              ...prev,
+                              retell_default_number: e.target.value,
+                            }))
+                          }
+                          placeholder="+14155550100 (optional)"
+                          className="w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-xs font-mono text-white placeholder-slate-500 focus:border-emerald-500 focus:outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                          Area Code
+                        </label>
+                        <input
+                          type="text"
+                          maxLength={3}
+                          value={voiceCredsForm.retell_area_code}
+                          onChange={(e) =>
+                            setVoiceCredsForm((prev) => ({
+                              ...prev,
+                              retell_area_code: e.target.value.replace(/\D/g, ""),
+                            }))
+                          }
+                          placeholder="415"
+                          className="w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-xs font-mono text-white focus:border-emerald-500 focus:outline-none"
+                        />
+                      </div>
+                    </div>
                     <div>
                       <label className="block text-[11px] font-semibold text-slate-300 mb-1">
-                        Twilio Account SID (TWILIO_ACCOUNT_SID)
+                        Telnyx API Key (Optional — if using Telnyx)
                       </label>
                       <input
                         type="password"
-                        value={voiceCredsForm.twilio_account_sid}
+                        value={voiceCredsForm.telnyx_api_key}
                         onChange={(e) =>
                           setVoiceCredsForm((prev) => ({
                             ...prev,
-                            twilio_account_sid: e.target.value,
+                            telnyx_api_key: e.target.value,
                           }))
                         }
-                        placeholder="ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                        placeholder="KEY01... (optional custom Telnyx)"
                         className="w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-xs font-mono text-white placeholder-slate-500 focus:border-emerald-500 focus:outline-none"
                       />
                     </div>
                     <div>
                       <label className="block text-[11px] font-semibold text-slate-300 mb-1">
-                        Twilio Auth Token (TWILIO_AUTH_TOKEN)
+                        Telnyx TeXML Connection ID (optional)
                       </label>
                       <input
-                        type="password"
-                        value={voiceCredsForm.twilio_auth_token}
+                        type="text"
+                        value={voiceCredsForm.telnyx_connection_id}
                         onChange={(e) =>
                           setVoiceCredsForm((prev) => ({
                             ...prev,
-                            twilio_auth_token: e.target.value,
+                            telnyx_connection_id: e.target.value,
                           }))
                         }
-                        placeholder="Leave blank to keep existing"
+                        placeholder="e.g. 2345678901234567890"
                         className="w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-xs font-mono text-white placeholder-slate-500 focus:border-emerald-500 focus:outline-none"
                       />
                     </div>
                     <div className="grid grid-cols-3 gap-2">
                       <div className="col-span-2">
                         <label className="block text-[11px] font-semibold text-slate-300 mb-1">
-                          Default Twilio Number
+                          Telnyx Default Number
                         </label>
                         <input
                           type="text"
-                          value={voiceCredsForm.twilio_default_number}
+                          value={voiceCredsForm.telnyx_default_number}
                           onChange={(e) =>
                             setVoiceCredsForm((prev) => ({
                               ...prev,
-                              twilio_default_number: e.target.value,
+                              telnyx_default_number: e.target.value,
                             }))
                           }
                           placeholder="+14155550100"
@@ -2235,11 +2323,11 @@ export default function AdminDashboardPage() {
                         <input
                           type="text"
                           maxLength={5}
-                          value={voiceCredsForm.twilio_default_country}
+                          value={voiceCredsForm.telnyx_default_country}
                           onChange={(e) =>
                             setVoiceCredsForm((prev) => ({
                               ...prev,
-                              twilio_default_country: e.target.value.toUpperCase(),
+                              telnyx_default_country: e.target.value.toUpperCase(),
                             }))
                           }
                           placeholder="US"
@@ -2673,7 +2761,7 @@ export default function AdminDashboardPage() {
                   className="w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-xs text-white focus:border-emerald-500 focus:outline-none"
                 >
                   <option value="office-receptionist">
-                    Office Receptionist (AI Voice Agent) — Retell AI + Twilio + Cal.com
+                    Office Receptionist (AI Voice Agent) — Retell AI + Built-in/Telnyx + Cal.com
                   </option>
                   {(ops?.services || [])
                     .filter((s: any) => s.slug !== "office-receptionist")

@@ -103,7 +103,7 @@ export const CANONICAL_SERVICES: CanonicalServiceMeta[] = [
     shortName: "Office Receptionist (Voice)",
     category: "communication",
     description:
-      "24/7 AI Voice Receptionist powered by Retell AI, Twilio, and Cal.com with live call transfer and automated booking.",
+      "24/7 AI Voice Receptionist powered by Retell AI, Built-in/Telnyx Voice, and Cal.com with live call transfer and automated booking.",
     starterPrice: 199,
     growthPrice: 399,
     enterprisePrice: 799,

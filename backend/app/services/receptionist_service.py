@@ -35,6 +35,7 @@ from app.integrations.voice.receptionist_providers import (
     generate_call_forwarding_guide,
     normalize_e164,
     retell_ai_adapter,
+    telnyx_voice_adapter,
     twilio_voice_adapter,
 )
 from app.schemas.receptionist import (
@@ -84,6 +85,34 @@ class ReceptionistService:
             _get_vault_val("retell", "webhook_secret")
             or (settings.retell_webhook_secret or os.environ.get("RETELL_WEBHOOK_SECRET") or "").strip()
         )
+        retell_default_number = (
+            _get_vault_val("retell", "default_number")
+            or (settings.retell_default_number or os.environ.get("RETELL_DEFAULT_NUMBER") or "").strip()
+        )
+        raw_area = _get_vault_val("retell", "area_code") or str(settings.retell_area_code or 415)
+        try:
+            retell_area_code = int(raw_area)
+        except Exception:
+            retell_area_code = 415
+
+        telnyx_api_key = (
+            _get_vault_val("telnyx", "api_key")
+            or (settings.telnyx_api_key or os.environ.get("TELNYX_API_KEY") or "").strip()
+        )
+        telnyx_connection_id = (
+            _get_vault_val("telnyx", "connection_id")
+            or (settings.telnyx_connection_id or os.environ.get("TELNYX_CONNECTION_ID") or "").strip()
+        )
+        telnyx_default_number = (
+            _get_vault_val("telnyx", "default_number")
+            or (settings.telnyx_default_number or os.environ.get("TELNYX_DEFAULT_NUMBER") or "").strip()
+        )
+        telnyx_country = (
+            _get_vault_val("telnyx", "default_country")
+            or (settings.telnyx_default_country or "US").strip()
+        )
+
+        # Legacy optional Twilio fallback (never required)
         twilio_sid = (
             _get_vault_val("twilio", "account_sid")
             or (settings.twilio_account_sid or os.environ.get("TWILIO_ACCOUNT_SID") or "").strip()
@@ -100,14 +129,29 @@ class ReceptionistService:
             _get_vault_val("twilio", "default_country")
             or (settings.twilio_default_country or "US").strip()
         )
+
+        telephony_provider = (
+            _get_vault_val("retell", "telephony_provider")
+            or (settings.voice_telephony_provider or os.environ.get("VOICE_TELEPHONY_PROVIDER") or "retell_native").strip().lower()
+        )
+        if telephony_provider not in ("retell_native", "telnyx"):
+            telephony_provider = "retell_native"
+
         calcom_api_key = (
             _get_vault_val("calcom", "api_key")
             or (settings.calcom_api_key or os.environ.get("CALCOM_API_KEY") or "").strip()
         )
 
         return {
+            "telephony_provider": telephony_provider,
             "retell_api_key": retell_api_key,
             "retell_webhook_secret": retell_webhook_secret,
+            "retell_default_number": retell_default_number,
+            "retell_area_code": retell_area_code,
+            "telnyx_api_key": telnyx_api_key,
+            "telnyx_connection_id": telnyx_connection_id,
+            "telnyx_default_number": telnyx_default_number,
+            "telnyx_default_country": telnyx_country or "US",
             "twilio_account_sid": twilio_sid,
             "twilio_auth_token": twilio_token,
             "twilio_default_number": twilio_default_number,
@@ -117,6 +161,9 @@ class ReceptionistService:
                 "retell": "encrypted_vault"
                 if _get_vault_val("retell", "api_key")
                 else ("environment" if (settings.retell_api_key or os.environ.get("RETELL_API_KEY")) else "unconfigured"),
+                "telnyx": "encrypted_vault"
+                if _get_vault_val("telnyx", "api_key")
+                else ("environment" if (settings.telnyx_api_key or os.environ.get("TELNYX_API_KEY")) else "unconfigured"),
                 "twilio": "encrypted_vault"
                 if _get_vault_val("twilio", "account_sid")
                 else ("environment" if (settings.twilio_account_sid or os.environ.get("TWILIO_ACCOUNT_SID")) else "unconfigured"),
@@ -127,21 +174,33 @@ class ReceptionistService:
         }
 
     async def get_admin_voice_credentials_status(self, session: AsyncSession) -> Dict[str, Any]:
-        """Return safe masked status of master Retell AI, Twilio, and Cal.com credentials for Admin Settings."""
+        """Return safe masked status of master Retell AI (native telephony), Telnyx, and Cal.com credentials."""
         creds = await self._resolve_master_credentials(session)
         return {
+            "telephony_provider": creds["telephony_provider"],
             "retell": {
                 "configured": bool(creds["retell_api_key"]),
                 "source": creds["sources"]["retell"],
                 "api_key_masked": _mask_secret(creds["retell_api_key"]),
                 "webhook_secret_configured": bool(creds["retell_webhook_secret"]),
+                "default_number": creds["retell_default_number"] or None,
+                "area_code": creds["retell_area_code"],
+                "native_telephony_ready": bool(creds["retell_api_key"]),
+            },
+            "telnyx": {
+                "configured": bool(creds["telnyx_api_key"]),
+                "source": creds["sources"]["telnyx"],
+                "api_key_masked": _mask_secret(creds["telnyx_api_key"]),
+                "connection_id": creds["telnyx_connection_id"] or None,
+                "default_number": creds["telnyx_default_number"] or None,
+                "default_country": creds["telnyx_default_country"],
             },
             "twilio": {
                 "configured": bool(creds["twilio_account_sid"] and creds["twilio_auth_token"]),
                 "source": creds["sources"]["twilio"],
                 "account_sid_masked": _mask_secret(creds["twilio_account_sid"]),
                 "auth_token_configured": bool(creds["twilio_auth_token"]),
-                "default_number": creds["twilio_default_number"] or None,
+                "default_number": creds["twilio_default_number"] or creds["retell_default_number"] or creds["telnyx_default_number"] or None,
                 "default_country": creds["twilio_default_country"],
             },
             "calcom": {
@@ -157,14 +216,33 @@ class ReceptionistService:
         admin_user_id: uuid.UUID,
         request: AdminVoiceCredentialsUpdateRequest,
     ) -> Dict[str, Any]:
-        """Encrypt and save master Retell AI, Twilio, and Cal.com API credentials in the DB vault."""
+        """Encrypt and save master Retell AI, Telnyx, and Cal.com API credentials in the DB vault."""
         updates_by_provider: Dict[str, Dict[str, Any]] = {}
-        if request.retell_api_key or request.retell_webhook_secret:
-            updates_by_provider["retell"] = {}
-            if request.retell_api_key and request.retell_api_key.strip():
-                updates_by_provider["retell"]["api_key"] = request.retell_api_key.strip()
-            if request.retell_webhook_secret and request.retell_webhook_secret.strip():
-                updates_by_provider["retell"]["webhook_secret"] = request.retell_webhook_secret.strip()
+        retell_patch: Dict[str, Any] = {}
+        if request.retell_api_key and request.retell_api_key.strip():
+            retell_patch["api_key"] = request.retell_api_key.strip()
+        if request.retell_webhook_secret and request.retell_webhook_secret.strip():
+            retell_patch["webhook_secret"] = request.retell_webhook_secret.strip()
+        if request.retell_default_number and request.retell_default_number.strip():
+            retell_patch["default_number"] = normalize_e164(request.retell_default_number)
+        if request.retell_area_code:
+            retell_patch["area_code"] = str(request.retell_area_code)
+        if request.telephony_provider and request.telephony_provider.strip().lower() in ("retell_native", "telnyx"):
+            retell_patch["telephony_provider"] = request.telephony_provider.strip().lower()
+        if retell_patch:
+            updates_by_provider["retell"] = retell_patch
+
+        telnyx_patch: Dict[str, Any] = {}
+        if request.telnyx_api_key and request.telnyx_api_key.strip():
+            telnyx_patch["api_key"] = request.telnyx_api_key.strip()
+        if request.telnyx_connection_id and request.telnyx_connection_id.strip():
+            telnyx_patch["connection_id"] = request.telnyx_connection_id.strip()
+        if request.telnyx_default_number and request.telnyx_default_number.strip():
+            telnyx_patch["default_number"] = normalize_e164(request.telnyx_default_number)
+        if request.telnyx_default_country and request.telnyx_default_country.strip():
+            telnyx_patch["default_country"] = request.telnyx_default_country.strip().upper()
+        if telnyx_patch:
+            updates_by_provider["telnyx"] = telnyx_patch
 
         if (
             request.twilio_account_sid
@@ -410,25 +488,8 @@ class ReceptionistService:
 
         master = await self._resolve_master_credentials(session)
         public_base = self._backend_public_url()
-        voice_webhook_url = f"{public_base}/api/v1/receptionist/webhooks/twilio/voice"
-        status_callback_url = f"{public_base}/api/v1/receptionist/webhooks/twilio/status"
 
-        # 1. Provision or assign Twilio number + configure Voice Webhooks
-        twilio_res = await twilio_voice_adapter.provision_or_assign_number(
-            tenant_id=str(tenant_id),
-            account_sid=master["twilio_account_sid"],
-            auth_token=master["twilio_auth_token"],
-            voice_webhook_url=voice_webhook_url,
-            status_callback_url=status_callback_url,
-            default_number=master["twilio_default_number"],
-            country_code=master["twilio_default_country"],
-            existing_phone=row.twilio_phone_number,
-            existing_sid=row.twilio_phone_sid,
-        )
-        row.twilio_phone_number = twilio_res["phone_number"]
-        row.twilio_phone_sid = twilio_res["phone_sid"]
-
-        # 2. Provision or update dedicated Retell AI LLM + Voice Agent + link Twilio number
+        # 1. Provision or update dedicated Retell AI LLM + Voice Agent FIRST (with Cal.com tools & live transfer)
         retell_res = await retell_ai_adapter.create_or_update_agent(
             api_key=master["retell_api_key"],
             tenant_id=str(tenant_id),
@@ -447,6 +508,52 @@ class ReceptionistService:
         row.retell_llm_id = retell_res["retell_llm_id"]
         row.retell_agent_id = retell_res["retell_agent_id"]
 
+        # 2. Provision or assign AI Phone Number (Telnyx Voice API v2 OR Retell AI Built-in Telephony — zero Twilio required!)
+        if master["telephony_provider"] == "telnyx" or (
+            master["telnyx_api_key"] and not master["retell_default_number"]
+        ):
+            phone_res = await telnyx_voice_adapter.provision_or_assign_number(
+                tenant_id=str(tenant_id),
+                api_key=master["telnyx_api_key"],
+                connection_id=master["telnyx_connection_id"],
+                default_number=master["telnyx_default_number"] or master["twilio_default_number"],
+                country_code=master["telnyx_default_country"],
+                existing_phone=row.twilio_phone_number,
+                existing_sid=row.twilio_phone_sid,
+            )
+            provider_label = "Telnyx Voice"
+        elif master["twilio_account_sid"] and master["twilio_auth_token"]:
+            voice_webhook_url = f"{public_base}/api/v1/receptionist/webhooks/voice"
+            status_callback_url = f"{public_base}/api/v1/receptionist/webhooks/voice/status"
+            phone_res = await twilio_voice_adapter.provision_or_assign_number(
+                tenant_id=str(tenant_id),
+                account_sid=master["twilio_account_sid"],
+                auth_token=master["twilio_auth_token"],
+                voice_webhook_url=voice_webhook_url,
+                status_callback_url=status_callback_url,
+                default_number=master["twilio_default_number"],
+                country_code=master["twilio_default_country"],
+                existing_phone=row.twilio_phone_number,
+                existing_sid=row.twilio_phone_sid,
+            )
+            provider_label = "Custom SIP/Twilio"
+        else:
+            phone_res = await retell_ai_adapter.provision_or_assign_phone_number(
+                api_key=master["retell_api_key"],
+                tenant_id=str(tenant_id),
+                business_name=row.business_name,
+                agent_id=row.retell_agent_id or "",
+                fallback_phone=row.fallback_phone_number,
+                default_number=master["retell_default_number"] or master["telnyx_default_number"] or master["twilio_default_number"],
+                area_code=master["retell_area_code"],
+                existing_phone=row.twilio_phone_number,
+                existing_sid=row.twilio_phone_sid,
+            )
+            provider_label = "Retell Built-in Telephony"
+
+        row.twilio_phone_number = phone_res["phone_number"]
+        row.twilio_phone_sid = phone_res["phone_sid"]
+
         # 3. Generate Call Forwarding Setup Guide
         row.call_forwarding_guide = generate_call_forwarding_guide(
             fallback_phone=row.fallback_phone_number,
@@ -454,15 +561,13 @@ class ReceptionistService:
             business_name=row.business_name,
         )
 
-        # 4. Determine honest provisioning status
-        if twilio_res["is_live"] and retell_res["is_live"]:
-            row.provisioning_status = "active"
-        elif twilio_res["is_live"] or retell_res["is_live"]:
+        # 4. Determine honest provisioning status (active whenever Retell AI agent OR phone provider is live)
+        if retell_res["is_live"] or phone_res["is_live"]:
             row.provisioning_status = "active"
         else:
             row.provisioning_status = "sandbox_ready"
 
-        row.provisioning_notes = f"Twilio: {twilio_res['note']} | Retell AI: {retell_res['note']}"
+        row.provisioning_notes = f"{provider_label}: {phone_res['note']} | Retell AI: {retell_res['note']}"
 
         session.add(
             AuditLog(
@@ -693,11 +798,32 @@ class ReceptionistService:
                 announcement=f"Transferring your call to {cfg.business_name} staff right now.",
             )
 
-        return twilio_voice_adapter.build_retell_sip_or_greeting_twiml(
+        return telnyx_voice_adapter.build_retell_sip_or_greeting_texml(
             business_name=cfg.business_name,
             greeting=cfg.greeting_message,
             fallback_phone=cfg.fallback_phone_number,
             retell_agent_id=cfg.retell_agent_id,
+        )
+
+    async def create_live_web_call(
+        self,
+        session: AsyncSession,
+        tenant_id: uuid.UUID,
+    ) -> Dict[str, Any]:
+        """Initialize a live Retell AI Web Call session for instant browser voice testing (no Twilio required)."""
+        res = await session.execute(
+            select(ReceptionistConfig).where(ReceptionistConfig.tenant_id == tenant_id)
+        )
+        cfg = res.scalar_one_or_none()
+        if not cfg:
+            raise ResourceNotFoundError("ReceptionistConfig", str(tenant_id))
+
+        master = await self._resolve_master_credentials(session)
+        return await retell_ai_adapter.create_web_call(
+            api_key=master["retell_api_key"],
+            agent_id=cfg.retell_agent_id,
+            tenant_id=str(tenant_id),
+            business_name=cfg.business_name,
         )
 
     async def simulate_voice_call(

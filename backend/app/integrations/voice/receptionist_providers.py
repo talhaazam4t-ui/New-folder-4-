@@ -241,6 +241,174 @@ class TwilioVoiceAdapter:
         return self.build_live_transfer_twiml(fallback_phone, announcement=safe_greeting)
 
 
+class TelnyxVoiceAdapter:
+    """Telnyx Voice API v2 + TeXML adapter (global replacement for Twilio, including Pakistan).
+
+    Handles:
+    - Listing/assigning existing Telnyx Voice phone numbers or purchasing available numbers.
+    - Attaching phone numbers to a Telnyx TeXML / Call Control Connection ID.
+    - Building TeXML (<Response><Say><Dial>) responses for live emergency/human transfers.
+    """
+
+    base_url = "https://api.telnyx.com/v2"
+
+    async def provision_or_assign_number(
+        self,
+        tenant_id: str,
+        api_key: Optional[str],
+        connection_id: Optional[str] = None,
+        default_number: Optional[str] = None,
+        country_code: str = "US",
+        existing_phone: Optional[str] = None,
+        existing_sid: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Provision or assign a Telnyx Voice phone number and bind it to the TeXML connection."""
+        key = (api_key or "").strip()
+        if not key or key.startswith("your-"):
+            sandbox_num = existing_phone or default_number or f"+1555{str(abs(hash(tenant_id)))[:7]}"
+            return {
+                "success": True,
+                "phone_number": normalize_e164(sandbox_num),
+                "phone_sid": existing_sid or f"TNX_SANDBOX_{tenant_id[:8]}",
+                "is_live": False,
+                "note": "Telnyx API key not configured; assigned sandbox AI phone number.",
+            }
+
+        headers = {
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+        }
+        try:
+            async with httpx.AsyncClient(timeout=20.0, headers=headers) as client:
+                # 1. Reuse existing Telnyx phone number ID if already attached
+                if existing_sid and not existing_sid.startswith(("PN_SANDBOX_", "TNX_SANDBOX_", "RETELL_")):
+                    if connection_id:
+                        await client.patch(
+                            f"{self.base_url}/phone_numbers/{existing_sid}",
+                            json={"connection_id": connection_id},
+                        )
+                    return {
+                        "success": True,
+                        "phone_number": normalize_e164(existing_phone or default_number or ""),
+                        "phone_sid": existing_sid,
+                        "is_live": True,
+                        "note": "Existing Telnyx voice phone number verified and synced.",
+                    }
+
+                # 2. Check existing active numbers on the Telnyx account
+                list_resp = await client.get(
+                    f"{self.base_url}/phone_numbers",
+                    params={"page[size]": 20},
+                )
+                if list_resp.status_code == 200:
+                    items = list_resp.json().get("data") or []
+                    chosen = None
+                    if default_number:
+                        norm_def = normalize_e164(default_number)
+                        chosen = next(
+                            (n for n in items if normalize_e164(n.get("phone_number", "")) == norm_def),
+                            None,
+                        )
+                    if not chosen and items:
+                        chosen = items[0]
+                    if chosen and chosen.get("phone_number"):
+                        num_id = str(chosen.get("id") or f"tnx_{tenant_id[:8]}")
+                        if connection_id:
+                            await client.patch(
+                                f"{self.base_url}/phone_numbers/{num_id}",
+                                json={"connection_id": connection_id},
+                            )
+                        return {
+                            "success": True,
+                            "phone_number": normalize_e164(chosen["phone_number"]),
+                            "phone_sid": num_id,
+                            "is_live": True,
+                            "note": "Assigned active Telnyx Voice phone number and synced TeXML connection.",
+                        }
+
+                # 3. Search and order a new available voice phone number
+                avail_resp = await client.get(
+                    f"{self.base_url}/available_phone_numbers",
+                    params={
+                        "filter[country_code]": (country_code or "US").upper(),
+                        "filter[features][]": "voice",
+                        "filter[limit]": 1,
+                    },
+                )
+                if avail_resp.status_code == 200:
+                    avail_list = avail_resp.json().get("data") or []
+                    if avail_list:
+                        candidate = avail_list[0].get("phone_number")
+                        order_payload: Dict[str, Any] = {
+                            "phone_numbers": [{"phone_number": candidate}],
+                        }
+                        if connection_id:
+                            order_payload["connection_id"] = connection_id
+                        order_resp = await client.post(
+                            f"{self.base_url}/number_orders",
+                            json=order_payload,
+                        )
+                        if order_resp.status_code in (200, 201):
+                            order_data = order_resp.json().get("data") or {}
+                            return {
+                                "success": True,
+                                "phone_number": normalize_e164(candidate),
+                                "phone_sid": str(order_data.get("id") or f"tnx_{tenant_id[:8]}"),
+                                "is_live": True,
+                                "note": f"Provisioned new Telnyx Voice number ({candidate}).",
+                            }
+        except Exception as exc:
+            logger.warning("Telnyx live provisioning failed; falling back cleanly", error=str(exc))
+
+        fallback_num = existing_phone or default_number or f"+1555{str(abs(hash(tenant_id)))[:7]}"
+        return {
+            "success": True,
+            "phone_number": normalize_e164(fallback_num),
+            "phone_sid": existing_sid or f"TNX_SANDBOX_{tenant_id[:8]}",
+            "is_live": False,
+            "note": "Telnyx live number provisioning unavailable; retained assigned number.",
+        }
+
+    def build_live_transfer_texml(self, fallback_phone: str, announcement: str = "") -> str:
+        """Build TeXML response transferring an active call live to the client's fallback human number."""
+        safe_num = xml_escape(normalize_e164(fallback_phone))
+        say_tag = (
+            f'<Say voice="Polly.Joanna">{xml_escape(announcement)}</Say>'
+            if announcement
+            else '<Say voice="Polly.Joanna">Connecting you to a live representative right now. Please hold.</Say>'
+        )
+        return (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            "<Response>"
+            f"{say_tag}"
+            f'<Dial timeout="25">{safe_num}</Dial>'
+            "<Say>We were unable to reach a representative right now. Please leave a message after the beep.</Say>"
+            '<Record maxLength="120" playBeep="true" />'
+            "</Response>"
+        )
+
+    def build_retell_sip_or_greeting_texml(
+        self,
+        business_name: str,
+        greeting: str,
+        fallback_phone: str,
+        retell_agent_id: Optional[str] = None,
+    ) -> str:
+        """Route inbound Telnyx TeXML voice call into Retell AI SIP or greet & transfer to fallback."""
+        if retell_agent_id and not retell_agent_id.startswith("agent_sandbox_"):
+            safe_sip = xml_escape(f"sip:{retell_agent_id}@5t4n6j0wnrl.sip.livekit.cloud")
+            return (
+                '<?xml version="1.0" encoding="UTF-8"?>'
+                "<Response>"
+                "<Dial>"
+                f"<Sip>{safe_sip}</Sip>"
+                "</Dial>"
+                "</Response>"
+            )
+        safe_greeting = xml_escape(greeting or f"Welcome to {business_name}. Connecting you now.")
+        return self.build_live_transfer_texml(fallback_phone, announcement=safe_greeting)
+
+
 class RetellAIAdapter:
     """Handles Retell AI LLM + Voice Agent provisioning, Cal.com tools, live transfer, and Twilio linking."""
 
@@ -482,6 +650,185 @@ class RetellAIAdapter:
         sig_clean = signature_header.split("=")[-1].strip()
         return hmac.compare_digest(expected, sig_clean)
 
+    async def provision_or_assign_phone_number(
+        self,
+        api_key: Optional[str],
+        tenant_id: str,
+        business_name: str,
+        agent_id: str,
+        fallback_phone: str,
+        default_number: Optional[str] = None,
+        area_code: Optional[int] = 415,
+        existing_phone: Optional[str] = None,
+        existing_sid: Optional[str] = None,
+        base_url: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Provision or bind a Retell AI native managed phone number (zero Twilio account needed!)."""
+        key = (api_key or "").strip()
+        retell_base = (base_url or settings.retell_base_url).rstrip("/")
+        sandbox_num = normalize_e164(
+            existing_phone or default_number or f"+1555{str(abs(hash(tenant_id)))[:7]}"
+        )
+
+        if not key or key.startswith("your-") or not agent_id or agent_id.startswith("agent_sandbox_"):
+            return {
+                "success": True,
+                "phone_number": sandbox_num,
+                "phone_sid": existing_sid or f"RETELL_SANDBOX_{tenant_id[:8]}",
+                "is_live": False,
+                "note": "Retell AI native number will attach automatically once a live Retell number is added.",
+            }
+
+        headers = {
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+        }
+        norm_fallback = normalize_e164(fallback_phone)
+        try:
+            async with httpx.AsyncClient(timeout=20.0, headers=headers) as client:
+                # 1. If tenant already has a live non-sandbox phone number, bind/update it on Retell AI
+                target_existing = existing_phone or default_number
+                if target_existing and not normalize_e164(target_existing).startswith("+1555"):
+                    norm_target = normalize_e164(target_existing)
+                    upd = await client.patch(
+                        f"{retell_base}/update-phone-number/{norm_target}",
+                        json={
+                            "inbound_agent_id": agent_id,
+                            "nickname": f"{business_name} AI Receptionist",
+                        },
+                    )
+                    if upd.status_code in (200, 201):
+                        return {
+                            "success": True,
+                            "phone_number": norm_target,
+                            "phone_sid": f"RETELL_NUM_{norm_target}",
+                            "is_live": True,
+                            "note": f"Retell AI native phone number {norm_target} synced to voice agent.",
+                        }
+
+                # 2. Check existing phone numbers already owned inside Retell AI account
+                list_resp = await client.get(f"{retell_base}/list-phone-numbers")
+                if list_resp.status_code == 200:
+                    raw_list = list_resp.json()
+                    items = raw_list if isinstance(raw_list, list) else (raw_list.get("items") or [])
+                    # Prefer an unassigned number, or fall back to the first available Retell number
+                    chosen = next((n for n in items if not n.get("inbound_agent_id")), None)
+                    if not chosen and items:
+                        chosen = items[0]
+                    if chosen and chosen.get("phone_number"):
+                        num = normalize_e164(chosen["phone_number"])
+                        await client.patch(
+                            f"{retell_base}/update-phone-number/{num}",
+                            json={
+                                "inbound_agent_id": agent_id,
+                                "nickname": f"{business_name} AI Receptionist",
+                            },
+                        )
+                        return {
+                            "success": True,
+                            "phone_number": num,
+                            "phone_sid": f"RETELL_NUM_{num}",
+                            "is_live": True,
+                            "note": f"Assigned existing Retell AI native phone number ({num}) — no Twilio needed.",
+                        }
+
+                # 3. Attempt to purchase a native Retell-managed number (backed by Telnyx/Retell infrastructure)
+                create_payload: Dict[str, Any] = {
+                    "inbound_agent_id": agent_id,
+                    "nickname": f"{business_name} AI Receptionist",
+                    "area_code": int(area_code or 415),
+                }
+                if norm_fallback and len(norm_fallback) >= 8:
+                    create_payload["fallback_number"] = norm_fallback
+                buy_resp = await client.post(
+                    f"{retell_base}/create-phone-number",
+                    json=create_payload,
+                )
+                if buy_resp.status_code in (200, 201):
+                    bought = buy_resp.json()
+                    num = normalize_e164(bought.get("phone_number") or sandbox_num)
+                    return {
+                        "success": True,
+                        "phone_number": num,
+                        "phone_sid": f"RETELL_NUM_{num}",
+                        "is_live": True,
+                        "note": f"Provisioned dedicated Retell AI native phone number ({num}).",
+                    }
+        except Exception as exc:
+            logger.warning("Retell native phone provisioning skipped; using web-call/sandbox number", error=str(exc))
+
+        return {
+            "success": True,
+            "phone_number": sandbox_num,
+            "phone_sid": existing_sid or f"RETELL_WEB_{tenant_id[:8]}",
+            "is_live": False,
+            "note": (
+                "Retell AI Voice Agent is LIVE (ready for browser Web Calls). "
+                "Add a Retell phone number (~$2/mo in Retell Dashboard -> Phone Numbers) or Telnyx API key for live PSTN forwarding."
+            ),
+        }
+
+    async def create_web_call(
+        self,
+        api_key: Optional[str],
+        agent_id: Optional[str],
+        tenant_id: str,
+        business_name: str,
+        base_url: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Create a live Retell AI Web Call session (works directly in browser using Retell free credits)."""
+        key = (api_key or "").strip()
+        retell_base = (base_url or settings.retell_base_url).rstrip("/")
+
+        if not key or key.startswith("your-") or not agent_id or agent_id.startswith("agent_sandbox_"):
+            return {
+                "success": True,
+                "call_id": f"web_sandbox_{uuid.uuid4().hex[:10]}",
+                "access_token": None,
+                "agent_id": agent_id or f"agent_sandbox_{tenant_id[:8]}",
+                "is_live": False,
+                "note": "Configure a live Retell AI API key and provision your agent to launch live browser voice calls.",
+            }
+
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.post(
+                    f"{retell_base}/v2/create-web-call",
+                    headers={
+                        "Authorization": f"Bearer {key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "agent_id": agent_id,
+                        "metadata": {
+                            "tenant_id": tenant_id,
+                            "business_name": business_name,
+                            "source": "talox_receptionist_dashboard",
+                        },
+                    },
+                )
+                if resp.status_code in (200, 201):
+                    data = resp.json()
+                    return {
+                        "success": True,
+                        "call_id": data.get("call_id"),
+                        "access_token": data.get("access_token"),
+                        "agent_id": data.get("agent_id") or agent_id,
+                        "is_live": True,
+                        "note": "Live Retell AI Web Call session registered.",
+                    }
+        except Exception as exc:
+            logger.warning("Retell create-web-call failed", error=str(exc))
+
+        return {
+            "success": False,
+            "call_id": f"web_fallback_{uuid.uuid4().hex[:10]}",
+            "access_token": None,
+            "agent_id": agent_id,
+            "is_live": False,
+            "note": "Could not initialize Retell Web Call right now; use Test Call Simulator or check Retell credits.",
+        }
+
 
 class CalComAdapter:
     """Handles Cal.com availability checks and live appointment booking for Retell AI voice calls."""
@@ -615,5 +962,6 @@ class CalComAdapter:
 
 
 twilio_voice_adapter = TwilioVoiceAdapter()
+telnyx_voice_adapter = TelnyxVoiceAdapter()
 retell_ai_adapter = RetellAIAdapter()
 calcom_adapter = CalComAdapter()

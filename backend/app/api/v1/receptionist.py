@@ -78,7 +78,7 @@ async def provision_receptionist_agent(
     context: TenantContext = Depends(require_permission("integrations.manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    """Provision or re-sync the tenant's Twilio AI number, Retell AI voice agent, and Cal.com tools."""
+    """Provision or re-sync the tenant's AI Phone Number (Retell Built-in / Telnyx), Retell AI Voice Agent, and Cal.com tools."""
     cfg = await receptionist_service.provision_voice_stack(
         session=session,
         tenant_id=context.tenant_id,
@@ -87,8 +87,21 @@ async def provision_receptionist_agent(
     return {
         "success": True,
         "data": cfg,
-        "message": "Twilio number and Retell AI Voice Receptionist provisioned.",
+        "message": "AI Phone Number and Retell AI Voice Receptionist provisioned.",
     }
+
+
+@router.post("/web-call")
+async def create_receptionist_web_call(
+    context: TenantContext = Depends(get_current_tenant),
+    session: AsyncSession = Depends(get_db),
+):
+    """Register a live Retell AI Web Call session for instant browser voice testing (zero Twilio required)."""
+    data = await receptionist_service.create_live_web_call(
+        session=session,
+        tenant_id=context.tenant_id,
+    )
+    return {"success": True, "data": data}
 
 
 @router.get("/calls")
@@ -194,15 +207,16 @@ async def retell_call_event_webhook(
     return {"success": True, "data": result}
 
 
+@router.post("/webhooks/voice")
 @router.post("/webhooks/twilio/voice")
-async def twilio_inbound_voice_webhook(
+async def inbound_voice_texml_webhook(
     To: str = Form(default=""),
     From: str = Form(default="Unknown"),
     CallSid: str = Form(default=""),
     emergency: bool = Query(default=False),
     session: AsyncSession = Depends(get_db),
 ):
-    """Twilio Voice Webhook returning TwiML routing calls to Retell AI or live human transfer."""
+    """Telnyx TeXML / SIP Voice Webhook routing inbound calls to Retell AI or live human transfer."""
     twiml = await receptionist_service.handle_twilio_voice_webhook(
         session=session,
         to_number=To,
@@ -213,10 +227,11 @@ async def twilio_inbound_voice_webhook(
     return Response(content=twiml, media_type="application/xml")
 
 
+@router.post("/webhooks/voice/status")
 @router.post("/webhooks/twilio/status")
-async def twilio_call_status_callback(
+async def voice_call_status_callback(
     CallSid: str = Form(default=""),
     CallStatus: str = Form(default="completed"),
 ):
-    """Twilio Voice StatusCallback acknowledgement endpoint."""
+    """Voice StatusCallback acknowledgement endpoint (Telnyx / Retell / SIP)."""
     return {"success": True, "call_sid": CallSid, "status": CallStatus}

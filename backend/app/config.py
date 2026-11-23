@@ -192,10 +192,21 @@ class Settings(BaseSettings):
     google_redirect_uri: Optional[str] = Field(default=None, alias="GOOGLE_REDIRECT_URI")
     google_places_api_key: Optional[str] = Field(default=None, alias="GOOGLE_PLACES_API_KEY")
 
-    # Office Receptionist — AI Voice Agent (Retell AI, Twilio, Cal.com)
+    # Office Receptionist — AI Voice Agent (Retell AI Native Telephony + Telnyx + Cal.com)
+    voice_telephony_provider: str = Field(
+        default="retell_native",
+        alias="VOICE_TELEPHONY_PROVIDER",
+    )  # retell_native | telnyx
     retell_api_key: Optional[str] = Field(default=None, alias="RETELL_API_KEY")
     retell_base_url: str = Field(default="https://api.retellai.com", alias="RETELL_BASE_URL")
     retell_webhook_secret: Optional[str] = Field(default=None, alias="RETELL_WEBHOOK_SECRET")
+    retell_default_number: Optional[str] = Field(default=None, alias="RETELL_DEFAULT_NUMBER")
+    retell_area_code: Optional[int] = Field(default=415, alias="RETELL_AREA_CODE")
+    telnyx_api_key: Optional[str] = Field(default=None, alias="TELNYX_API_KEY")
+    telnyx_connection_id: Optional[str] = Field(default=None, alias="TELNYX_CONNECTION_ID")
+    telnyx_default_number: Optional[str] = Field(default=None, alias="TELNYX_DEFAULT_NUMBER")
+    telnyx_default_country: str = Field(default="US", alias="TELNYX_DEFAULT_COUNTRY")
+    # Legacy optional Twilio env vars (retained only for backward compatibility)
     twilio_account_sid: Optional[str] = Field(default=None, alias="TWILIO_ACCOUNT_SID")
     twilio_auth_token: Optional[str] = Field(default=None, alias="TWILIO_AUTH_TOKEN")
     twilio_default_number: Optional[str] = Field(default=None, alias="TWILIO_DEFAULT_NUMBER")

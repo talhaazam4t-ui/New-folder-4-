@@ -56,12 +56,20 @@ class CalComBookToolRequest(BaseModel):
 
 
 class AdminVoiceCredentialsUpdateRequest(BaseModel):
+    telephony_provider: Optional[str] = Field(default=None, max_length=40)  # retell_native | telnyx
     retell_api_key: Optional[str] = None
     retell_webhook_secret: Optional[str] = None
+    retell_default_number: Optional[str] = None
+    retell_area_code: Optional[int] = Field(default=None, ge=200, le=999)
+    telnyx_api_key: Optional[str] = None
+    telnyx_connection_id: Optional[str] = None
+    telnyx_default_number: Optional[str] = None
+    telnyx_default_country: Optional[str] = Field(default="US", max_length=5)
+    # Legacy optional Twilio fields kept harmlessly for backward compatibility
     twilio_account_sid: Optional[str] = None
     twilio_auth_token: Optional[str] = None
     twilio_default_number: Optional[str] = None
-    twilio_default_country: Optional[str] = Field(default="US", max_length=5)
+    twilio_default_country: Optional[str] = Field(default=None, max_length=5)
     calcom_api_key: Optional[str] = None
 
 

@@ -667,7 +667,7 @@ export default function OnboardingPage() {
         setRecepBusinessName(res.data.business_name || effectiveBizName);
         setRecepCalcomApiKey("");
         setStatusMessage(
-          `Office Receptionist provisioned! Your assigned Twilio AI number is ${
+          `Office Receptionist provisioned! Your assigned AI Voice number is ${
             res.data.twilio_phone_number || "ready"
           }. Follow the Call Forwarding guide below to go live.`
         );
@@ -1011,7 +1011,7 @@ export default function OnboardingPage() {
                           ))
                         ) : (
                           <span className="rounded bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.5 text-[10px] font-semibold text-emerald-300">
-                            Guided Voice Setup (Retell AI + Twilio + Cal.com)
+                            Guided Voice Setup (Retell AI + Telnyx/Native + Cal.com)
                           </span>
                         )}
                       </div>
@@ -1097,7 +1097,7 @@ export default function OnboardingPage() {
                 </h3>
                 <p className="text-xs text-slate-400">
                   {hasOfficeReceptionist && requiredIntegrations.length === 0
-                    ? "Enter only the details needed for your Retell AI Voice Receptionist, Twilio number assignment, Cal.com appointment booking, and live call transfer."
+                    ? "Enter only the details needed for your Retell AI Voice Receptionist, AI phone number assignment (Retell Built-in / Telnyx), Cal.com appointment booking, and live call transfer."
                     : "Credentials are encrypted at rest on the backend. Automation remains inactive until all required connections below are verified."}
                 </p>
               </div>
@@ -1129,7 +1129,7 @@ export default function OnboardingPage() {
                         Office Receptionist — AI Voice Agent Onboarding
                       </h4>
                       <p className="text-[11px] text-slate-400">
-                        Automatically provisions your Twilio phone number, Retell AI voice agent,
+                        Automatically provisions your Retell AI voice agent, built-in/Telnyx AI phone number,
                         Cal.com appointment tools, and live emergency transfer routing.
                       </p>
                     </div>
@@ -1273,7 +1273,7 @@ export default function OnboardingPage() {
                     <PhoneCall className="h-4 w-4" />
                     <span>
                       {recepSaving
-                        ? "Provisioning Twilio Number & Retell AI Voice Agent..."
+                        ? "Provisioning Retell AI Voice Agent & Phone Number..."
                         : recepConfig
                         ? "Update Office Receptionist & Refresh Call Forwarding Guide"
                         : "Provision AI Receptionist & Generate Call Forwarding Guide"}

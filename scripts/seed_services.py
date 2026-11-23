@@ -438,7 +438,7 @@ DEFAULT_SERVICES = [
         "slug": "office-receptionist",
         "category": "communication",
         "description": (
-            "24/7 AI Voice Receptionist powered by Retell AI, Twilio, and Cal.com — answers live phone calls, "
+            "24/7 AI Voice Receptionist powered by Retell AI, Built-in/Telnyx Telephony, and Cal.com — answers live phone calls, "
             "handles FAQs, books appointments directly into Cal.com, and transfers urgent/human requests live."
         ),
         "configuration_schema": {
@@ -450,7 +450,7 @@ DEFAULT_SERVICES = [
             ],
             "required_integrations": [],
             "features": [
-                "Dedicated Twilio AI phone number with automatic Voice Webhook & Call Forwarding guide",
+                "Dedicated AI Voice phone number (Retell Built-in / Telnyx) with automatic Call Forwarding guide",
                 "Custom Retell AI voice agent trained on your business hours, greeting, and FAQs",
                 "Real-time Cal.com availability lookup & live call appointment booking",
                 "Instant live call transfer to your personal/fallback number for emergencies or human requests",
@@ -464,7 +464,7 @@ DEFAULT_SERVICES = [
                     "price": 199.0,
                     "billing_interval": "monthly",
                     "features": [
-                        "1 dedicated Twilio AI number",
+                        "1 dedicated AI Voice phone line (Retell / Telnyx)",
                         "Retell AI voice agent + custom FAQs",
                         "Cal.com appointment booking + live transfer",
                         "300 voice minutes/month",
@@ -477,7 +477,7 @@ DEFAULT_SERVICES = [
                     "price": 399.0,
                     "billing_interval": "monthly",
                     "features": [
-                        "Up to 3 Twilio lines",
+                        "Up to 3 AI Voice phone lines",
                         "1,500 voice minutes/month",
                         "Priority Cal.com routing + SMS/WhatsApp follow-ups",
                         "Full transcripts & call analytics",

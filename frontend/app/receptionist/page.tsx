@@ -95,6 +95,13 @@ export default function OfficeReceptionistPage() {
   const [saving, setSaving] = useState(false);
   const [provisioning, setProvisioning] = useState(false);
   const [simulating, setSimulating] = useState(false);
+  const [webCallLoading, setWebCallLoading] = useState(false);
+  const [webCallSession, setWebCallSession] = useState<{
+    call_id: string;
+    agent_id: string;
+    is_live: boolean;
+    note?: string;
+  } | null>(null);
   const [config, setConfig] = useState<ReceptionistConfig | null>(null);
   const [calls, setCalls] = useState<ReceptionistCallLog[]>([]);
   const [bookedAppointments, setBookedAppointments] = useState<ReceptionistCallLog[]>([]);
@@ -309,7 +316,7 @@ export default function OfficeReceptionistPage() {
         setConfig(res.data);
         hydrateFormFromConfig(res.data);
         setStatusMessage(
-          "Twilio phone number, Voice Webhooks, and Retell AI Voice Agent synced successfully."
+          "AI Phone Number (Retell Built-in / Telnyx) and Retell AI Voice Agent synced successfully."
         );
       } else {
         setErrorMessage(res.error?.message || "Failed to provision voice agent.");
@@ -344,6 +351,36 @@ export default function OfficeReceptionistPage() {
       }
     } finally {
       setSimulating(false);
+    }
+  };
+
+  const handleStartLiveWebCall = async () => {
+    if (!config) {
+      setErrorMessage("Please save and activate your Office Receptionist setup first.");
+      return;
+    }
+    setErrorMessage(null);
+    setStatusMessage(null);
+    setWebCallLoading(true);
+    try {
+      const res = await apiRequest("/api/v1/receptionist/web-call", { method: "POST" });
+      if (res.success && res.data) {
+        setWebCallSession({
+          call_id: res.data.call_id,
+          agent_id: res.data.agent_id,
+          is_live: Boolean(res.data.is_live),
+          note: res.data.note,
+        });
+        setStatusMessage(
+          res.data.is_live
+            ? `Live Retell AI Web Call registered (Call ID: ${res.data.call_id}) — zero Twilio needed!`
+            : res.data.note || "Web Call initialized in sandbox mode."
+        );
+      } else {
+        setErrorMessage(res.error?.message || "Failed to start live Retell AI Web Call.");
+      }
+    } finally {
+      setWebCallLoading(false);
     }
   };
 
@@ -389,7 +426,7 @@ export default function OfficeReceptionistPage() {
                 </span>
               </div>
               <p className="text-sm text-slate-500">
-                24/7 Retell AI + Twilio phone answering, live Cal.com appointment scheduling, and
+                24/7 Retell AI + Built-in/Telnyx voice answering, live Cal.com appointment scheduling, and
                 instant human call transfers to your fallback number.
               </p>
             </div>
@@ -434,7 +471,7 @@ export default function OfficeReceptionistPage() {
               <div className="rounded-xl border border-emerald-200 bg-emerald-50/50 p-4 flex items-center justify-between gap-3">
                 <div>
                   <p className="text-[11px] font-semibold uppercase tracking-wider text-emerald-700">
-                    Assigned Twilio AI Number
+                    Assigned AI Voice Number
                   </p>
                   <p className="text-lg font-bold font-mono text-slate-900 mt-0.5">
                     {config.twilio_phone_number || "Pending Assignment"}
@@ -448,7 +485,7 @@ export default function OfficeReceptionistPage() {
                     type="button"
                     onClick={() => handleCopyText("ai-num", config.twilio_phone_number!)}
                     className="rounded-lg border border-emerald-200 bg-white p-2 text-emerald-700 hover:bg-emerald-100 transition"
-                    title="Copy assigned Twilio AI number"
+                    title="Copy assigned AI Voice number"
                   >
                     {copiedKey === "ai-num" ? (
                       <Check className="h-4 w-4" />
@@ -539,7 +576,7 @@ export default function OfficeReceptionistPage() {
                   </h2>
                   <p className="text-xs text-slate-500">
                     Forward calls from your existing business phone ({guide.fallback_human_number}) to
-                    your assigned Twilio AI number ({guide.assigned_ai_number}).
+                    your assigned AI Voice number ({guide.assigned_ai_number}).
                   </p>
                 </div>
               </div>
@@ -856,6 +893,42 @@ export default function OfficeReceptionistPage() {
                     <span>{simulating ? "Simulating..." : "Run Test Call"}</span>
                   </button>
                 </div>
+
+                <div className="pt-2 border-t border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <p className="text-[11px] text-slate-500">
+                    Want to verify your live Retell AI Voice Agent directly without PSTN telephony?
+                  </p>
+                  <button
+                    type="button"
+                    disabled={webCallLoading || !config}
+                    onClick={handleStartLiveWebCall}
+                    className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-800 hover:bg-emerald-100 disabled:opacity-50 transition"
+                  >
+                    <PhoneCall className="h-3.5 w-3.5 text-emerald-600" />
+                    <span>
+                      {webCallLoading ? "Connecting Retell AI..." : "Test Live Retell Web Call"}
+                    </span>
+                  </button>
+                </div>
+
+                {webCallSession && (
+                  <div className="rounded-lg border border-emerald-200 bg-emerald-50/70 px-3 py-2 text-[11px] text-emerald-900 flex flex-wrap items-center justify-between gap-2">
+                    <span>
+                      <strong>{webCallSession.is_live ? "Live Session Ready:" : "Sandbox Session:"}</strong>{" "}
+                      <span className="font-mono">{webCallSession.call_id}</span> (Agent:{" "}
+                      <span className="font-mono">{webCallSession.agent_id}</span>)
+                    </span>
+                    <a
+                      href={`https://dashboard.retellai.com/agent/${webCallSession.agent_id}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 font-semibold text-emerald-700 hover:underline"
+                    >
+                      <span>Open in Retell AI</span>
+                      <ExternalLink className="h-3 w-3" />
+                    </a>
+                  </div>
+                )}
               </div>
 
               {/* Call Logs & Booked Appointments Panel */}
@@ -912,7 +985,7 @@ export default function OfficeReceptionistPage() {
                         : "No calls logged yet"}
                     </p>
                     <p className="text-xs text-slate-500 max-w-md mx-auto">
-                      Once your office line forwards to your assigned Twilio AI number — or when
+                      Once your office line forwards to your assigned AI Voice number — or when
                       you click &ldquo;Run Test Call&rdquo; above — call summaries, transcripts, and
                       booked appointments will appear here in real time.
                     </p>
