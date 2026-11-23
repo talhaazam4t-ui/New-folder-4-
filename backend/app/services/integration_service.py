@@ -376,15 +376,18 @@ class IntegrationService:
                         code="OAUTH_NOT_CONFIGURED",
                         status_code=400,
                     )
-                params = {
+                meta_cfg_id = (settings.meta_config_id or "").strip()
+                params: Dict[str, Any] = {
                     "client_id": app_id,
                     "redirect_uri": redirect_uri,
                     "response_type": "code",
-                    "scope": ",".join(meta["scopes"]),
                     "state": state_token,
                 }
-                if settings.meta_config_id:
-                    params["config_id"] = settings.meta_config_id
+                if meta_cfg_id:
+                    params["config_id"] = meta_cfg_id
+                    params["override_default_response_type"] = "true"
+                else:
+                    params["scope"] = ",".join(meta["scopes"])
                 auth_url = f"https://www.facebook.com/v21.0/dialog/oauth?{urllib.parse.urlencode(params)}"
                 client_id = app_id
             else:

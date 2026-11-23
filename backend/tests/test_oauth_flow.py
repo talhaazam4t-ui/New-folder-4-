@@ -28,6 +28,7 @@ async def test_oauth_authorization_url_generation_all_providers(monkeypatch):
     monkeypatch.setattr(settings, "google_client_id", "test-google-client-id.apps.googleusercontent.com")
     monkeypatch.setattr(settings, "google_client_secret", "test-google-client-secret")
     monkeypatch.setattr(settings, "meta_app_id", "test-meta-app-id")
+    monkeypatch.setattr(settings, "meta_config_id", None)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         # Register user and tenant
@@ -106,6 +107,7 @@ async def test_oauth_callback_token_exchange_and_encryption(monkeypatch):
     monkeypatch.setattr(settings, "google_client_id", "test-google-client-id.apps.googleusercontent.com")
     monkeypatch.setattr(settings, "google_client_secret", "test-google-client-secret")
     monkeypatch.setattr(settings, "meta_app_id", "test-meta-app-id")
+    monkeypatch.setattr(settings, "meta_config_id", None)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         # Register user and tenant
@@ -216,3 +218,37 @@ async def test_oauth_tampered_state_rejection():
         )
         assert forged_res.status_code == 400
         assert forged_res.json()["error"]["code"] == "INVALID_OAUTH_STATE"
+
+
+@pytest.mark.asyncio
+async def test_whatsapp_oauth_uses_config_id_without_scope(monkeypatch):
+    """Verify Facebook Login for Business omits `scope` when `meta_config_id` is set."""
+    monkeypatch.setattr(settings, "meta_app_id", "test-meta-app-id")
+    monkeypatch.setattr(settings, "meta_config_id", "987654321098765")
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        reg = await client.post("/api/v1/auth/register", json={
+            "email": "meta.config@acmehealth.com",
+            "password": "Password123!",
+            "full_name": "Meta Tester",
+        })
+        token = reg.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        t_res = await client.post("/api/v1/tenants", json={
+            "name": "Meta Config Clinic",
+            "slug": "meta-config-clinic",
+            "industry": "Clinics / Hospitals",
+        }, headers=headers)
+        tenant_id = t_res.json()["id"]
+        tenant_headers = {"Authorization": f"Bearer {token}", "X-Tenant-ID": tenant_id}
+
+        wa_auth = await client.get(
+            "/api/v1/integrations/oauth/whatsapp/authorize?return_to=/onboarding",
+            headers=tenant_headers,
+        )
+        assert wa_auth.status_code == 200
+        auth_url = wa_auth.json()["data"]["authorization_url"]
+        assert "config_id=987654321098765" in auth_url
+        assert "override_default_response_type=true" in auth_url
+        assert "scope=" not in auth_url
