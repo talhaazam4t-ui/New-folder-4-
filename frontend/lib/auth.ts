@@ -1,17 +1,14 @@
 /**
  * Client-Side Authentication, Session Persistence & Tenant State Management
- * Enforces exclusive Sole Admin verification (SOLE_ADMIN_EMAILS + backend isSuperAdmin)
- * and long-lived session persistence for client accounts.
+ * Enforces server-verified Super Admin role (backend JWT / /auth/me `is_super_admin` flag —
+ * zero admin emails hardcoded in public client JS bundles) and long-lived session persistence.
  */
 
 export const SUPPORT_WHATSAPP_NUMBER = "03238300330";
 export const SUPPORT_WHATSAPP_LINK = "https://wa.me/923238300330?text=Hi%20Teloxtech%2C%20I%20would%20like%20to%20inquire%20about%20your%20services";
 
-export const SOLE_ADMIN_EMAILS: readonly string[] = [
-  "talhazam4@gmail.com",
-  "talhaazam4t@gmail.com",
-  "talazam40@gmail.com",
-];
+// Intentionally empty on the client: admin authorization is enforced strictly on the backend.
+export const SOLE_ADMIN_EMAILS: readonly string[] = [];
 
 export interface UserSession {
   userId: string;
@@ -38,10 +35,8 @@ const USER_KEY = "talox_user";
 const TENANT_KEY = "talox_active_tenant";
 const PERSISTENCE_KEY = "talox_session_persistent";
 
-export function isSoleAdminEmail(email?: string | null): boolean {
-  if (!email) return false;
-  const normalized = email.trim().toLowerCase();
-  return SOLE_ADMIN_EMAILS.includes(normalized);
+export function isSoleAdminEmail(_email?: string | null): boolean {
+  return false;
 }
 
 export function getAuthToken(): string | null {

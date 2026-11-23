@@ -164,7 +164,7 @@ async def seed_catalog() -> Dict[str, Dict[str, Any]]:
 @pytest.fixture
 async def super_admin_headers(async_client: AsyncClient) -> Dict[str, str]:
     """Register and authenticate the platform Super Admin for admin approval workflows."""
-    admin_email = settings.super_admin_emails[0] if settings.super_admin_emails else "talhazam4@gmail.com"
+    admin_email = settings.super_admin_emails[0] if settings.super_admin_emails else "talhaazam4t@gmail.com"
     auth = await register_and_login(
         async_client,
         email=admin_email,

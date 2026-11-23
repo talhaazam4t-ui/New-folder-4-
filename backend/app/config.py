@@ -69,12 +69,10 @@ class Settings(BaseSettings):
     port: int = Field(default=8000, alias="PORT")
     host: str = Field(default="0.0.0.0", alias="HOST")
 
-    # Platform Super Admin Emails & Bootstrap Controls
+    # Platform Super Admin Email & Bootstrap Controls (Strict Single-Admin Lock)
     super_admin_emails: Annotated[List[str], NoDecode] = Field(
         default=[
-            "talhazam4@gmail.com",
             "talhaazam4t@gmail.com",
-            "talazam40@gmail.com",
         ],
         alias="SUPER_ADMIN_EMAILS",
     )
