@@ -15,10 +15,13 @@ from app.schemas.agent import (
     AgentInfoResponse,
     AgentOrchestrateRequest,
     AgentOrchestrateResponse,
+    OutreachAutopilotConfigUpdate,
+    OutreachAutopilotRunRequest,
     TenantAgentConfigRequest,
 )
 from app.schemas.task import TaskExecutionResponse
 from app.services.auth_service import auth_service
+from app.services.outreach_autopilot_service import outreach_autopilot_service
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -35,6 +38,84 @@ async def list_tenant_agents(
         session=session,
         tenant_id=context.tenant_id,
     )
+
+
+@router.get("/outreach-autopilot")
+async def get_outreach_autopilot_state(
+    context: TenantContext = Depends(require_permission("tenant.read")),
+    session: AsyncSession = Depends(get_db),
+):
+    """Return Daily Global Lead-Finder & Gmail Draft Autopilot settings, Gmail status, and saved drafts."""
+    data = await outreach_autopilot_service.get_autopilot_state(
+        session=session,
+        tenant_id=context.tenant_id,
+    )
+    return {"success": True, "data": data}
+
+
+@router.put("/outreach-autopilot")
+async def update_outreach_autopilot_config(
+    payload: OutreachAutopilotConfigUpdate,
+    context: TenantContext = Depends(require_permission("agents.execute")),
+    session: AsyncSession = Depends(get_db),
+):
+    """Save Daily Global Lead-Finder & Gmail Draft Autopilot configuration for the workspace."""
+    data = await outreach_autopilot_service.update_autopilot_config(
+        session=session,
+        tenant_id=context.tenant_id,
+        user_id=context.user_id,
+        payload=payload,
+    )
+    return {
+        "success": True,
+        "data": data,
+        "message": "Daily Global Outreach Autopilot settings saved.",
+    }
+
+
+@router.post("/outreach-autopilot/run")
+@limiter.limit(f"{settings.rate_limit_agent_rpm}/minute")
+async def run_outreach_autopilot_now(
+    request: Request,
+    payload: OutreachAutopilotRunRequest,
+    context: TenantContext = Depends(require_permission("agents.execute")),
+    session: AsyncSession = Depends(get_db),
+):
+    """Discover fresh global companies for a niche/city and save tailored drafts in Gmail Drafts (never auto-sends)."""
+    data = await outreach_autopilot_service.run_autopilot_cycle(
+        session=session,
+        tenant_id=context.tenant_id,
+        actor_id=context.user_id,
+        niche_override=payload.niche,
+        city_override=payload.city,
+        limit_override=payload.limit,
+        sync_pending_crm_drafts=payload.sync_pending_crm_drafts,
+    )
+    return {
+        "success": True,
+        "data": data,
+        "message": "Global lead discovery and Gmail draft creation completed.",
+    }
+
+
+@router.post("/outreach-autopilot/sync-drafts")
+@limiter.limit(f"{settings.rate_limit_agent_rpm}/minute")
+async def sync_outreach_crm_drafts_to_gmail(
+    request: Request,
+    context: TenantContext = Depends(require_permission("agents.execute")),
+    session: AsyncSession = Depends(get_db),
+):
+    """Push pending CRM drafts to the workspace's connected Gmail Drafts folder."""
+    data = await outreach_autopilot_service.sync_pending_crm_drafts(
+        session=session,
+        tenant_id=context.tenant_id,
+        actor_id=context.user_id,
+    )
+    return {
+        "success": True,
+        "data": data,
+        "message": f"Synced {data['synced_count']} pending drafts into Gmail Drafts.",
+    }
 
 
 @router.post("/{agent_name}/configure", response_model=AgentInfoResponse)

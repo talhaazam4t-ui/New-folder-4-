@@ -55,3 +55,22 @@ class AgentOrchestrateResponse(BaseModel):
     final_output: Optional[str] = None
     total_tokens: int = 0
     total_estimated_cost: float = 0.0
+
+
+class OutreachAutopilotConfigUpdate(BaseModel):
+    enabled: Optional[bool] = None
+    niches: Optional[List[str]] = Field(default=None, max_length=20)
+    cities: Optional[List[str]] = Field(default=None, max_length=40)
+    daily_draft_limit: Optional[int] = Field(default=None, ge=1, le=15)
+    service_offer: Optional[str] = Field(default=None, max_length=1200)
+    sender_name: Optional[str] = Field(default=None, max_length=150)
+    booking_url: Optional[str] = Field(default=None, max_length=500)
+    run_hour_utc: Optional[int] = Field(default=None, ge=0, le=23)
+
+
+class OutreachAutopilotRunRequest(BaseModel):
+    niche: Optional[str] = Field(default=None, max_length=120)
+    city: Optional[str] = Field(default=None, max_length=120)
+    limit: Optional[int] = Field(default=None, ge=1, le=15)
+    sync_pending_crm_drafts: bool = False
+

@@ -21,6 +21,7 @@ from app.core.exceptions import TaloxException
 from app.core.logging import logger, setup_logging
 from app.core.rate_limit import limiter
 from app.database.supabase import get_session_factory, init_db
+from app.services.outreach_autopilot_service import outreach_autopilot_service
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -53,6 +54,16 @@ async def _run_stale_approval_expiration_tick() -> None:
         logger.error("Background stale approval expiration tick failed", error=str(exc))
 
 
+async def _run_daily_outreach_autopilot_tick() -> None:
+    """Periodic worker wrapper for daily global niche lead discovery and Gmail draft creation."""
+    try:
+        factory = get_session_factory()
+        async with factory() as session:
+            await outreach_autopilot_service.run_scheduled_autopilot_tick(session)
+    except Exception as exc:
+        logger.error("Daily global outreach autopilot tick failed", error=str(exc))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application startup and shutdown lifecycle management."""
@@ -81,6 +92,11 @@ async def lifespan(app: FastAPI):
             job_id="background_stale_approval_expiration",
             func=_run_stale_approval_expiration_tick,
             seconds=60,
+        )
+        automation_scheduler.schedule_interval_job(
+            job_id="daily_global_outreach_autopilot",
+            func=_run_daily_outreach_autopilot_tick,
+            seconds=1800,
         )
 
     yield

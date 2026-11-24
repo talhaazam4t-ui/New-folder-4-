@@ -78,6 +78,7 @@ SUPPORTED_INTEGRATION_PROVIDERS: Dict[str, Dict[str, Any]] = {
         "auth_method": "oauth",
         "oauth_provider": "google_oauth2",
         "scopes": [
+            "https://www.googleapis.com/auth/gmail.compose",
             "https://www.googleapis.com/auth/gmail.send",
             "https://www.googleapis.com/auth/gmail.readonly",
             "https://www.googleapis.com/auth/userinfo.email",
