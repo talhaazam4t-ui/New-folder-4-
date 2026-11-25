@@ -154,6 +154,7 @@ async def test_lead_hunter_control_panel_discovery_demo_handover_and_isolation(m
         mod_map = ov1.json()["data"]["control_panel"]["module_map"]
         assert mod_map["direct_call_mode"]["is_on"] is True
         for off_mod in (
+            "free_osm_finder",
             "google_places_finder",
             "apollo_enrichment",
             "auto_demo_generator",
@@ -181,6 +182,7 @@ async def test_lead_hunter_control_panel_discovery_demo_handover_and_isolation(m
         )
         assert free_res.status_code == 200
         free_map = free_res.json()["data"]["module_map"]
+        assert free_map["free_osm_finder"]["is_on"] is True
         assert free_map["google_places_finder"]["is_on"] is True
         assert free_map["apollo_enrichment"]["is_on"] is True
         assert free_map["apollo_enrichment"]["daily_limit"] == 10
@@ -358,3 +360,207 @@ async def test_lead_hunter_control_panel_discovery_demo_handover_and_isolation(m
                 headers=h2,
             )
         ).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_lead_hunter_free_openstreetmap_discovery_and_scraper(monkeypatch):
+    """Verify $0 OpenStreetMap Overpass/Nominatim live finder + website contact/LinkedIn scraper."""
+    monkeypatch.setattr(settings, "app_env", "test")
+    monkeypatch.setattr(settings, "google_places_api_key", "")
+    monkeypatch.setattr(settings, "apollo_api_key", "")
+
+    orig_getaddrinfo = socket.getaddrinfo
+
+    def _fake_getaddrinfo(host, port, *args, **kwargs):
+        if host in ("harborlaw.example.com", "chatai-law.example.com", "nominatimlaw.example.com"):
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+        return orig_getaddrinfo(host, port, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", _fake_getaddrinfo)
+
+    orig_get = httpx.AsyncClient.get
+    orig_post = httpx.AsyncClient.post
+    state = {"overpass_down": False}
+
+    async def _fake_post(self, url, *args, **kwargs):
+        u = str(url)
+        req = httpx.Request("POST", u)
+        if "overpass" in u:
+            if state["overpass_down"]:
+                return httpx.Response(503, request=req, text="Overpass busy")
+            return httpx.Response(
+                200,
+                request=req,
+                json={
+                    "elements": [
+                        {
+                            "type": "node",
+                            "id": 1001,
+                            "tags": {
+                                "name": "Harbor Law Partners",
+                                "office": "lawyer",
+                                "addr:street": "Bay Street",
+                                "addr:city": "Toronto",
+                                "website": "https://harborlaw.example.com",
+                                "opening_hours": "Mo-Fr 09:00-17:30",
+                            },
+                        },
+                        {
+                            "type": "way",
+                            "id": 2002,
+                            "tags": {
+                                "name": "ChatAI Legal Group",
+                                "office": "lawyer",
+                                "website": "https://chatai-law.example.com",
+                                "phone": "+1 416 555 0188",
+                            },
+                        },
+                    ]
+                },
+            )
+        return await orig_post(self, url, *args, **kwargs)
+
+    async def _fake_get(self, url, *args, **kwargs):
+        u = str(url)
+        req = httpx.Request("GET", u)
+        if "nominatim.openstreetmap.org/search" in u:
+            return httpx.Response(
+                200,
+                request=req,
+                json=[
+                    {
+                        "osm_id": 9991,
+                        "name": "Nominatim Fallback Law",
+                        "display_name": "Nominatim Fallback Law, Manchester, UK",
+                        "extratags": {
+                            "website": "https://nominatimlaw.example.com",
+                            "phone": "+44 161 555 0192",
+                        },
+                    }
+                ],
+            )
+        if "harborlaw.example.com/contact" in u:
+            return httpx.Response(
+                200,
+                request=req,
+                text=(
+                    '<html><body>'
+                    '<a href="mailto:intake@harborlaw.example.com">Email Us</a>'
+                    '<a href="tel:+1 416 555 0111">Call Office</a>'
+                    '<a href="https://www.linkedin.com/company/harbor-law-partners">LinkedIn</a>'
+                    "</body></html>"
+                ),
+            )
+        if "harborlaw.example.com" in u:
+            return httpx.Response(
+                200,
+                request=req,
+                text=(
+                    "<html><title>Harbor Law Partners — Family & Corporate Law</title>"
+                    '<body><a href="/contact">Contact</a></body></html>'
+                ),
+            )
+        if "chatai-law.example.com" in u:
+            return httpx.Response(
+                200,
+                request=req,
+                text='<html><title>ChatAI Legal</title><script src="https://widget.intercom.io/app.js"></script></html>',
+            )
+        if "nominatimlaw.example.com" in u:
+            return httpx.Response(
+                200,
+                request=req,
+                text='<html><title>Nominatim Fallback Law</title><body><a href="mailto:hello@nominatimlaw.example.com">Mail</a></body></html>',
+            )
+        return await orig_get(self, url, *args, **kwargs)
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", _fake_post)
+    monkeypatch.setattr(httpx.AsyncClient, "get", _fake_get)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        _, headers = await _register_and_create_workspace(client, "osmfree@test.ai", "osm-free-ws", "OSM Free WS")
+
+        # 1. Blocked (403) when free_osm_finder is OFF
+        off_res = await client.post(
+            "/api/v1/lead-hunter/search",
+            json={"country": "Canada", "city": "Toronto", "category": "Law Firm", "source_mode": "openstreetmap_free"},
+            headers=headers,
+        )
+        assert off_res.status_code == 403
+
+        # 2. Turn ON free_osm_finder -> runs Overpass + website contact/LinkedIn/AI audit with ZERO API keys
+        await client.patch("/api/v1/lead-hunter/settings/free_osm_finder", json={"is_on": True}, headers=headers)
+        ok_res = await client.post(
+            "/api/v1/lead-hunter/search",
+            json={"country": "Canada", "city": "Toronto", "category": "Law Firm", "source_mode": "openstreetmap_free"},
+            headers=headers,
+        )
+        assert ok_res.status_code == 200
+        leads = ok_res.json()["data"]["leads"]
+        assert len(leads) == 2
+
+        harbor = next(l for l in leads if l["business_name"] == "Harbor Law Partners")
+        chatai = next(l for l in leads if l["business_name"] == "ChatAI Legal Group")
+        assert harbor["lead_source"] == "openstreetmap_free"
+        assert harbor["has_ai"] is False
+        assert harbor["email"] == "intake@harborlaw.example.com"
+        assert harbor["phone"] == "+1 416 555 0111"
+        assert harbor["linkedin_url"] == "https://www.linkedin.com/company/harbor-law-partners"
+        assert harbor["interest_score"] >= 80
+        assert chatai["has_ai"] is True
+        assert chatai["interest_score"] < 50
+
+        # 3. Re-running same Overpass search deduplicates cleanly instead of creating duplicates
+        rerun_res = await client.post(
+            "/api/v1/lead-hunter/search",
+            json={"country": "Canada", "city": "Toronto", "category": "Law Firm", "source_mode": "openstreetmap_free"},
+            headers=headers,
+        )
+        assert rerun_res.status_code == 200
+        assert len((await client.get("/api/v1/lead-hunter/leads", headers=headers)).json()["data"]) == 2
+
+        # 4. Overpass 503 fails over automatically to Nominatim backup
+        state["overpass_down"] = True
+        nom_res = await client.post(
+            "/api/v1/lead-hunter/search",
+            json={"country": "UK", "city": "Manchester", "category": "Law Firm", "source_mode": "openstreetmap_free"},
+            headers=headers,
+        )
+        assert nom_res.status_code == 200
+        assert nom_res.json()["data"]["leads"][0]["business_name"] == "Nominatim Fallback Law"
+
+        # 5. Apollo Free CSV Import merges existing OSM lead AND creates new No-AI Hot Lead
+        apollo_csv = (
+            "First Name,Last Name,Title,Company,Email,Email Status,Corporate Phone,Person Linkedin Url,Website,City,Country\n"
+            "Michael,Ross,Managing Partner,Harbor Law Partners,mross@harborlaw.example.com,Verified,+1 416 555 0111,https://www.linkedin.com/in/mross-law,https://harborlaw.example.com,Toronto,Canada\n"
+            "Rachel,Zane,Founder,Manhattan Smile Studio,rachel@manhattansmile.com,Verified,+1 212 555 0177,https://www.linkedin.com/in/rachel-zane-dds,https://harborlaw.example.com,New York,USA\n"
+        )
+        csv_res = await client.post(
+            "/api/v1/lead-hunter/import-apollo-csv",
+            json={"csv_text": apollo_csv, "default_country": "USA", "default_city": "New York", "default_category": "Dental Clinic"},
+            headers=headers,
+        )
+        assert csv_res.status_code == 200
+        csv_data = csv_res.json()["data"]
+        assert csv_data["imported"] == 1
+        assert csv_data["updated"] == 1
+
+        # 6. Manual Apollo Free Owner save upgrades OSM/Nominatim lead to hybrid >= 80
+        nom_id = nom_res.json()["data"]["leads"][0]["id"]
+        owner_res = await client.patch(
+            f"/api/v1/lead-hunter/leads/{nom_id}/owner",
+            json={
+                "owner_name": "Arthur Pendelton",
+                "owner_title": "Managing Partner",
+                "email": "arthur@nominatimlaw.example.com",
+                "email_verified": True,
+                "linkedin_url": "https://www.linkedin.com/in/arthur-pendelton-uk",
+            },
+            headers=headers,
+        )
+        assert owner_res.status_code == 200
+        owner_lead = owner_res.json()["data"]
+        assert owner_lead["lead_source"] == "hybrid"
+        assert owner_lead["pipeline_stage"] == "apollo_enriched"
+        assert owner_lead["interest_score"] >= 80

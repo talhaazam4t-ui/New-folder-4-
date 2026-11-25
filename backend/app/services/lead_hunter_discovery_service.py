@@ -7,6 +7,8 @@ Strict Rules:
   Google Places filters out businesses that already have AI widgets.
 """
 
+import csv
+import io
 import re
 import urllib.parse
 import uuid
@@ -77,6 +79,35 @@ CATEGORIES: List[str] = [
     "Plumbing Company",
 ]
 
+CITY_COORDS: Dict[str, Tuple[float, float]] = {
+    "New York": (40.7128, -74.0060),
+    "Los Angeles": (34.0522, -118.2437),
+    "Houston": (29.7604, -95.3698),
+    "Miami": (25.7617, -80.1918),
+    "Chicago": (41.8781, -87.6298),
+    "London": (51.5074, -0.1278),
+    "Manchester": (53.4808, -2.2426),
+    "Toronto": (43.6532, -79.3832),
+    "Sydney": (-33.8688, 151.2093),
+    "Dubai": (25.2048, 55.2708),
+    "Singapore": (1.3521, 103.8198),
+}
+
+CATEGORY_OSM_TAGS: Dict[str, List[Tuple[str, str]]] = {
+    "Dental Clinic": [("amenity", "dentist"), ("healthcare", "dentist")],
+    "Medical Clinic": [("amenity", "clinic"), ("amenity", "doctors")],
+    "Law Firm": [("office", "lawyer")],
+    "Real Estate Agency": [("office", "estate_agent")],
+    "Beauty Salon": [("shop", "beauty"), ("shop", "hairdresser")],
+    "Spa": [("leisure", "spa"), ("shop", "massage")],
+    "Restaurant": [("amenity", "restaurant")],
+    "Hotel": [("tourism", "hotel")],
+    "Gym": [("leisure", "fitness_centre")],
+    "Auto Repair Shop": [("shop", "car_repair")],
+    "Cleaning Company": [("shop", "dry_cleaning"), ("shop", "laundry")],
+    "Plumbing Company": [("craft", "plumber")],
+}
+
 AI_WIDGET_SIGNATURES: Dict[str, str] = {
     "intercom": "Intercom Chat Widget",
     "widget.intercom.io": "Intercom Chat Widget",
@@ -143,6 +174,74 @@ def _is_configured_key(val: Optional[str]) -> bool:
     return bool(clean and not clean.lower().startswith("your-") and clean.lower() not in ("mock", "none", "null"))
 
 
+def _clean_phone(raw: Optional[str]) -> Optional[str]:
+    if not raw:
+        return None
+    cleaned = re.sub(r"[^\d+]", "", raw.strip())
+    digits = re.sub(r"\D", "", cleaned)
+    if len(digits) < 7 or len(digits) > 16:
+        return None
+    return raw.strip()[:64] if any(c.isdigit() for c in raw) else cleaned[:64]
+
+
+def _extract_html_contacts(raw_html: str, base_url: str) -> Dict[str, Any]:
+    """Extract chatbot scripts, mailto/regex email, tel phone, LinkedIn, and contact subpage."""
+    lower_html = raw_html.lower()
+    widgets: List[str] = []
+    for sig, label in AI_WIDGET_SIGNATURES.items():
+        if sig in lower_html and label not in widgets:
+            widgets.append(label)
+
+    soup = BeautifulSoup(raw_html, "html.parser")
+    bad_email_parts = ("@example.com", "sentry.io", "wixpress.com", ".png", ".jpg", ".webp", "noreply@")
+
+    mailto_email: Optional[str] = None
+    tel_phone: Optional[str] = None
+    linkedin_url: Optional[str] = None
+    contact_subpage: Optional[str] = None
+    base_domain = _extract_domain(base_url)
+
+    for tag in soup.find_all("a", href=True):
+        href = str(tag["href"]).strip()
+        href_l = href.lower()
+        if href_l.startswith("mailto:") and not mailto_email:
+            candidate = href[7:].split("?")[0].strip()
+            if EMAIL_REGEX.fullmatch(candidate) and not any(bad in candidate.lower() for bad in bad_email_parts):
+                mailto_email = candidate
+        elif href_l.startswith("tel:") and not tel_phone:
+            tel_phone = _clean_phone(href[4:].split("?")[0])
+        elif "linkedin.com/" in href_l and ("/in/" in href_l or "/company/" in href_l) and not linkedin_url:
+            if href_l.startswith(("http://", "https://")):
+                linkedin_url = href.split("?")[0][:300]
+        elif not contact_subpage and any(k in href_l for k in ("/contact", "/about")):
+            resolved = urllib.parse.urljoin(base_url, href)
+            if _extract_domain(resolved) == base_domain and _is_safe_public_url(resolved):
+                contact_subpage = resolved
+
+    email_found = mailto_email
+    if not email_found:
+        text_matches = [
+            m for m in EMAIL_REGEX.findall(soup.get_text(" ", strip=True) + " " + raw_html)
+            if not any(bad in m.lower() for bad in bad_email_parts)
+        ]
+        if text_matches:
+            email_found = text_matches[0]
+
+    meta_desc = soup.find("meta", attrs={"name": "description"})
+    title_txt = soup.title.string.strip() if soup.title and soup.title.string else ""
+    desc_txt = meta_desc.get("content", "").strip() if meta_desc else ""
+    combined_hint = " — ".join(p for p in (title_txt, desc_txt) if p)
+
+    return {
+        "widgets": widgets,
+        "email": email_found,
+        "phone": tel_phone,
+        "linkedin_url": linkedin_url,
+        "services_hint": combined_hint[:280] if combined_hint else None,
+        "contact_subpage": contact_subpage,
+    }
+
+
 class LeadHunterDiscoveryService:
     """Real Google Places + Apollo Free Tier discovery, AI detection, and 0-100 scoring."""
 
@@ -195,9 +294,11 @@ class LeadHunterDiscoveryService:
         reviews: Optional[List[Dict[str, Any]]] = None,
         gbp_messaging_enabled: bool = False,
     ) -> Dict[str, Any]:
-        """Inspect website HTML for chatbot scripts + scan reviews for missed-call pain points."""
+        """Inspect website HTML for chatbot scripts, contacts/LinkedIn + missed-call review pain points."""
         detected_widgets: List[str] = []
         extracted_email: Optional[str] = None
+        extracted_phone: Optional[str] = None
+        extracted_linkedin: Optional[str] = None
         services_hint: Optional[str] = None
         html_checked = False
         safe_url = _is_safe_public_url(website_url) if website_url else None
@@ -213,27 +314,32 @@ class LeadHunterDiscoveryService:
                     )
                     if resp.status_code == 200 and resp.text:
                         html_checked = True
-                        raw_html = resp.text[:300000]
-                        lower_html = raw_html.lower()
-                        for sig, label in AI_WIDGET_SIGNATURES.items():
-                            if sig in lower_html and label not in detected_widgets:
-                                detected_widgets.append(label)
+                        parsed = _extract_html_contacts(resp.text[:300000], str(resp.url))
+                        detected_widgets.extend(parsed["widgets"])
+                        extracted_email = parsed["email"]
+                        extracted_phone = parsed["phone"]
+                        extracted_linkedin = parsed["linkedin_url"]
+                        services_hint = parsed["services_hint"]
 
-                        soup = BeautifulSoup(raw_html, "html.parser")
-                        emails_found = [
-                            m for m in EMAIL_REGEX.findall(soup.get_text(" ", strip=True) + " " + raw_html)
-                            if not any(bad in m.lower() for bad in ("example.com", "sentry.io", "wixpress.com", ".png", ".jpg"))
-                        ]
-                        if emails_found:
-                            # Prefer non-generic or matching domain email first
-                            extracted_email = emails_found[0]
-
-                        meta_desc = soup.find("meta", attrs={"name": "description"})
-                        title_txt = soup.title.string.strip() if soup.title and soup.title.string else ""
-                        desc_txt = meta_desc.get("content", "").strip() if meta_desc else ""
-                        combined_hint = " — ".join(p for p in (title_txt, desc_txt) if p)
-                        if combined_hint:
-                            services_hint = combined_hint[:280]
+                        # Check at most 1 same-origin /contact or /about page if email or LinkedIn is missing
+                        sub_url = parsed["contact_subpage"]
+                        if sub_url and (not extracted_email or not extracted_linkedin):
+                            try:
+                                sub_resp = await client.get(
+                                    sub_url,
+                                    timeout=5.0,
+                                    headers={"User-Agent": "Mozilla/5.0 (compatible; TaloxLeadAuditor/1.0)"},
+                                )
+                                if sub_resp.status_code == 200 and sub_resp.text:
+                                    sub_parsed = _extract_html_contacts(sub_resp.text[:250000], str(sub_resp.url))
+                                    for w in sub_parsed["widgets"]:
+                                        if w not in detected_widgets:
+                                            detected_widgets.append(w)
+                                    extracted_email = extracted_email or sub_parsed["email"]
+                                    extracted_phone = extracted_phone or sub_parsed["phone"]
+                                    extracted_linkedin = extracted_linkedin or sub_parsed["linkedin_url"]
+                            except Exception:
+                                pass
             except Exception as exc:
                 logger.debug("Website AI inspection skipped", website=website_url, error=str(exc))
 
@@ -259,6 +365,8 @@ class LeadHunterDiscoveryService:
             "missed_call_mentions": missed_call_count,
             "pain_points": pain_points,
             "scraped_email": extracted_email,
+            "scraped_phone": extracted_phone,
+            "scraped_linkedin": extracted_linkedin,
             "services_hint": services_hint,
             "favicon_url": favicon_url,
         }
@@ -275,6 +383,7 @@ class LeadHunterDiscoveryService:
         email_verified: bool,
         owner_name: Optional[str],
         linkedin_url: Optional[str],
+        phone: Optional[str] = None,
     ) -> int:
         """Score lead 0-100 matching High (80-100), Medium (50-79), Low (0-49) rubric."""
         if has_ai:
@@ -292,13 +401,139 @@ class LeadHunterDiscoveryService:
             score += 6
         if website:
             score += 8
-        if email and not email.lower().startswith(("info@", "contact@", "hello@", "support@")):
+        if phone:
             score += 6
+        if email:
+            score += 4 if email.lower().startswith(("info@", "contact@", "hello@", "support@")) else 6
         if email_verified and owner_name and linkedin_url:
             score += 10
         elif owner_name or linkedin_url:
             score += 5
         return min(100, max(50, score))
+
+    async def _fetch_openstreetmap_businesses(
+        self,
+        category: str,
+        city: str,
+        country: str,
+        max_results: int = 8,
+    ) -> List[Dict[str, Any]]:
+        """Query free Overpass API (with failover mirror & Nominatim backup). Zero dummy fallback."""
+        coords = CITY_COORDS.get(city.strip(), (40.7128, -74.0060))
+        tags = CATEGORY_OSM_TAGS.get(category.strip(), [("amenity", "clinic"), ("office", "company")])
+        lat, lon = coords
+        clauses = "\n".join(
+            f'  nwr["{k}"="{v}"]["name"](around:15000,{lat},{lon});'
+            for k, v in tags
+        )
+        ql = f"[out:json][timeout:18];\n(\n{clauses}\n);\nout center tags 60;"
+
+        parsed_rows: List[Dict[str, Any]] = []
+        any_network_success = False
+        headers = {"User-Agent": "TaloxTechLeadHunter/1.0 (+https://teloxtech.stream)"}
+
+        overpass_urls = (
+            "https://overpass-api.de/api/interpreter",
+            "https://overpass.kumi.systems/api/interpreter",
+        )
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            for endpoint in overpass_urls:
+                try:
+                    resp = await client.post(endpoint, data={"data": ql}, headers=headers)
+                    if resp.status_code != 200:
+                        continue
+                    any_network_success = True
+                    elements = list((resp.json() or {}).get("elements") or [])
+                    seen_names = set()
+                    for el in elements:
+                        el_tags = el.get("tags") or {}
+                        name = str(el_tags.get("name") or "").strip()
+                        if not name or name.lower() in seen_names:
+                            continue
+                        seen_names.add(name.lower())
+
+                        addr_parts = [
+                            el_tags.get("addr:housenumber"),
+                            el_tags.get("addr:street"),
+                            el_tags.get("addr:city") or city,
+                            el_tags.get("addr:postcode"),
+                            country,
+                        ]
+                        address = ", ".join(str(p).strip() for p in addr_parts if p and str(p).strip())
+                        website = el_tags.get("website") or el_tags.get("contact:website") or el_tags.get("url")
+                        if website and not str(website).startswith(("http://", "https://")):
+                            website = f"https://{website}"
+                        phone = _clean_phone(el_tags.get("phone") or el_tags.get("contact:phone"))
+                        email = el_tags.get("email") or el_tags.get("contact:email")
+                        osm_ref = f"{el.get('type', 'node')}_{el.get('id', len(parsed_rows))}"
+                        parsed_rows.append(
+                            {
+                                "osm_ref": osm_ref,
+                                "name": name,
+                                "address": address or f"{city}, {country}",
+                                "phone": phone,
+                                "website": website,
+                                "email": email,
+                                "opening_hours": el_tags.get("opening_hours"),
+                            }
+                        )
+                    if parsed_rows:
+                        break
+                except Exception as exc:
+                    logger.debug("Overpass endpoint failed", endpoint=endpoint, error=str(exc))
+
+            # Fallback to Nominatim if Overpass returned zero or was unavailable
+            if not parsed_rows:
+                try:
+                    nom_resp = await client.get(
+                        "https://nominatim.openstreetmap.org/search",
+                        params={
+                            "q": f"{category} in {city}, {country}",
+                            "format": "jsonv2",
+                            "addressdetails": 1,
+                            "extratags": 1,
+                            "limit": min(25, max_results * 3),
+                        },
+                        headers=headers,
+                    )
+                    if nom_resp.status_code == 200:
+                        any_network_success = True
+                        for item in list(nom_resp.json() or []):
+                            extratags = item.get("extratags") or {}
+                            raw_name = item.get("name") or str(item.get("display_name") or "").split(",")[0]
+                            name = str(raw_name).strip()
+                            if not name:
+                                continue
+                            website = extratags.get("website") or extratags.get("contact:website")
+                            if website and not str(website).startswith(("http://", "https://")):
+                                website = f"https://{website}"
+                            parsed_rows.append(
+                                {
+                                    "osm_ref": f"nom_{item.get('osm_id') or item.get('place_id')}",
+                                    "name": name,
+                                    "address": str(item.get("display_name") or f"{city}, {country}")[:250],
+                                    "phone": _clean_phone(extratags.get("phone") or extratags.get("contact:phone")),
+                                    "website": website,
+                                    "email": extratags.get("email") or extratags.get("contact:email"),
+                                    "opening_hours": extratags.get("opening_hours"),
+                                }
+                            )
+                except Exception as exc:
+                    logger.debug("Nominatim backup search failed", error=str(exc))
+
+        if not parsed_rows and not any_network_success:
+            raise TaloxException(
+                message="OpenStreetMap live search is temporarily busy. Please retry in a few seconds.",
+                code="OSM_SEARCH_UNAVAILABLE",
+                status_code=502,
+            )
+
+        # Prioritize real businesses that already list a website or phone number
+        parsed_rows.sort(
+            key=lambda r: (1 if r.get("website") else 0, 1 if r.get("phone") else 0),
+            reverse=True,
+        )
+        return parsed_rows[:max_results]
 
     async def _fetch_google_places(
         self,
@@ -481,16 +716,21 @@ class LeadHunterDiscoveryService:
         country: str,
         city: str,
         category: str,
-        source_mode: str = "google_places",
+        source_mode: str = "openstreetmap_free",
         max_results: int = 8,
     ) -> Dict[str, Any]:
-        """Search real leads from Google Places, Apollo Free Tier, or Hybrid (enriching No-AI leads only)."""
+        """Search real leads from Free OpenStreetMap ($0), Google Places, Apollo, or Hybrid."""
         mode = source_mode.strip().lower()
-        if mode not in ("google_places", "apollo", "hybrid"):
+        if mode not in ("openstreetmap_free", "google_places", "apollo", "hybrid"):
             raise TaloxException(
-                message="source_mode must be 'google_places', 'apollo', or 'hybrid'",
+                message="source_mode must be 'openstreetmap_free', 'google_places', 'apollo', or 'hybrid'",
                 code="INVALID_SOURCE_MODE",
                 status_code=400,
+            )
+
+        if mode == "openstreetmap_free":
+            await lead_hunter_control_service.assert_module_enabled_and_quota(
+                session, tenant_id, "free_osm_finder", units=1, require_switch_on=True
             )
 
         if mode in ("google_places", "hybrid"):
@@ -520,7 +760,82 @@ class LeadHunterDiscoveryService:
         skipped_ai_apollo = 0
         apollo_used = 0
 
-        if mode in ("google_places", "hybrid"):
+        if mode == "openstreetmap_free":
+            osm_rows = await self._fetch_openstreetmap_businesses(category, city, country, max_results=max_results)
+            await lead_hunter_control_service.increment_usage(session, tenant_id, "free_osm_finder", units=1)
+
+            for biz in osm_rows:
+                osm_ref = f"osm:{biz['osm_ref']}"
+                website = biz.get("website")
+                audit = await self.inspect_website_and_ai(website_url=website, reviews=[])
+                phone = biz.get("phone") or audit.get("scraped_phone")
+                email = biz.get("email") or audit.get("scraped_email")
+                linkedin_url = audit.get("scraped_linkedin")
+                has_ai = audit["has_ai"]
+
+                score = self.compute_interest_score(
+                    has_ai=has_ai,
+                    missed_call_mentions=audit["missed_call_mentions"],
+                    rating=0.0,
+                    total_reviews=0,
+                    website=website,
+                    email=email,
+                    email_verified=bool(email and biz.get("website")),
+                    owner_name=None,
+                    linkedin_url=linkedin_url,
+                    phone=phone,
+                )
+
+                existing = (
+                    await session.execute(
+                        select(HunterLead).where(
+                            HunterLead.tenant_id == tenant_id,
+                            HunterLead.google_place_id == osm_ref,
+                        ).limit(1)
+                    )
+                ).scalar_one_or_none()
+
+                if existing:
+                    existing.business_name = biz["name"]
+                    existing.address = biz.get("address") or existing.address
+                    existing.phone = phone or existing.phone
+                    existing.website = website or existing.website
+                    existing.email = email or existing.email
+                    existing.linkedin_url = linkedin_url or existing.linkedin_url
+                    existing.has_ai = has_ai
+                    existing.ai_evidence = audit
+                    existing.interest_score = score
+                    row_obj = existing
+                else:
+                    row_obj = HunterLead(
+                        tenant_id=tenant_id,
+                        google_place_id=osm_ref,
+                        business_name=biz["name"],
+                        linkedin_url=linkedin_url,
+                        country=country,
+                        city=city,
+                        category=category,
+                        address=biz.get("address") or f"{city}, {country}",
+                        phone=phone,
+                        email=email,
+                        email_verified=bool(email and biz.get("website")),
+                        website=website,
+                        favicon_url=audit["favicon_url"],
+                        services=audit["services_hint"] or f"{category} services",
+                        working_hours=biz.get("opening_hours") or "Mon-Fri 9:00 AM - 6:00 PM",
+                        has_ai=has_ai,
+                        ai_evidence=audit,
+                        pain_points=audit["pain_points"],
+                        interest_score=score,
+                        lead_source="openstreetmap_free",
+                        status="new",
+                        pipeline_stage="new_lead",
+                        timezone=tz,
+                    )
+                    session.add(row_obj)
+                ingested.append(row_obj)
+
+        elif mode in ("google_places", "hybrid"):
             places = await self._fetch_google_places(category, city, country, max_results=max_results)
             await lead_hunter_control_service.increment_usage(session, tenant_id, "google_places_finder", units=1)
 
@@ -760,6 +1075,242 @@ class LeadHunterDiscoveryService:
             await session.commit()
             await session.refresh(lead)
 
+        return self.serialize_lead(lead)
+
+    async def import_apollo_csv(
+        self,
+        session: AsyncSession,
+        tenant_id: uuid.UUID,
+        *,
+        csv_text: str,
+        default_country: str = "USA",
+        default_city: str = "New York",
+        default_category: str = "Dental Clinic",
+        inspect_websites: bool = True,
+    ) -> Dict[str, Any]:
+        """Import CSV exported from Apollo.io Free Web UI (0 API credits) & audit each website for AI."""
+        raw_csv = (csv_text or "").strip()
+        if not raw_csv:
+            raise TaloxException(message="CSV file is empty.", code="EMPTY_CSV", status_code=400)
+
+        reader = csv.DictReader(io.StringIO(raw_csv))
+        if not reader.fieldnames:
+            raise TaloxException(message="Invalid CSV headers.", code="INVALID_CSV", status_code=400)
+
+        existing_rows = (
+            await session.execute(select(HunterLead).where(HunterLead.tenant_id == tenant_id))
+        ).scalars().all()
+        by_name: Dict[str, HunterLead] = {
+            r.business_name.strip().lower(): r for r in existing_rows if r.business_name
+        }
+
+        def _pick(norm_row: Dict[str, str], *keys: str) -> Optional[str]:
+            for k in keys:
+                val = (norm_row.get(k) or "").strip()
+                if val:
+                    return val
+            return None
+
+        imported_cnt = 0
+        updated_cnt = 0
+        saved: List[HunterLead] = []
+        inspected_sites: Dict[str, Dict[str, Any]] = {}
+
+        for raw_row in list(reader)[:50]:
+            norm = {str(k).strip().lower(): str(v or "").strip() for k, v in raw_row.items() if k is not None}
+            first_name = _pick(norm, "first name") or ""
+            last_name = _pick(norm, "last name") or ""
+            owner_name = _pick(norm, "name") or (f"{first_name} {last_name}".strip() or None)
+            biz_name = _pick(norm, "company name", "company", "company name for emails")
+            if not biz_name:
+                continue
+
+            owner_title = _pick(norm, "title")
+            email = _pick(norm, "email")
+            email_status = (_pick(norm, "email status") or "").lower()
+            email_verified = bool(email and email_status in ("verified", "valid", "ok", "1", "true")) or bool(email)
+            phone = _clean_phone(_pick(norm, "work direct phone", "corporate phone", "mobile phone", "first phone", "phone"))
+            linkedin_url = _pick(norm, "person linkedin url", "company linkedin url", "linkedin")
+            website = _pick(norm, "website", "company website")
+            if website and not website.startswith(("http://", "https://")):
+                website = f"https://{website}"
+            city = _pick(norm, "city") or default_city
+            country = _pick(norm, "country") or default_country
+            category = _pick(norm, "industry") or default_category
+            tz = CITY_TIMEZONES.get(city, "America/New_York")
+
+            audit: Dict[str, Any] = {
+                "has_ai": False,
+                "detected_widgets": [],
+                "missed_call_mentions": 0,
+                "pain_points": [],
+                "scraped_email": None,
+                "scraped_phone": None,
+                "scraped_linkedin": None,
+                "services_hint": None,
+                "favicon_url": (
+                    f"https://www.google.com/s2/favicons?domain={_extract_domain(website)}&sz=64"
+                    if _extract_domain(website)
+                    else None
+                ),
+            }
+            if inspect_websites and website and len(inspected_sites) < 25:
+                site_key = _extract_domain(website) or website.lower()
+                if site_key not in inspected_sites:
+                    inspected_sites[site_key] = await self.inspect_website_and_ai(website_url=website, reviews=[])
+                audit = inspected_sites[site_key]
+
+            final_email = email or audit.get("scraped_email")
+            final_phone = phone or audit.get("scraped_phone")
+            final_linkedin = linkedin_url or audit.get("scraped_linkedin")
+
+            key = biz_name.strip().lower()
+            existing = by_name.get(key)
+            if existing:
+                existing.owner_name = owner_name or existing.owner_name
+                existing.owner_title = owner_title or existing.owner_title
+                existing.email = final_email or existing.email
+                existing.email_verified = bool(existing.email_verified or email_verified)
+                existing.linkedin_url = final_linkedin or existing.linkedin_url
+                existing.phone = final_phone or existing.phone
+                existing.website = website or existing.website
+                existing.has_ai = bool(audit["has_ai"])
+                existing.ai_evidence = audit
+                if existing.lead_source in ("openstreetmap_free", "google_places"):
+                    existing.lead_source = "hybrid"
+                if existing.pipeline_stage == "new_lead":
+                    existing.pipeline_stage = "apollo_enriched"
+                existing.status = "enriched"
+                existing.interest_score = self.compute_interest_score(
+                    has_ai=bool(existing.has_ai),
+                    missed_call_mentions=int((existing.ai_evidence or {}).get("missed_call_mentions") or len(existing.pain_points or [])),
+                    rating=float(existing.rating or 0.0),
+                    total_reviews=int(existing.total_reviews or 0),
+                    website=existing.website,
+                    email=existing.email,
+                    email_verified=bool(existing.email_verified),
+                    owner_name=existing.owner_name,
+                    linkedin_url=existing.linkedin_url,
+                    phone=existing.phone,
+                )
+                saved.append(existing)
+                updated_cnt += 1
+            else:
+                score = self.compute_interest_score(
+                    has_ai=bool(audit["has_ai"]),
+                    missed_call_mentions=0,
+                    rating=0.0,
+                    total_reviews=0,
+                    website=website,
+                    email=final_email,
+                    email_verified=email_verified,
+                    owner_name=owner_name,
+                    linkedin_url=final_linkedin,
+                    phone=final_phone,
+                )
+                row_obj = HunterLead(
+                    tenant_id=tenant_id,
+                    business_name=biz_name,
+                    owner_name=owner_name,
+                    owner_title=owner_title,
+                    linkedin_url=final_linkedin,
+                    country=country,
+                    city=city,
+                    category=category,
+                    address=f"{city}, {country}",
+                    phone=final_phone,
+                    email=final_email,
+                    email_verified=email_verified,
+                    website=website,
+                    favicon_url=audit.get("favicon_url"),
+                    services=audit.get("services_hint") or f"{category} services",
+                    working_hours="Mon-Fri 9:00 AM - 6:00 PM",
+                    has_ai=bool(audit["has_ai"]),
+                    ai_evidence=audit,
+                    pain_points=[],
+                    interest_score=score,
+                    lead_source="apollo",
+                    status="enriched",
+                    pipeline_stage="apollo_enriched",
+                    timezone=tz,
+                )
+                session.add(row_obj)
+                by_name[key] = row_obj
+                saved.append(row_obj)
+                imported_cnt += 1
+
+        if not saved:
+            raise TaloxException(
+                message="No valid rows with Company / Company Name found in Apollo CSV.",
+                code="NO_VALID_CSV_ROWS",
+                status_code=400,
+            )
+
+        await session.commit()
+        for obj in saved:
+            await session.refresh(obj)
+
+        return {
+            "imported": imported_cnt,
+            "updated": updated_cnt,
+            "total": len(saved),
+            "hot_leads_count": sum(1 for l in saved if int(l.interest_score or 0) >= 80),
+            "leads": [self.serialize_lead(l) for l in saved],
+        }
+
+    async def update_lead_owner_from_apollo_free(
+        self,
+        session: AsyncSession,
+        tenant_id: uuid.UUID,
+        lead_id: uuid.UUID,
+        *,
+        owner_name: Optional[str] = None,
+        owner_title: Optional[str] = None,
+        email: Optional[str] = None,
+        email_verified: bool = True,
+        linkedin_url: Optional[str] = None,
+        phone: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Save decision-maker details looked up in Apollo Free Web UI onto a lead."""
+        lead = (
+            await session.execute(
+                select(HunterLead).where(HunterLead.id == lead_id, HunterLead.tenant_id == tenant_id)
+            )
+        ).scalar_one_or_none()
+        if not lead:
+            raise ResourceNotFoundError("HunterLead", str(lead_id))
+
+        if owner_name and owner_name.strip():
+            lead.owner_name = owner_name.strip()
+        if owner_title and owner_title.strip():
+            lead.owner_title = owner_title.strip()
+        if email and email.strip():
+            lead.email = email.strip()
+            lead.email_verified = bool(email_verified)
+        if linkedin_url and linkedin_url.strip():
+            lead.linkedin_url = linkedin_url.strip()
+        if phone and phone.strip():
+            lead.phone = _clean_phone(phone) or phone.strip()
+
+        if lead.lead_source in ("openstreetmap_free", "google_places"):
+            lead.lead_source = "hybrid"
+        if lead.pipeline_stage == "new_lead":
+            lead.pipeline_stage = "apollo_enriched"
+        lead.status = "enriched"
+        lead.interest_score = self.compute_interest_score(
+            has_ai=bool(lead.has_ai),
+            missed_call_mentions=int((lead.ai_evidence or {}).get("missed_call_mentions") or len(lead.pain_points or [])),
+            rating=float(lead.rating or 0.0),
+            total_reviews=int(lead.total_reviews or 0),
+            website=lead.website,
+            email=lead.email,
+            email_verified=bool(lead.email_verified),
+            owner_name=lead.owner_name,
+            linkedin_url=lead.linkedin_url,
+            phone=lead.phone,
+        )
+        await session.commit()
+        await session.refresh(lead)
         return self.serialize_lead(lead)
 
 

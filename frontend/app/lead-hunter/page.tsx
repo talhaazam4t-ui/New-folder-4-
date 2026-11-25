@@ -159,7 +159,7 @@ export default function LeadHunterPage() {
     country: string;
     city: string;
     category: string;
-    source_mode: "google_places" | "apollo" | "hybrid";
+    source_mode: "openstreetmap_free" | "google_places" | "apollo" | "hybrid";
     max_results: number;
   }) => {
     setSearching(true);
@@ -193,6 +193,56 @@ export default function LeadHunterPage() {
         await loadWorkspace();
       } else {
         setBanner({ type: "err", text: res.error?.message || "Apollo enrichment failed." });
+      }
+    } finally {
+      setBusyLeadId(null);
+    }
+  };
+
+  const handleImportApolloCsv = async (payload: {
+    csv_text: string;
+    default_country: string;
+    default_city: string;
+    default_category: string;
+  }) => {
+    setBanner(null);
+    const res = await apiRequest<any>("/api/v1/lead-hunter/import-apollo-csv", {
+      method: "POST",
+      body: JSON.stringify({ ...payload, inspect_websites: true }),
+    });
+    if (res.success) {
+      setBanner({
+        type: "ok",
+        text: `Imported ${res.data?.imported || 0} & merged ${res.data?.updated || 0} Apollo Free leads (${res.data?.hot_leads_count || 0} Hot Leads 80+).`,
+      });
+      await loadWorkspace();
+    } else {
+      setBanner({ type: "err", text: res.error?.message || "Failed to import Apollo CSV." });
+    }
+  };
+
+  const handleSaveManualOwner = async (
+    leadId: string,
+    payload: {
+      owner_name?: string;
+      owner_title?: string;
+      email?: string;
+      linkedin_url?: string;
+      phone?: string;
+    }
+  ) => {
+    setBusyLeadId(leadId);
+    setBanner(null);
+    try {
+      const res = await apiRequest(`/api/v1/lead-hunter/leads/${leadId}/owner`, {
+        method: "PATCH",
+        body: JSON.stringify({ ...payload, email_verified: true }),
+      });
+      if (res.success) {
+        setBanner({ type: "ok", text: "Saved Apollo Free decision-maker details & updated score!" });
+        await loadWorkspace();
+      } else {
+        setBanner({ type: "err", text: res.error?.message || "Failed to save owner details." });
       }
     } finally {
       setBusyLeadId(null);
@@ -546,14 +596,19 @@ export default function LeadHunterPage() {
               leads={leads}
               apiKeysStatus={
                 overview?.api_keys_status || {
+                  openstreetmap_free_ready: true,
                   google_places_configured: false,
                   apollo_configured: false,
                 }
               }
+              freeOsmOn={Boolean(modMap.free_osm_finder?.is_on)}
+              onEnableFreeOsm={() => handleToggleModule("free_osm_finder", true)}
               searching={searching}
               busyLeadId={busyLeadId}
               onSearch={handleSearchLeads}
               onEnrichApollo={handleEnrichApollo}
+              onImportApolloCsv={handleImportApolloCsv}
+              onSaveManualOwner={handleSaveManualOwner}
               onGenerateDemo={handleGenerateDemo}
               onPromoteHot={handlePromoteHot}
               onJumpToCallList={() => setActiveTab("call_list")}

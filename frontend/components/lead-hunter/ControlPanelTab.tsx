@@ -59,7 +59,7 @@ export function ControlPanelTab({
               <ShieldCheck className="h-4 w-4 text-emerald-400" />
             </div>
             <p className="mt-1 text-[11px] text-slate-300">
-              Google Places Finder ON + Apollo Enrichment capped at 10 free credits/day + Direct Call Mode ON. All senders &amp; generators OFF.
+              Free OpenStreetMap Lead Finder ($0) ON + Google Places &amp; Apollo Free Cap ON + Direct Call Mode ON. All senders &amp; generators OFF.
             </p>
           </button>
 

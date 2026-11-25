@@ -23,6 +23,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 DEFAULT_MODULE_SPECS: Dict[str, Dict[str, Any]] = {
+    "free_osm_finder": {
+        "label": "Free OpenStreetMap Lead Finder ($0)",
+        "description": "100% free international real business search via OpenStreetMap + Website AI & Contact Scanner (zero API key or billing card required).",
+        "default_on": False,
+        "default_limit": 50,
+    },
     "google_places_finder": {
         "label": "Google Places Lead Finder",
         "description": "Search real international businesses via Google Places API.",
@@ -80,6 +86,7 @@ DEFAULT_MODULE_SPECS: Dict[str, Dict[str, Any]] = {
 }
 
 MODULE_ORDER: List[str] = [
+    "free_osm_finder",
     "google_places_finder",
     "apollo_enrichment",
     "auto_demo_generator",
@@ -233,6 +240,7 @@ class LeadHunterControlService:
         rows = await self.ensure_initialized(session, tenant_id)
         presets: Dict[str, Dict[str, bool]] = {
             "free": {
+                "free_osm_finder": True,
                 "google_places_finder": True,
                 "apollo_enrichment": True,
                 "auto_demo_generator": False,
@@ -244,6 +252,7 @@ class LeadHunterControlService:
                 "direct_call_mode": True,
             },
             "low_budget": {
+                "free_osm_finder": True,
                 "google_places_finder": True,
                 "apollo_enrichment": True,
                 "auto_demo_generator": True,
@@ -376,6 +385,7 @@ class LeadHunterControlService:
                 for l in human_needed_leads[:10]
             ],
             "api_keys_status": {
+                "openstreetmap_free_ready": True,
                 "google_places_configured": bool(
                     (settings.google_places_api_key or "").strip()
                     and "your-" not in (settings.google_places_api_key or "").lower()

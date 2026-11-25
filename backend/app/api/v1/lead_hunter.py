@@ -48,7 +48,10 @@ class LeadSearchRequest(BaseModel):
     country: str = Field(min_length=2, max_length=100)
     city: str = Field(min_length=2, max_length=120)
     category: str = Field(min_length=2, max_length=120)
-    source_mode: str = Field(default="google_places", description="google_places | apollo | hybrid")
+    source_mode: str = Field(
+        default="openstreetmap_free",
+        description="openstreetmap_free | google_places | apollo | hybrid",
+    )
     max_results: int = Field(default=8, ge=1, le=20)
 
 
@@ -86,6 +89,23 @@ class InboundReplyRequest(BaseModel):
 
 class ProcessFollowupsRequest(BaseModel):
     force_due_in_test: bool = False
+
+
+class ApolloCsvImportRequest(BaseModel):
+    csv_text: str = Field(min_length=5, max_length=500000)
+    default_country: str = Field(default="USA", max_length=100)
+    default_city: str = Field(default="New York", max_length=120)
+    default_category: str = Field(default="Dental Clinic", max_length=120)
+    inspect_websites: bool = True
+
+
+class ManualOwnerEnrichRequest(BaseModel):
+    owner_name: Optional[str] = Field(default=None, max_length=160)
+    owner_title: Optional[str] = Field(default=None, max_length=160)
+    email: Optional[str] = Field(default=None, max_length=200)
+    email_verified: bool = True
+    linkedin_url: Optional[str] = Field(default=None, max_length=350)
+    phone: Optional[str] = Field(default=None, max_length=64)
 
 
 # ------------------------------------------------------------------------------
@@ -207,7 +227,50 @@ async def enrich_single_lead_with_apollo(
     session: AsyncSession = Depends(get_db),
 ):
     data = await lead_hunter_discovery_service.enrich_lead_via_apollo(session, context.tenant_id, lead_id)
-    return {"success": True, "data": data, "message": "Lead enriched via Apollo Free Tier"}
+    return {"success": True, "data": data, "message": "Lead enriched via Apollo"}
+
+
+@router.post("/import-apollo-csv")
+async def import_apollo_free_csv(
+    request: ApolloCsvImportRequest,
+    context: TenantContext = Depends(require_permission("marketing.research")),
+    session: AsyncSession = Depends(get_db),
+):
+    data = await lead_hunter_discovery_service.import_apollo_csv(
+        session=session,
+        tenant_id=context.tenant_id,
+        csv_text=request.csv_text,
+        default_country=request.default_country,
+        default_city=request.default_city,
+        default_category=request.default_category,
+        inspect_websites=request.inspect_websites,
+    )
+    return {
+        "success": True,
+        "data": data,
+        "message": f"Imported {data['imported']} & merged {data['updated']} Apollo Free leads cleanly",
+    }
+
+
+@router.patch("/leads/{lead_id}/owner")
+async def save_manual_apollo_free_owner(
+    lead_id: uuid.UUID,
+    request: ManualOwnerEnrichRequest,
+    context: TenantContext = Depends(require_permission("leads.update")),
+    session: AsyncSession = Depends(get_db),
+):
+    data = await lead_hunter_discovery_service.update_lead_owner_from_apollo_free(
+        session=session,
+        tenant_id=context.tenant_id,
+        lead_id=lead_id,
+        owner_name=request.owner_name,
+        owner_title=request.owner_title,
+        email=request.email,
+        email_verified=request.email_verified,
+        linkedin_url=request.linkedin_url,
+        phone=request.phone,
+    )
+    return {"success": True, "data": data, "message": "Decision-maker saved to lead cleanly"}
 
 
 @router.post("/leads/{lead_id}/promote-hot")

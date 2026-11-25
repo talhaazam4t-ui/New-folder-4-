@@ -34,7 +34,7 @@ export interface HunterLead {
   ai_evidence: Record<string, any>;
   pain_points: string[];
   interest_score: number;
-  lead_source: "google_places" | "apollo" | "hybrid";
+  lead_source: "openstreetmap_free" | "google_places" | "apollo" | "hybrid";
   status: string;
   pipeline_stage: string;
   timezone: string;
@@ -122,6 +122,7 @@ export interface HunterOverviewData {
     last_reply: string | null;
   }>;
   api_keys_status: {
+    openstreetmap_free_ready?: boolean;
     google_places_configured: boolean;
     apollo_configured: boolean;
     resend_configured: boolean;
