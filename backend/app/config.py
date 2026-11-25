@@ -183,6 +183,20 @@ class Settings(BaseSettings):
     payment_provider: str = Field(default="manual", alias="PAYMENT_PROVIDER")  # manual | mock
     payment_secret_key: Optional[str] = Field(default=None, alias="PAYMENT_SECRET_KEY")
     payment_webhook_secret: Optional[str] = Field(default=None, alias="PAYMENT_WEBHOOK_SECRET")
+    payoneer_account_email: Optional[str] = Field(default=None, alias="PAYONEER_ACCOUNT_EMAIL")
+    payoneer_receiving_details: Optional[str] = Field(
+        default=None,
+        alias="PAYONEER_RECEIVING_DETAILS",
+    )
+
+    # Anti-Bot Security (Cloudflare Turnstile) & Transactional Email (Resend)
+    turnstile_site_key: Optional[str] = Field(default=None, alias="TURNSTILE_SITE_KEY")
+    turnstile_secret_key: Optional[str] = Field(default=None, alias="TURNSTILE_SECRET_KEY")
+    resend_api_key: Optional[str] = Field(default=None, alias="RESEND_API_KEY")
+    resend_from_email: str = Field(
+        default="Taloxtech <no-reply@teloxtech.stream>",
+        alias="RESEND_FROM_EMAIL",
+    )
 
     # Google Services (Maps/Places, Gmail, Calendar OAuth)
     google_client_id: Optional[str] = Field(default=None, alias="GOOGLE_CLIENT_ID")

@@ -5,7 +5,7 @@ import uuid
 from typing import Optional
 
 from app.database.models.base import Base, TimestampMixin
-from sqlalchemy import JSON, ForeignKey, String, UniqueConstraint
+from sqlalchemy import Boolean, JSON, ForeignKey, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import CHAR, TypeDecorator
@@ -73,6 +73,7 @@ class Profile(Base, TimestampMixin):
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
     phone: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     password_hash: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    email_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     memberships = relationship("TenantMember", back_populates="user", cascade="all, delete-orphan")
 

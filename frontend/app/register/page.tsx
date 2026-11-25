@@ -6,6 +6,7 @@ import { apiRequest } from "@/lib/api";
 import { setAuthToken, setCurrentUser, setActiveTenant } from "@/lib/auth";
 import { normalizeServiceSlug, getCanonicalServiceMeta } from "@/lib/services";
 import { Lock, Mail, User, Phone, ArrowRight, AlertCircle, Sparkles, CheckCircle2 } from "lucide-react";
+import { TurnstileWidget } from "@/components/shared/TurnstileWidget";
 
 function RegisterForm() {
   const searchParams = useSearchParams();
@@ -21,6 +22,7 @@ function RegisterForm() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [phone, setPhone] = useState("");
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -38,6 +40,7 @@ function RegisterForm() {
           password,
           phone: phone.trim() || null,
           account_type: "client",
+          turnstile_token: turnstileToken,
         }),
       });
 
@@ -265,6 +268,8 @@ function RegisterForm() {
             />
           </div>
         </div>
+
+        <TurnstileWidget onTokenChange={setTurnstileToken} />
 
         <button
           type="submit"

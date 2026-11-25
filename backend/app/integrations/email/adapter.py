@@ -7,6 +7,7 @@ from typing import Any, Dict, Optional
 import uuid
 
 import httpx
+from app.config import settings
 from app.core.logging import logger
 from app.integrations.base import BaseIntegrationAdapter
 
@@ -248,6 +249,65 @@ class EmailIntegrationAdapter(BaseIntegrationAdapter):
             "to": to_email,
             "subject": subject,
             "status": "sent",
+        }
+
+    async def send_transactional_email(
+        self,
+        to_email: str,
+        subject: str,
+        html_body: str,
+        text_body: str,
+    ) -> Dict[str, Any]:
+        """Send platform verification / password-reset / digest email via Resend API with safe fallback."""
+        resend_key = (settings.resend_api_key or "").strip()
+        if resend_key and resend_key != "mock" and settings.app_env != "test":
+            try:
+                async with httpx.AsyncClient(timeout=15.0) as client:
+                    resp = await client.post(
+                        "https://api.resend.com/emails",
+                        headers={
+                            "Authorization": f"Bearer {resend_key}",
+                            "Content-Type": "application/json",
+                        },
+                        json={
+                            "from": settings.resend_from_email,
+                            "to": [to_email],
+                            "subject": subject,
+                            "html": html_body,
+                            "text": text_body,
+                        },
+                    )
+                if resp.status_code in (200, 201):
+                    data = resp.json() if resp.text else {}
+                    logger.info(
+                        "Dispatched transactional email via Resend",
+                        to_email=to_email,
+                        subject=subject,
+                        resend_id=data.get("id"),
+                    )
+                    return {
+                        "success": True,
+                        "provider": "resend",
+                        "message_id": data.get("id"),
+                        "delivered": True,
+                    }
+                logger.warning(
+                    "Resend API returned non-2xx",
+                    status_code=resp.status_code,
+                    body=resp.text[:200],
+                )
+            except Exception as exc:
+                logger.warning("Resend API email delivery failed", error=str(exc))
+
+        logger.info(
+            "Transactional email logged locally (configure RESEND_API_KEY for live inbox delivery)",
+            to_email=to_email,
+            subject=subject,
+        )
+        return {
+            "success": True,
+            "provider": "log_fallback",
+            "delivered": False,
         }
 
 

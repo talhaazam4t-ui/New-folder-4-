@@ -32,8 +32,22 @@ interface NotificationItem {
   created_at: string;
 }
 
+interface ChecklistItem {
+  key: string;
+  title: string;
+  category: string;
+  status: string;
+  account: string | null;
+  auth_method: string;
+  oauth_provider: string | null;
+  requires_browser_login: boolean;
+  action_url: string;
+  checklist_steps: string[];
+}
+
 export default function SettingsPage() {
   const [integrations, setIntegrations] = useState<IntegrationItem[]>([]);
+  const [checklistItems, setChecklistItems] = useState<ChecklistItem[]>([]);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [simPhone, setSimPhone] = useState("+15550199911");
   const [simName, setSimName] = useState("Tenant Unit 4B");
@@ -48,13 +62,17 @@ export default function SettingsPage() {
   const [supportModalOpen, setSupportModalOpen] = useState(false);
 
   const loadSettingsWorkspace = async () => {
-    const [intRes, notifRes] = await Promise.all([
+    const [intRes, notifRes, checklistRes] = await Promise.all([
       apiRequest("/api/v1/integrations"),
       apiRequest("/api/v1/notifications"),
+      apiRequest("/api/v1/integrations/handshake-checklist"),
     ]);
 
     if (intRes.data && Array.isArray(intRes.data)) setIntegrations(intRes.data);
     if (notifRes.data && Array.isArray(notifRes.data)) setNotifications(notifRes.data);
+    if (checklistRes.data?.items && Array.isArray(checklistRes.data.items)) {
+      setChecklistItems(checklistRes.data.items);
+    }
   };
 
   useEffect(() => {
@@ -267,6 +285,104 @@ export default function SettingsPage() {
                   <MessageSquare className="h-3.5 w-3.5" />
                   <span>WhatsApp: {SUPPORT_WHATSAPP_NUMBER}</span>
                 </a>
+              </div>
+            </div>
+          )}
+
+          {/* Unified Setup & Browser Auth Handshake Checklist */}
+          {checklistItems.length > 0 && (
+            <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-4">
+              <div>
+                <h2 className="text-lg font-semibold text-white">
+                  Unified Integrations &amp; Browser-Auth Checklist
+                </h2>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Where external login/2FA is required (Google, Meta, Retell/Cal.com, LinkedIn, Payoneer), follow each card&apos;s quick setup checklist.
+                </p>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                {checklistItems.map((ck) => {
+                  const badgeStyle =
+                    ck.status === "connected" || ck.status === "ready_hitl"
+                      ? "bg-emerald-950 text-emerald-300 border-emerald-700"
+                      : ck.status === "needs_oauth" ||
+                        ck.status === "sandbox_token" ||
+                        ck.status === "draft" ||
+                        ck.status === "bank_ready_payoneer_pending"
+                      ? "bg-amber-950 text-amber-300 border-amber-700"
+                      : "bg-slate-800 text-slate-300 border-slate-700";
+
+                  const badgeLabel =
+                    ck.status === "connected"
+                      ? "Connected"
+                      : ck.status === "ready_hitl"
+                      ? "Human-Approved Ready"
+                      : ck.status === "needs_oauth"
+                      ? "OAuth Login Needed"
+                      : ck.status === "sandbox_token"
+                      ? "Sandbox / Token"
+                      : ck.status === "bank_ready_payoneer_pending"
+                      ? "Bank Active • Payoneer Pending"
+                      : ck.status === "planned_phase4"
+                      ? "Phase 4 Meta Webhook"
+                      : "Setup Needed";
+
+                  return (
+                    <div
+                      key={ck.key}
+                      className="rounded-xl border border-slate-800 bg-slate-950 p-4 flex flex-col justify-between space-y-3"
+                    >
+                      <div className="space-y-2">
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                              {ck.category}
+                            </div>
+                            <h3 className="text-sm font-semibold text-white mt-0.5">
+                              {ck.title}
+                            </h3>
+                          </div>
+                          <span
+                            className={`shrink-0 px-2 py-0.5 rounded border text-[10px] font-semibold ${badgeStyle}`}
+                          >
+                            {badgeLabel}
+                          </span>
+                        </div>
+                        {ck.account && (
+                          <p className="text-[11px] font-mono text-emerald-400 truncate">
+                            {ck.account}
+                          </p>
+                        )}
+                        <ul className="space-y-1 text-[11px] text-slate-400 list-disc pl-4">
+                          {ck.checklist_steps.map((stepText, idx) => (
+                            <li key={idx}>{stepText}</li>
+                          ))}
+                        </ul>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-800/80">
+                        {ck.oauth_provider && (
+                          <button
+                            type="button"
+                            onClick={() => handleOAuthConnect(ck.oauth_provider!)}
+                            className="inline-flex items-center gap-1.5 rounded bg-emerald-600 hover:bg-emerald-500 px-2.5 py-1.5 text-[11px] font-semibold text-white"
+                          >
+                            <ExternalLink className="h-3 w-3" />
+                            <span>
+                              {ck.status === "connected" ? "Reconnect OAuth" : "Browser Login & Authorize"}
+                            </span>
+                          </button>
+                        )}
+                        <a
+                          href={ck.action_url}
+                          className="inline-flex items-center gap-1 rounded border border-slate-700 bg-slate-900 hover:bg-slate-800 px-2.5 py-1.5 text-[11px] text-slate-200"
+                        >
+                          Open Panel
+                        </a>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}

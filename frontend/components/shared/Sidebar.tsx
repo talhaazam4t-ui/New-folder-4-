@@ -15,22 +15,29 @@ import {
   X,
   LifeBuoy,
 } from "lucide-react";
-import { SUPPORT_WHATSAPP_NUMBER, SUPPORT_WHATSAPP_LINK } from "@/lib/auth";
+import {
+  getActiveTenant,
+  SUPPORT_WHATSAPP_NUMBER,
+  SUPPORT_WHATSAPP_LINK,
+} from "@/lib/auth";
 import { SupportRequestModal } from "@/components/shared/SupportRequestModal";
 
 export interface SidebarProps {
   currentPath?: string;
+  enabledModules?: string[];
   mobileOpen?: boolean;
   onMobileClose?: () => void;
 }
 
 export function Sidebar({
   currentPath = "/dashboard",
+  enabledModules,
   mobileOpen,
   onMobileClose,
 }: SidebarProps) {
   const [internalMobileOpen, setInternalMobileOpen] = useState(false);
   const [supportModalOpen, setSupportModalOpen] = useState(false);
+  const [cachedModules, setCachedModules] = useState<string[] | null>(null);
 
   const isDrawerOpen = mobileOpen !== undefined ? mobileOpen : internalMobileOpen;
 
@@ -38,6 +45,29 @@ export function Sidebar({
     setInternalMobileOpen(false);
     if (onMobileClose) onMobileClose();
   };
+
+  useEffect(() => {
+    if (enabledModules && enabledModules.length > 0) {
+      setCachedModules(enabledModules);
+      return;
+    }
+    if (typeof window !== "undefined") {
+      const tenant = getActiveTenant();
+      if (tenant?.id) {
+        try {
+          const raw = sessionStorage.getItem(`talox_enabled_modules_${tenant.id}`);
+          if (raw) {
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+              setCachedModules(parsed);
+            }
+          }
+        } catch {
+          // Ignore invalid JSON
+        }
+      }
+    }
+  }, [enabledModules]);
 
   useEffect(() => {
     const handleToggle = () => {
@@ -57,18 +87,47 @@ export function Sidebar({
     };
   }, [onMobileClose]);
 
-  // Pure Done-For-You Managed Service navigation for Clients
-  // Completely separate from Admin operations
-  const clientNavItems = [
-    { label: "Performance Overview", href: "/dashboard", icon: LayoutDashboard },
-    { label: "Onboarding & Connections", href: "/onboarding", icon: Sparkles },
-    { label: "Services & Packages", href: "/billing", icon: CreditCard },
-    { label: "Financial Results", href: "/finance", icon: TrendingUp },
-    { label: "Marketing & Leads", href: "/marketing", icon: Megaphone },
-    { label: "Office Receptionist", href: "/receptionist", icon: PhoneCall },
-    { label: "AI Agents & Approvals", href: "/agents", icon: Bot },
-    { label: "Integrations & Account", href: "/settings", icon: Settings },
+  const activeModules =
+    enabledModules && enabledModules.length > 0
+      ? enabledModules
+      : cachedModules || [];
+
+  const hasAny = (keys: string[]) =>
+    activeModules.length === 0 || keys.some((k) => activeModules.includes(k));
+
+  // Industry- & Package-Filtered Managed Service Navigation
+  const allClientNavItems = [
+    { label: "Performance Overview", href: "/dashboard", icon: LayoutDashboard, visible: true },
+    { label: "Onboarding & Setup", href: "/onboarding", icon: Sparkles, visible: true },
+    { label: "Services & Packages", href: "/billing", icon: CreditCard, visible: true },
+    {
+      label: "Financial Results",
+      href: "/finance",
+      icon: TrendingUp,
+      visible: hasAny(["financial_ledger", "executive_analytics_compliance", "revenue_reports"]),
+    },
+    {
+      label: "Marketing & Leads",
+      href: "/marketing",
+      icon: Megaphone,
+      visible: hasAny(["marketing_growth", "lead_crm", "lead_funnel", "outreach_campaigns"]),
+    },
+    {
+      label: "Office Receptionist",
+      href: "/receptionist",
+      icon: PhoneCall,
+      visible: hasAny(["office_receptionist", "whatsapp_concierge", "appointments"]),
+    },
+    {
+      label: "Outreach & Approvals",
+      href: "/agents",
+      icon: Bot,
+      visible: hasAny(["multi_agent_orchestration", "lead_crm", "marketing_growth", "lead_funnel"]),
+    },
+    { label: "Integrations & Security", href: "/settings", icon: Settings, visible: true },
   ];
+
+  const clientNavItems = allClientNavItems.filter((item) => item.visible);
 
   const renderSidebarBody = (isMobile = false) => (
     <div className="flex flex-col justify-between h-full space-y-6">
@@ -156,7 +215,7 @@ export function Sidebar({
           <p className="text-xs font-semibold">Managed AI Guarantee</p>
         </div>
         <p className="mt-1 text-[11px] text-slate-400 leading-relaxed">
-          Zero complex code or agent debugging required. Fully handled for your business.
+          Tailored strictly to your selected industry and subscribed modules.
         </p>
       </div>
     </div>

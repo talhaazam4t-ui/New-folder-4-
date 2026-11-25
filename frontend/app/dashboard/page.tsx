@@ -45,6 +45,21 @@ interface OverviewPayload {
     account_number: string;
     iban: string;
   };
+  payment_rails?: {
+    bank_transfer: {
+      bank_name: string;
+      account_name: string;
+      account_number: string;
+      iban: string;
+    };
+    payoneer: {
+      enabled: boolean;
+      status: string;
+      account_email: string;
+      receiving_details: string;
+      currency: string;
+    };
+  };
   current_package: string;
   purchased_services: Array<{
     slot_number?: number;
@@ -58,7 +73,20 @@ interface OverviewPayload {
     status: string;
     required_integrations?: string[];
   }>;
+  purchased_service_slugs?: string[];
   enabled_modules?: string[];
+  outreach_performance?: {
+    plan_name: string;
+    monthly_lead_limit: number;
+    leads_used_this_month: number;
+    remaining_leads: number;
+    quota_exhausted: boolean;
+    gmail_drafts_ready: number;
+    whatsapp_pitches_ready: number;
+    linkedin_pitches_ready: number;
+    pending_outreach_approvals: number;
+    approved_sent_count: number;
+  };
   subscription_info: {
     active_services_count: number;
     current_package: string;
@@ -148,6 +176,12 @@ export default function ClientDashboardPage() {
       const res = await apiRequest<OverviewPayload>(`/api/v1/tenants/${tenant.id}/overview`);
       if (res.data) {
         setOverview(res.data);
+        if (typeof window !== "undefined" && Array.isArray(res.data.enabled_modules)) {
+          sessionStorage.setItem(
+            `talox_enabled_modules_${tenant.id}`,
+            JSON.stringify(res.data.enabled_modules)
+          );
+        }
       } else {
         setOverviewError(
           res.error?.message || "Failed to load workspace performance overview."
@@ -266,7 +300,7 @@ export default function ClientDashboardPage() {
       <Navbar />
 
       <div className="flex flex-1">
-        <Sidebar currentPath="/dashboard" />
+        <Sidebar currentPath="/dashboard" enabledModules={overview?.enabled_modules} />
 
         <main className="flex-1 min-w-0 p-4 sm:p-6 md:p-8 space-y-8 max-w-7xl mx-auto w-full">
           {overviewError && (
@@ -449,6 +483,34 @@ export default function ClientDashboardPage() {
                 </button>
               </div>
             </div>
+
+            {/* International Payoneer (USD) Receiving Rail */}
+            {overview?.payment_rails?.payoneer && (
+              <div className="rounded-xl border border-slate-800 bg-slate-900/70 p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+                <div className="space-y-0.5">
+                  <div className="flex items-center gap-2">
+                    <span className="font-bold text-white">International Payoneer (USD)</span>
+                    <span
+                      className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase border ${
+                        overview.payment_rails.payoneer.enabled
+                          ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/30"
+                          : "bg-amber-500/20 text-amber-300 border-amber-500/30"
+                      }`}
+                    >
+                      {overview.payment_rails.payoneer.enabled ? "Active" : "Account Approval Pending"}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-400">
+                    {overview.payment_rails.payoneer.receiving_details}
+                  </p>
+                </div>
+                {overview.payment_rails.payoneer.enabled && (
+                  <span className="font-mono text-xs font-semibold text-emerald-400 shrink-0">
+                    {overview.payment_rails.payoneer.account_email}
+                  </span>
+                )}
+              </div>
+            )}
 
             {/* Notification / Proof Submission Modal Form */}
             {isNotifyingPayment && (
@@ -652,6 +714,55 @@ export default function ClientDashboardPage() {
               </a>
             </div>
           </div>
+
+          {/* CONCISE OUTREACH TIER & MULTI-CHANNEL PERFORMANCE */}
+          {showLeadModules && overview?.outreach_performance && (
+            <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div>
+                  <h2 className="text-base font-bold text-slate-900">
+                    Outreach Tier Quota &amp; Multi-Channel Performance
+                  </h2>
+                  <p className="text-xs text-slate-500">
+                    Active tier: <strong className="uppercase">{overview.outreach_performance.plan_name}</strong>{" "}
+                    ({overview.outreach_performance.leads_used_this_month} / {overview.outreach_performance.monthly_lead_limit} leads used this month)
+                  </p>
+                </div>
+                <a
+                  href="/agents"
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 px-3.5 py-2 text-xs font-semibold text-white transition"
+                >
+                  <span>Review &amp; Approve Outreach ({overview.outreach_performance.pending_outreach_approvals})</span>
+                </a>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                <div className="rounded-lg bg-slate-50 border border-slate-200 p-3">
+                  <div className="text-slate-500">Remaining Lead Quota</div>
+                  <div className="text-lg font-bold text-slate-900 mt-0.5">
+                    {overview.outreach_performance.remaining_leads}
+                  </div>
+                </div>
+                <div className="rounded-lg bg-slate-50 border border-slate-200 p-3">
+                  <div className="text-slate-500">Gmail Drafts Ready</div>
+                  <div className="text-lg font-bold text-emerald-700 mt-0.5">
+                    {overview.outreach_performance.gmail_drafts_ready}
+                  </div>
+                </div>
+                <div className="rounded-lg bg-slate-50 border border-slate-200 p-3">
+                  <div className="text-slate-500">WhatsApp &amp; LinkedIn Ready</div>
+                  <div className="text-lg font-bold text-indigo-700 mt-0.5">
+                    {overview.outreach_performance.whatsapp_pitches_ready} / {overview.outreach_performance.linkedin_pitches_ready}
+                  </div>
+                </div>
+                <div className="rounded-lg bg-slate-50 border border-slate-200 p-3">
+                  <div className="text-slate-500">Human-Approved Dispatches</div>
+                  <div className="text-lg font-bold text-slate-900 mt-0.5">
+                    {overview.outreach_performance.approved_sent_count}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* PRIMARY OPERATIONAL OUTCOME KPIS (Locked / Empty State prior to approval) */}
           <div className="space-y-4">

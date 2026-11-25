@@ -15,7 +15,9 @@ import {
   Play,
   Plus,
   RefreshCw,
+  Send,
   Sparkles,
+  X,
 } from "lucide-react";
 import { AdminNavbar } from "../../components/admin/AdminNavbar";
 import { AdminSidebar } from "../../components/admin/AdminSidebar";
@@ -96,6 +98,8 @@ interface AutopilotConfig {
   enabled: boolean;
   niches: string[];
   cities: string[];
+  channels?: string[];
+  require_human_approval?: boolean;
   daily_draft_limit: number;
   service_offer: string;
   sender_name: string;
@@ -104,6 +108,15 @@ interface AutopilotConfig {
   rotation_index: number;
   last_run_at: string | null;
   last_run_summary: AutopilotRunSummary | null;
+}
+
+interface AutopilotQuota {
+  plan_name: string;
+  service_slug: string | null;
+  monthly_lead_limit: number;
+  leads_used_this_month: number;
+  remaining_leads: number;
+  quota_exhausted: boolean;
 }
 
 interface AutopilotGmailStatus {
@@ -121,6 +134,8 @@ interface AutopilotStats {
   saved_in_gmail_count: number;
   pending_oauth_sync_count: number;
   contact_only_count: number;
+  pending_approval_count?: number;
+  approved_sent_count?: number;
 }
 
 interface AutopilotDraftItem {
@@ -133,8 +148,17 @@ interface AutopilotDraftItem {
   city: string | null;
   subject: string | null;
   body: string | null;
+  whatsapp_pitch?: string | null;
+  whatsapp_url?: string | null;
+  linkedin_note?: string | null;
+  linkedin_dm?: string | null;
+  linkedin_search_url?: string | null;
   draft_id: string | null;
   draft_status: string;
+  approval_status?: string;
+  gmail_sent_at?: string | null;
+  whatsapp_status?: string | null;
+  linkedin_status?: string | null;
   drafted_at: string;
   email_source: string | null;
   gmail_error: string | null;
@@ -142,6 +166,7 @@ interface AutopilotDraftItem {
 
 interface AutopilotStatePayload {
   config: AutopilotConfig;
+  quota?: AutopilotQuota;
   gmail_status: AutopilotGmailStatus;
   next_target: { niche: string; city: string };
   stats: AutopilotStats;
@@ -194,6 +219,9 @@ export default function AgentsPage() {
   // Daily Global Outreach & Gmail Draft Autopilot state
   const [apEnabled, setApEnabled] = useState(false);
   const [apNiches, setApNiches] = useState<string[]>(PRESET_NICHES);
+  const [apChannels, setApChannels] = useState<string[]>(["gmail", "whatsapp", "linkedin"]);
+  const [apRequireApproval, setApRequireApproval] = useState(true);
+  const [apQuota, setApQuota] = useState<AutopilotQuota | null>(null);
   const [customNicheInput, setCustomNicheInput] = useState("");
   const [apCitiesInput, setApCitiesInput] = useState(
     "Dubai, London, Toronto, Riyadh, New York, Sydney, Singapore, Abu Dhabi, Manchester, Lahore"
@@ -217,6 +245,8 @@ export default function AgentsPage() {
   const [authorizingGmail, setAuthorizingGmail] = useState(false);
   const [expandedDraftId, setExpandedDraftId] = useState<string | null>(null);
   const [copiedLeadId, setCopiedLeadId] = useState<string | null>(null);
+  const [channelTabByLead, setChannelTabByLead] = useState<Record<string, "gmail" | "whatsapp" | "linkedin">>({});
+  const [dispatchingLeadKey, setDispatchingLeadKey] = useState<string | null>(null);
 
   const applyAutopilotState = useCallback((payload: AutopilotStatePayload) => {
     if (!payload) return;
@@ -227,6 +257,12 @@ export default function AgentsPage() {
           ? payload.config.niches
           : PRESET_NICHES
       );
+      setApChannels(
+        Array.isArray(payload.config.channels) && payload.config.channels.length > 0
+          ? payload.config.channels
+          : ["gmail", "whatsapp", "linkedin"]
+      );
+      setApRequireApproval(payload.config.require_human_approval ?? true);
       setApCitiesInput(
         Array.isArray(payload.config.cities) && payload.config.cities.length > 0
           ? payload.config.cities.join(", ")
@@ -240,6 +276,7 @@ export default function AgentsPage() {
       setApLastRunAt(payload.config.last_run_at || null);
       setApLastRunSummary(payload.config.last_run_summary || null);
     }
+    if (payload.quota) setApQuota(payload.quota);
     if (payload.gmail_status) setApGmailStatus(payload.gmail_status);
     if (payload.next_target) setApNextTarget(payload.next_target);
     if (payload.stats) setApStats(payload.stats);
@@ -419,6 +456,16 @@ export default function AgentsPage() {
     }
   };
 
+  const handleToggleChannel = (channel: string) => {
+    setApChannels((prev) => {
+      if (prev.includes(channel)) {
+        if (prev.length <= 1) return prev;
+        return prev.filter((c) => c !== channel);
+      }
+      return [...prev, channel];
+    });
+  };
+
   const handleSaveAutopilot = async (e: React.FormEvent) => {
     e.preventDefault();
     const tId = selectedTenantId || getActiveTenant()?.id;
@@ -440,6 +487,8 @@ export default function AgentsPage() {
         enabled: apEnabled,
         niches: apNiches,
         cities: parsedCities.length > 0 ? parsedCities : ["Dubai", "London", "Toronto", "Riyadh"],
+        channels: apChannels,
+        require_human_approval: apRequireApproval,
         daily_draft_limit: apDailyLimit,
         run_hour_utc: apRunHourUtc,
         sender_name: apSenderName,
@@ -534,8 +583,8 @@ export default function AgentsPage() {
     }
   };
 
-  const handleCopyPitch = async (item: AutopilotDraftItem) => {
-    const text = `Subject: ${item.subject || ""}\n\n${item.body || ""}`.trim();
+  const handleCopyPitch = async (item: AutopilotDraftItem, textOverride?: string | null) => {
+    const text = (textOverride || `Subject: ${item.subject || ""}\n\n${item.body || ""}`).trim();
     if (!text) return;
     try {
       await navigator.clipboard.writeText(text);
@@ -545,6 +594,85 @@ export default function AgentsPage() {
       }, 2000);
     } catch {
       setErrorMessage("Browser clipboard permission denied. Expand the draft to copy manually.");
+    }
+  };
+
+  const handleApproveSendLead = async (
+    item: AutopilotDraftItem,
+    channel: "gmail" | "whatsapp" | "linkedin",
+    mode: "send" | "draft" = "send"
+  ) => {
+    const tId = selectedTenantId || getActiveTenant()?.id;
+    if (!tId) return;
+
+    const actionKey = `${item.lead_id}_${channel}_${mode}`;
+    setDispatchingLeadKey(actionKey);
+    setErrorMessage(null);
+    setStatusMessage(null);
+
+    const res = await apiRequest(`/api/v1/agents/outreach-autopilot/leads/${item.lead_id}/approve-send`, {
+      method: "POST",
+      headers: { "X-Tenant-ID": tId },
+      body: JSON.stringify({ channel, mode }),
+    });
+
+    setDispatchingLeadKey(null);
+    if (res.success && res.data) {
+      const payload = res.data as {
+        action_result?: {
+          status?: string;
+          whatsapp_url?: string;
+          linkedin_search_url?: string;
+          linkedin_note?: string;
+        };
+        state?: AutopilotStatePayload;
+      };
+      if (payload.state) applyAutopilotState(payload.state);
+      const act = payload.action_result || {};
+
+      if (channel === "whatsapp" && act.whatsapp_url && act.status === "approved_wa_me_ready") {
+        window.open(act.whatsapp_url, "_blank", "noopener,noreferrer");
+        setStatusMessage(`Approved WhatsApp pitch for ${item.company_name} — opened pre-filled WhatsApp chat.`);
+      } else if (channel === "linkedin") {
+        if (act.linkedin_note && navigator?.clipboard) {
+          navigator.clipboard.writeText(act.linkedin_note).catch(() => {});
+        }
+        if (act.linkedin_search_url) {
+          window.open(act.linkedin_search_url, "_blank", "noopener,noreferrer");
+        }
+        setStatusMessage(
+          `Approved LinkedIn outreach for ${item.company_name} — copied invite note & opened LinkedIn people search.`
+        );
+      } else if (channel === "gmail" && mode === "draft") {
+        setStatusMessage(`Gmail Draft synced for ${item.company_name}.`);
+      } else {
+        setStatusMessage(`Approved & dispatched ${channel.toUpperCase()} message to ${item.company_name}!`);
+      }
+    } else {
+      setErrorMessage(res.error?.message || `Failed to dispatch ${channel} outreach.`);
+    }
+  };
+
+  const handleRejectLead = async (item: AutopilotDraftItem) => {
+    const tId = selectedTenantId || getActiveTenant()?.id;
+    if (!tId) return;
+
+    setDispatchingLeadKey(`${item.lead_id}_reject`);
+    setErrorMessage(null);
+    setStatusMessage(null);
+
+    const res = await apiRequest(`/api/v1/agents/outreach-autopilot/leads/${item.lead_id}/reject`, {
+      method: "POST",
+      headers: { "X-Tenant-ID": tId },
+      body: JSON.stringify({ reason: "Skipped by human reviewer" }),
+    });
+
+    setDispatchingLeadKey(null);
+    if (res.success && res.data?.state) {
+      applyAutopilotState(res.data.state as AutopilotStatePayload);
+      setStatusMessage(`Skipped ${item.company_name} from outbound queue.`);
+    } else {
+      setErrorMessage(res.error?.message || "Failed to reject lead outreach.");
     }
   };
 
@@ -770,6 +898,45 @@ export default function AgentsPage() {
               </div>
             )}
 
+            {/* Monthly Lead Tier Quota Banner */}
+            {apQuota && (
+              <div className="rounded-lg border border-slate-800 bg-slate-950 p-3.5 space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <div className="flex items-center gap-2">
+                    <span className="text-slate-400">Monthly Lead Tier Quota:</span>
+                    <span className="px-2 py-0.5 rounded bg-indigo-950 text-indigo-300 border border-indigo-700/60 font-semibold uppercase text-[10px]">
+                      {apQuota.plan_name}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span className="font-mono text-white font-semibold">
+                      {apQuota.leads_used_this_month} / {apQuota.monthly_lead_limit} leads used ({apQuota.remaining_leads} remaining)
+                    </span>
+                    {!isAdminView && (
+                      <a href="/billing" className="text-emerald-400 hover:underline font-medium">
+                        Upgrade Tier ↗
+                      </a>
+                    )}
+                  </div>
+                </div>
+                <div className="h-1.5 w-full rounded-full bg-slate-800 overflow-hidden">
+                  <div
+                    className={`h-full transition-all ${
+                      apQuota.quota_exhausted ? "bg-rose-500" : "bg-emerald-500"
+                    }`}
+                    style={{
+                      width: `${Math.min(
+                        100,
+                        Math.round(
+                          (apQuota.leads_used_this_month / Math.max(1, apQuota.monthly_lead_limit)) * 100
+                        )
+                      )}%`,
+                    }}
+                  />
+                </div>
+              </div>
+            )}
+
             {/* Stats & Next Target */}
             <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
               <div className="rounded-lg border border-slate-800 bg-slate-950 p-3">
@@ -829,6 +996,53 @@ export default function AgentsPage() {
                     {apEnabled ? "ON (Runs Daily)" : "OFF (Manual Only)"}
                   </span>
                 </label>
+              </div>
+
+              {/* Multi-Channel Selection + HITL Gate */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 rounded-lg border border-slate-800 bg-slate-950/60 p-4 text-xs">
+                <div className="space-y-2">
+                  <div className="font-medium text-slate-300">
+                    Outreach Channels (Pitches Generated Per Company)
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {[
+                      { id: "gmail", label: "Gmail (Drafts + Approved Send)" },
+                      { id: "whatsapp", label: "WhatsApp (Cloud API / wa.me)" },
+                      { id: "linkedin", label: "LinkedIn (Invite Note & DM)" },
+                    ].map((ch) => {
+                      const active = apChannels.includes(ch.id);
+                      return (
+                        <button
+                          key={ch.id}
+                          type="button"
+                          onClick={() => handleToggleChannel(ch.id)}
+                          className={`px-3 py-1.5 rounded-lg border text-xs font-medium transition ${
+                            active
+                              ? "bg-emerald-950/70 border-emerald-600 text-emerald-200"
+                              : "bg-slate-950 border-slate-800 text-slate-400"
+                          }`}
+                        >
+                          {active ? "✓ " : "+ "}
+                          {ch.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+                <div className="flex items-center justify-between gap-3 md:border-l md:border-slate-800 md:pl-4">
+                  <div>
+                    <div className="font-medium text-slate-200">Mandatory Human-in-the-Loop Gate</div>
+                    <p className="text-[11px] text-slate-400 mt-0.5">
+                      Drafts save for your approval first — zero unapproved cold messages leave automatically.
+                    </p>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={apRequireApproval}
+                    onChange={(e) => setApRequireApproval(e.target.checked)}
+                    className="h-4 w-4 rounded border-slate-700 bg-slate-900 text-emerald-500"
+                  />
+                </div>
               </div>
 
               {/* Target Niches Chips */}
@@ -1036,9 +1250,10 @@ export default function AgentsPage() {
                 <div className="space-y-2.5">
                   {apDrafts.map((item) => {
                     const isExpanded = expandedDraftId === item.lead_id;
-                    const waUrl = toWhatsAppUrl(item.phone);
+                    const activeCh = channelTabByLead[item.lead_id] || "gmail";
+                    const waUrl = item.whatsapp_url || toWhatsAppUrl(item.phone);
                     const statusBadgeClass =
-                      item.draft_status === "saved_in_gmail"
+                      item.draft_status === "sent_via_gmail" || item.draft_status === "saved_in_gmail"
                         ? "bg-emerald-950 text-emerald-300 border-emerald-700"
                         : item.draft_status === "contact_only_no_email"
                         ? "bg-sky-950 text-sky-300 border-sky-700"
@@ -1047,7 +1262,9 @@ export default function AgentsPage() {
                         : "bg-amber-950 text-amber-300 border-amber-700";
 
                     const statusLabel =
-                      item.draft_status === "saved_in_gmail"
+                      item.draft_status === "sent_via_gmail"
+                        ? "Sent via Gmail"
+                        : item.draft_status === "saved_in_gmail"
                         ? "Saved in Gmail Drafts"
                         : item.draft_status === "contact_only_no_email"
                         ? "Phone / Web Only (No Public Email)"
@@ -1055,10 +1272,24 @@ export default function AgentsPage() {
                         ? "Gmail Sync Needs Retry"
                         : "Saved in CRM (Pending Gmail OAuth)";
 
+                    const approvalBadgeClass =
+                      item.approval_status === "approved_sent"
+                        ? "bg-emerald-950/90 text-emerald-300 border-emerald-600/70"
+                        : item.approval_status === "rejected"
+                        ? "bg-slate-800 text-slate-400 border-slate-700"
+                        : "bg-amber-950/80 text-amber-300 border-amber-600/60";
+
+                    const approvalLabel =
+                      item.approval_status === "approved_sent"
+                        ? "Human Approved & Sent"
+                        : item.approval_status === "rejected"
+                        ? "Skipped"
+                        : "Pending Human Approval";
+
                     return (
                       <div
                         key={item.lead_id}
-                        className="rounded-lg border border-slate-800 bg-slate-950 p-4 space-y-2"
+                        className="rounded-lg border border-slate-800 bg-slate-950 p-4 space-y-2.5"
                       >
                         <div className="flex flex-col md:flex-row md:items-center justify-between gap-2">
                           <div className="space-y-0.5 min-w-0">
@@ -1080,6 +1311,11 @@ export default function AgentsPage() {
                                 className={`px-2 py-0.5 rounded border text-[11px] font-medium ${statusBadgeClass}`}
                               >
                                 {statusLabel}
+                              </span>
+                              <span
+                                className={`px-2 py-0.5 rounded border text-[11px] font-medium ${approvalBadgeClass}`}
+                              >
+                                {approvalLabel}
                               </span>
                             </div>
                             <div className="flex flex-wrap items-center gap-3 text-xs text-slate-400">
@@ -1108,34 +1344,52 @@ export default function AgentsPage() {
                           </div>
 
                           <div className="flex flex-wrap items-center gap-2 shrink-0">
-                            {waUrl && (
-                              <a
-                                href={waUrl}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="inline-flex items-center gap-1 rounded bg-emerald-700 hover:bg-emerald-600 px-2.5 py-1 text-xs font-medium text-white"
-                              >
-                                <MessageSquare className="h-3 w-3" />
-                                WhatsApp
-                              </a>
-                            )}
-                            {item.body && (
+                            {item.email && (
                               <button
                                 type="button"
-                                onClick={() => handleCopyPitch(item)}
-                                className="inline-flex items-center gap-1 rounded border border-slate-700 bg-slate-900 hover:bg-slate-800 px-2.5 py-1 text-xs text-slate-200"
+                                disabled={dispatchingLeadKey === `${item.lead_id}_gmail_send`}
+                                onClick={() => handleApproveSendLead(item, "gmail", "send")}
+                                className="inline-flex items-center gap-1 rounded bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 px-2.5 py-1 text-xs font-semibold text-white"
                               >
-                                {copiedLeadId === item.lead_id ? (
-                                  <>
-                                    <Check className="h-3 w-3 text-emerald-400" />
-                                    Copied
-                                  </>
-                                ) : (
-                                  <>
-                                    <Copy className="h-3 w-3" />
-                                    Copy Pitch
-                                  </>
-                                )}
+                                <Send className="h-3 w-3" />
+                                {dispatchingLeadKey === `${item.lead_id}_gmail_send`
+                                  ? "Sending..."
+                                  : "Approve & Send Gmail"}
+                              </button>
+                            )}
+                            {waUrl && (
+                              <button
+                                type="button"
+                                disabled={dispatchingLeadKey === `${item.lead_id}_whatsapp_send`}
+                                onClick={() => handleApproveSendLead(item, "whatsapp", "send")}
+                                className="inline-flex items-center gap-1 rounded bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 px-2.5 py-1 text-xs font-medium text-white"
+                              >
+                                <MessageSquare className="h-3 w-3" />
+                                {dispatchingLeadKey === `${item.lead_id}_whatsapp_send`
+                                  ? "Sending..."
+                                  : "Approve WhatsApp"}
+                              </button>
+                            )}
+                            {item.linkedin_search_url && (
+                              <button
+                                type="button"
+                                disabled={dispatchingLeadKey === `${item.lead_id}_linkedin_send`}
+                                onClick={() => handleApproveSendLead(item, "linkedin", "send")}
+                                className="inline-flex items-center gap-1 rounded bg-sky-700 hover:bg-sky-600 disabled:opacity-50 px-2.5 py-1 text-xs font-medium text-white"
+                              >
+                                <ExternalLink className="h-3 w-3" />
+                                Approve LinkedIn
+                              </button>
+                            )}
+                            {item.approval_status !== "rejected" && (
+                              <button
+                                type="button"
+                                disabled={dispatchingLeadKey === `${item.lead_id}_reject`}
+                                onClick={() => handleRejectLead(item)}
+                                className="inline-flex items-center gap-1 rounded border border-slate-700 bg-slate-900 hover:bg-rose-950/70 hover:border-rose-700 px-2 py-1 text-xs text-slate-300"
+                              >
+                                <X className="h-3 w-3" />
+                                Skip
                               </button>
                             )}
                             <button
@@ -1151,7 +1405,7 @@ export default function AgentsPage() {
                                 </>
                               ) : (
                                 <>
-                                  Preview <ChevronDown className="h-3 w-3" />
+                                  Pitches <ChevronDown className="h-3 w-3" />
                                 </>
                               )}
                             </button>
@@ -1171,10 +1425,99 @@ export default function AgentsPage() {
                           </div>
                         )}
 
-                        {isExpanded && item.body && (
-                          <pre className="whitespace-pre-wrap font-sans text-xs text-slate-200 bg-slate-900 border border-slate-800 rounded-lg p-3 leading-relaxed">
-                            {item.body}
-                          </pre>
+                        {isExpanded && (
+                          <div className="space-y-2.5 rounded-lg border border-slate-800 bg-slate-900/90 p-3">
+                            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-2">
+                              <div className="flex items-center gap-1.5">
+                                {(["gmail", "whatsapp", "linkedin"] as const).map((tabKey) => (
+                                  <button
+                                    key={tabKey}
+                                    type="button"
+                                    onClick={() =>
+                                      setChannelTabByLead((prev) => ({
+                                        ...prev,
+                                        [item.lead_id]: tabKey,
+                                      }))
+                                    }
+                                    className={`px-2.5 py-1 rounded text-xs font-medium capitalize ${
+                                      activeCh === tabKey
+                                        ? "bg-indigo-600 text-white"
+                                        : "bg-slate-950 text-slate-400 hover:text-white"
+                                    }`}
+                                  >
+                                    {tabKey}
+                                  </button>
+                                ))}
+                              </div>
+                              <div className="flex items-center gap-2">
+                                {activeCh === "gmail" && item.email && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleApproveSendLead(item, "gmail", "draft")}
+                                    className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-xs text-slate-200"
+                                  >
+                                    Save Gmail Draft
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const txt =
+                                      activeCh === "whatsapp"
+                                        ? item.whatsapp_pitch
+                                        : activeCh === "linkedin"
+                                        ? `Invite Note:\n${item.linkedin_note || ""}\n\nFollow-up DM:\n${item.linkedin_dm || ""}`
+                                        : null;
+                                    handleCopyPitch(item, txt);
+                                  }}
+                                  className="inline-flex items-center gap-1 rounded border border-slate-700 bg-slate-950 hover:bg-slate-800 px-2.5 py-1 text-xs text-slate-200"
+                                >
+                                  {copiedLeadId === item.lead_id ? (
+                                    <>
+                                      <Check className="h-3 w-3 text-emerald-400" />
+                                      Copied
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Copy className="h-3 w-3" />
+                                      Copy {activeCh.toUpperCase()}
+                                    </>
+                                  )}
+                                </button>
+                              </div>
+                            </div>
+
+                            {activeCh === "gmail" && (
+                              <pre className="whitespace-pre-wrap font-sans text-xs text-slate-200 leading-relaxed">
+                                {item.body || "No email draft generated."}
+                              </pre>
+                            )}
+                            {activeCh === "whatsapp" && (
+                              <pre className="whitespace-pre-wrap font-sans text-xs text-emerald-200 leading-relaxed">
+                                {item.whatsapp_pitch || "No WhatsApp pitch available."}
+                              </pre>
+                            )}
+                            {activeCh === "linkedin" && (
+                              <div className="space-y-2 text-xs">
+                                <div>
+                                  <div className="text-[11px] font-semibold text-sky-300">
+                                    Connection Invite Note (&le; 300 chars)
+                                  </div>
+                                  <p className="text-slate-200 mt-0.5 whitespace-pre-wrap">
+                                    {item.linkedin_note || "No LinkedIn note available."}
+                                  </p>
+                                </div>
+                                <div>
+                                  <div className="text-[11px] font-semibold text-sky-300">
+                                    Post-Connect Follow-Up DM
+                                  </div>
+                                  <p className="text-slate-200 mt-0.5 whitespace-pre-wrap">
+                                    {item.linkedin_dm || "No LinkedIn DM available."}
+                                  </p>
+                                </div>
+                              </div>
+                            )}
+                          </div>
                         )}
                       </div>
                     );

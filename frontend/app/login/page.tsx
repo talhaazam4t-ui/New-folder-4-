@@ -16,11 +16,13 @@ import {
   SUPPORT_WHATSAPP_LINK,
 } from "@/lib/auth";
 import { Lock, Mail, ArrowRight, AlertCircle, ShieldCheck, Check, MessageSquare } from "lucide-react";
+import { TurnstileWidget } from "@/components/shared/TurnstileWidget";
 
 export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [rememberMe, setRememberMe] = useState(true);
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [autoRedirecting, setAutoRedirecting] = useState(false);
@@ -99,7 +101,11 @@ export default function LoginPage() {
     try {
       const res = await apiRequest("/api/v1/auth/login", {
         method: "POST",
-        body: JSON.stringify({ email: email.trim().toLowerCase(), password }),
+        body: JSON.stringify({
+          email: email.trim().toLowerCase(),
+          password,
+          turnstile_token: turnstileToken,
+        }),
       });
 
       if (!res.access_token && !res.data?.access_token) {
@@ -241,8 +247,12 @@ export default function LoginPage() {
               />
               <span>Remember me (Persistent Session)</span>
             </label>
-            <span className="text-slate-500">Auto-remembers client</span>
+            <a href="/forgot-password" className="text-emerald-400 hover:text-emerald-300 font-medium">
+              Forgot Password?
+            </a>
           </div>
+
+          <TurnstileWidget onTokenChange={setTurnstileToken} />
 
           <button
             type="submit"

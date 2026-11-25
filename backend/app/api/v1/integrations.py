@@ -16,10 +16,15 @@ from typing import Any, Dict, Optional
 
 from app.config import settings
 from app.core.logging import logger
+from app.core.security import decrypt_secret
 from app.core.tenant_context import TenantContext
+from app.database.models.automation import Integration
+from app.database.models.receptionist import ReceptionistConfig
 from app.database.supabase import get_db
 from app.dependencies import require_permission
+from app.integrations.email.adapter import is_live_google_token
 from app.integrations.whatsapp.client import whatsapp_client
+from app.services.billing_service import get_payment_rails_info
 from app.services.integration_service import (
     SUPPORTED_INTEGRATION_PROVIDERS,
     integration_service,
@@ -88,6 +93,179 @@ async def get_onboarding_integration_requirements(
     """Return required integrations dynamically based on the tenant's industry and purchased services."""
     summary = await integration_service.get_onboarding_requirements(session, context.tenant_id)
     return {"success": True, "data": summary}
+
+
+@router.get("/handshake-checklist")
+async def get_credentials_handshake_checklist(
+    context: TenantContext = Depends(require_permission("integrations.read")),
+    session: AsyncSession = Depends(get_db),
+):
+    """Unified setup & browser-auth handshake checklist across messaging, voice, social, and payment rails."""
+    res = await session.execute(
+        select(Integration).where(Integration.tenant_id == context.tenant_id)
+    )
+    integ_map = {row.provider: row for row in res.scalars().all()}
+
+    rc_res = await session.execute(
+        select(ReceptionistConfig).where(ReceptionistConfig.tenant_id == context.tenant_id).limit(1)
+    )
+    recep = rc_res.scalar_one_or_none()
+    rails = get_payment_rails_info()
+
+    def _inspect_token_status(row: Optional[Integration], require_compose: bool = False) -> Dict[str, Any]:
+        if not row or row.status != "connected":
+            return {"connected": False, "oauth_ready": False, "account": None}
+        cfg = dict(row.configuration or {})
+        tok = decrypt_secret(str(cfg.get("access_token") or "")) or decrypt_secret(str(cfg.get("api_key") or ""))
+        scopes = cfg.get("scopes_granted") or []
+        if isinstance(scopes, str):
+            scopes = scopes.split()
+        is_mock = bool(cfg.get("is_mock"))
+        oauth_ready = bool(tok and not is_mock and is_live_google_token(tok))
+        if require_compose and scopes and not any("gmail.compose" in str(s) for s in scopes):
+            oauth_ready = False
+        return {
+            "connected": True,
+            "oauth_ready": oauth_ready,
+            "account": row.external_account_id or cfg.get("account_identifier"),
+        }
+
+    gmail_info = _inspect_token_status(integ_map.get("gmail"), require_compose=True)
+    cal_info = _inspect_token_status(integ_map.get("google_calendar"))
+    gbp_info = _inspect_token_status(integ_map.get("google_business"))
+
+    wa_row = integ_map.get("whatsapp")
+    wa_cfg = dict(wa_row.configuration or {}) if wa_row else {}
+    wa_tok = decrypt_secret(str(wa_cfg.get("access_token") or "")) or decrypt_secret(str(wa_cfg.get("api_key") or ""))
+    wa_live = bool(
+        wa_row
+        and wa_row.status == "connected"
+        and wa_tok
+        and not wa_tok.startswith(("meta_mock_", "meta_sys_token_waba_mock", "oauth_access_"))
+    )
+
+    items = [
+        {
+            "key": "gmail",
+            "title": "Gmail OAuth (Auto-Drafts & Approved Sends)",
+            "category": "Outreach & Email",
+            "status": "connected" if gmail_info["oauth_ready"] else ("needs_oauth" if gmail_info["connected"] else "disconnected"),
+            "account": gmail_info["account"],
+            "auth_method": "oauth",
+            "oauth_provider": "gmail",
+            "requires_browser_login": True,
+            "action_url": "/agents",
+            "checklist_steps": [
+                "Click Authorize Gmail OAuth to open Google Sign-In in your browser.",
+                "Select your business Gmail and grant gmail.compose & gmail.send permissions.",
+                "Agents save company drafts to Gmail Drafts and send only after you click Approve & Send.",
+            ],
+        },
+        {
+            "key": "whatsapp",
+            "title": "WhatsApp Cloud API (Tech Provider / Direct Token)",
+            "category": "Messaging & Concierge",
+            "status": "connected" if wa_live else ("sandbox_token" if (wa_row and wa_row.status == "connected") else "disconnected"),
+            "account": wa_row.external_account_id if wa_row else None,
+            "auth_method": "oauth_or_token",
+            "oauth_provider": "whatsapp",
+            "requires_browser_login": True,
+            "action_url": "/onboarding",
+            "checklist_steps": [
+                "Complete Meta Business Verification & Tech Provider enrollment in Meta Business Suite (browser login + 2FA).",
+                "Until Meta Embedded Signup is live, connect immediately via a permanent System User Token on /onboarding or use 1-click WhatsApp Web links.",
+            ],
+        },
+        {
+            "key": "google_calendar",
+            "title": "Google Calendar & Google Business Profile",
+            "category": "Scheduling & Reviews",
+            "status": "connected" if (cal_info["oauth_ready"] or gbp_info["oauth_ready"]) else ("needs_oauth" if (cal_info["connected"] or gbp_info["connected"]) else "disconnected"),
+            "account": cal_info["account"] or gbp_info["account"],
+            "auth_method": "oauth",
+            "oauth_provider": "google_calendar",
+            "requires_browser_login": True,
+            "action_url": "/settings",
+            "checklist_steps": [
+                "Authorize Google Calendar OAuth for live consultation availability checks.",
+                "Authorize Google Business Profile OAuth for Review Booster routing (coming in Phase 4).",
+            ],
+        },
+        {
+            "key": "office_receptionist",
+            "title": "Office Receptionist (Retell AI + Telnyx + Cal.com)",
+            "category": "AI Voice Agent",
+            "status": "connected" if (recep and recep.retell_agent_id) else ("draft" if recep else "disconnected"),
+            "account": recep.telnyx_phone_number if recep else None,
+            "auth_method": "api_key",
+            "oauth_provider": None,
+            "requires_browser_login": True,
+            "action_url": "/receptionist",
+            "checklist_steps": [
+                "Paste your isolated Cal.com API Key & Event Type ID on /receptionist.",
+                "Master Retell AI & Telnyx TeXML voice infrastructure auto-sync once your subscription payment is verified.",
+            ],
+        },
+        {
+            "key": "linkedin",
+            "title": "LinkedIn B2B Outreach (Human-Approved Safe Mode)",
+            "category": "Outreach & Social",
+            "status": "ready_hitl",
+            "account": "AI Note + 1-Click People Search",
+            "auth_method": "hitl_browser",
+            "oauth_provider": None,
+            "requires_browser_login": True,
+            "action_url": "/agents",
+            "checklist_steps": [
+                "Log in to LinkedIn inside your own Chrome browser (never share LinkedIn cookies to avoid account bans).",
+                "Agents prepare company-specific connection notes & follow-up DMs; click Copy & Open LinkedIn Search after approving.",
+            ],
+        },
+        {
+            "key": "meta_social",
+            "title": "Meta (Instagram & Facebook Comment-to-DM Webhooks)",
+            "category": "Social Automation",
+            "status": "connected" if integ_map.get("meta_social") and integ_map["meta_social"].status == "connected" else "planned_phase4",
+            "account": integ_map["meta_social"].external_account_id if integ_map.get("meta_social") else None,
+            "auth_method": "oauth",
+            "oauth_provider": None,
+            "requires_browser_login": True,
+            "action_url": "/settings",
+            "checklist_steps": [
+                "Links your Facebook Page & Instagram Business account via Meta browser login for Comment-to-DM automation in Phase 4.",
+            ],
+        },
+        {
+            "key": "payments",
+            "title": "Payment Rails (Faysal Bank PKR + Payoneer USD)",
+            "category": "Billing & Payouts",
+            "status": "connected" if rails["payoneer"]["enabled"] else "bank_ready_payoneer_pending",
+            "account": rails["payoneer"]["account_email"],
+            "auth_method": "manual_and_gateway",
+            "oauth_provider": None,
+            "requires_browser_login": True,
+            "action_url": "/dashboard",
+            "checklist_steps": [
+                f"Local PKR: {rails['bank_transfer']['bank_name']} ({rails['bank_transfer']['iban']}) is active immediately.",
+                "International USD: Once your Payoneer account is approved, add PAYONEER_ACCOUNT_EMAIL in Render env vars.",
+                "Automated PayFast (PKR) & Stripe (USD) webhooks activate in Phase 2.",
+            ],
+        },
+    ]
+
+    return {
+        "success": True,
+        "data": {
+            "items": items,
+            "payment_rails": rails,
+            "server_capabilities": {
+                "google_oauth_configured": bool(settings.google_client_id and settings.google_client_secret),
+                "meta_app_configured": bool(settings.meta_app_id and settings.meta_app_secret),
+                "turnstile_configured": bool(settings.turnstile_site_key and settings.turnstile_secret_key),
+                "resend_configured": bool(settings.resend_api_key and settings.resend_api_key != "mock"),
+            },
+        },
+    }
 
 
 @router.get("/oauth/{provider}/authorize")

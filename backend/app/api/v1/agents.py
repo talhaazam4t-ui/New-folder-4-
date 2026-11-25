@@ -2,6 +2,7 @@
 """
 
 from typing import List
+import uuid
 
 from app.agents.registry import agent_registry
 from app.config import settings
@@ -17,6 +18,8 @@ from app.schemas.agent import (
     AgentOrchestrateResponse,
     OutreachAutopilotConfigUpdate,
     OutreachAutopilotRunRequest,
+    OutreachLeadApproveRequest,
+    OutreachLeadRejectRequest,
     TenantAgentConfigRequest,
 )
 from app.schemas.task import TaskExecutionResponse
@@ -115,6 +118,52 @@ async def sync_outreach_crm_drafts_to_gmail(
         "success": True,
         "data": data,
         "message": f"Synced {data['synced_count']} pending drafts into Gmail Drafts.",
+    }
+
+
+@router.post("/outreach-autopilot/leads/{lead_id}/approve-send")
+@limiter.limit(f"{settings.rate_limit_agent_rpm}/minute")
+async def approve_and_send_lead_outreach(
+    request: Request,
+    lead_id: uuid.UUID,
+    payload: OutreachLeadApproveRequest,
+    context: TenantContext = Depends(require_permission("approvals.review")),
+    session: AsyncSession = Depends(get_db),
+):
+    """Human-in-the-Loop approval gate to dispatch a company pitch via Gmail, WhatsApp, or LinkedIn."""
+    data = await outreach_autopilot_service.approve_and_dispatch_lead_outreach(
+        session=session,
+        tenant_id=context.tenant_id,
+        reviewer_id=context.user_id,
+        lead_id=lead_id,
+        payload=payload,
+    )
+    return {
+        "success": True,
+        "data": data,
+        "message": f"Approved and processed {payload.channel.upper()} outreach.",
+    }
+
+
+@router.post("/outreach-autopilot/leads/{lead_id}/reject")
+async def reject_lead_outreach(
+    lead_id: uuid.UUID,
+    payload: OutreachLeadRejectRequest,
+    context: TenantContext = Depends(require_permission("approvals.review")),
+    session: AsyncSession = Depends(get_db),
+):
+    """Reject/skip a prepared multi-channel lead pitch without sending."""
+    data = await outreach_autopilot_service.reject_lead_outreach(
+        session=session,
+        tenant_id=context.tenant_id,
+        reviewer_id=context.user_id,
+        lead_id=lead_id,
+        reason=payload.reason,
+    )
+    return {
+        "success": True,
+        "data": data,
+        "message": "Lead pitch skipped and marked rejected.",
     }
 
 

@@ -24,8 +24,14 @@ from app.schemas.tenant import (
     TenantUpdateRequest,
 )
 from app.services.auth_service import auth_service
-from app.services.billing_service import COMPANY_BANK_DETAILS, billing_service, normalize_industry
+from app.services.billing_service import (
+    COMPANY_BANK_DETAILS,
+    billing_service,
+    get_payment_rails_info,
+    normalize_industry,
+)
 from app.services.integration_service import integration_service
+from app.services.outreach_autopilot_service import outreach_autopilot_service
 from app.services.tenant_service import PROTECTED_TENANT_SETTING_KEYS, tenant_service
 from fastapi import APIRouter, Depends, status
 from sqlalchemy import func, select
@@ -263,6 +269,27 @@ async def get_tenant_overview(
                     seen_modules.add(mod)
                     enabled_modules.append(mod)
 
+    # Concise Outreach Tier & Multi-Channel Performance Metrics
+    lead_quota = await outreach_autopilot_service.compute_tenant_lead_quota(session, tenant_id)
+    gmail_drafts_ready = 0
+    whatsapp_pitches_ready = 0
+    linkedin_pitches_ready = 0
+    pending_outreach_approvals = 0
+    approved_sent_count = 0
+    for lead in leads_rows:
+        meta = lead.metadata_ or {}
+        if meta.get("gmail_draft_body"):
+            gmail_drafts_ready += 1
+        if meta.get("whatsapp_pitch"):
+            whatsapp_pitches_ready += 1
+        if meta.get("linkedin_note"):
+            linkedin_pitches_ready += 1
+        app_st = meta.get("approval_status")
+        if app_st == "pending_approval":
+            pending_outreach_approvals += 1
+        elif app_st == "approved_sent":
+            approved_sent_count += 1
+
     # 7. Recent Client-Safe Activity Feed
     audit_res = await session.execute(
         select(AuditLog)
@@ -308,9 +335,19 @@ async def get_tenant_overview(
             "payment_notified": payment_notified,
             "payment_reference": payment_reference,
             "bank_details": COMPANY_BANK_DETAILS,
+            "payment_rails": get_payment_rails_info(),
             "current_package": current_package,
             "purchased_services": purchased_services,
+            "purchased_service_slugs": service_slugs,
             "enabled_modules": enabled_modules,
+            "outreach_performance": {
+                **lead_quota,
+                "gmail_drafts_ready": gmail_drafts_ready if is_payment_approved else 0,
+                "whatsapp_pitches_ready": whatsapp_pitches_ready if is_payment_approved else 0,
+                "linkedin_pitches_ready": linkedin_pitches_ready if is_payment_approved else 0,
+                "pending_outreach_approvals": pending_outreach_approvals if is_payment_approved else 0,
+                "approved_sent_count": approved_sent_count if is_payment_approved else 0,
+            },
             "subscription_info": {
                 "active_services_count": len(active_subs),
                 "current_package": current_package,

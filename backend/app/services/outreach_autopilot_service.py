@@ -1,11 +1,12 @@
-"""Daily Global Niche Lead-Finder & Gmail Draft Autopilot Service.
+"""Daily Global Multi-Channel Lead-Finder, Tier Quota & Human-in-the-Loop Outreach Service.
 
 Zero-n8n pure Python asyncio automation service that:
-1. Discovers real companies globally across rotating niches and target cities.
-2. Enriches companies having an official website with public contact emails (SSRF-safe, bounded timeout).
-3. Crafts tailored company-specific B2B outreach emails via the AI router (with deterministic fallback).
-4. Saves drafts directly into the workspace's connected Gmail Drafts folder (with OAuth token auto-refresh)
-   and stores reviewable drafts in CRM metadata — strictly Human-in-the-Loop (never auto-sends emails).
+1. Enforces workspace monthly lead-generation tier limits (`starter` 150, `growth` 500, `enterprise` 1,500+).
+2. Discovers real companies globally across rotating niches and target cities.
+3. Enriches companies having an official website with public contact emails (SSRF-safe, bounded timeout).
+4. Crafts company-specific B2B pitches across Gmail, WhatsApp, and LinkedIn (with deterministic fallback).
+5. Saves Gmail Drafts directly into the workspace's Gmail Drafts folder (never auto-sending), and queues
+   Gmail / WhatsApp / LinkedIn sends behind explicit Human-in-the-Loop Approval.
 """
 
 import asyncio
@@ -27,13 +28,14 @@ from app.core.security import decrypt_secret, encrypt_secret
 from app.database.models.automation import AuditLog, Integration
 from app.database.models.marketing import Lead
 from app.database.models.receptionist import ReceptionistConfig
+from app.database.models.service import Service, ServiceSubscription
 from app.database.models.tenant import Tenant
 from app.integrations.ai_providers.router import route_and_execute_ai_task
 from app.integrations.email.adapter import email_adapter, is_live_google_token
-from app.schemas.agent import OutreachAutopilotConfigUpdate
-from app.schemas.marketing import LeadGenerationRequest
+from app.integrations.whatsapp.client import whatsapp_client
+from app.schemas.agent import OutreachAutopilotConfigUpdate, OutreachLeadApproveRequest
 from app.services.integration_service import refresh_google_access_token
-from app.services.marketing_service import marketing_service
+from app.services.marketing_service import LeadGenerationRequest, marketing_service
 from app.services.notification_service import notification_service
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -44,6 +46,14 @@ DEFAULT_SERVICE_OFFER = (
     "24/7 AI Office Receptionist & Multi-Agent Automation that answers every inbound call "
     "and inquiry, qualifies prospects, and books appointments straight into your calendar starting at $199/month."
 )
+
+SUPPORTED_OUTREACH_CHANNELS = ("gmail", "whatsapp", "linkedin")
+
+DEFAULT_LEAD_TIER_LIMITS = {
+    "starter": 150,
+    "growth": 500,
+    "enterprise": 1500,
+}
 
 DEFAULT_NICHES: List[str] = [
     "Clinics / Hospitals",
@@ -149,6 +159,56 @@ def _clean_string_list(values: Optional[List[str]], fallback: List[str], max_ite
         if len(cleaned) >= max_items:
             break
     return cleaned or list(fallback)
+
+
+def _clean_channels(values: Optional[List[str]]) -> List[str]:
+    """Normalize enabled outreach channels strictly within supported providers."""
+    if not values:
+        return list(SUPPORTED_OUTREACH_CHANNELS)
+    normalized: List[str] = []
+    for raw in values:
+        ch = str(raw or "").strip().lower()
+        if ch in SUPPORTED_OUTREACH_CHANNELS and ch not in normalized:
+            normalized.append(ch)
+    return normalized or list(SUPPORTED_OUTREACH_CHANNELS)
+
+
+def _ensure_utc_dt(dt: Optional[datetime]) -> Optional[datetime]:
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _parse_iso_datetime(value: Optional[str]) -> Optional[datetime]:
+    """Parse an ISO-8601 timestamp safely into a UTC-aware datetime."""
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return _ensure_utc_dt(dt)
+    except Exception:
+        return None
+
+
+def _build_linkedin_search_url(company_name: str, city: Optional[str]) -> str:
+    query = " ".join(part for part in (company_name, city or "") if part).strip()
+    return f"https://www.linkedin.com/search/results/people/?keywords={urllib.parse.quote_plus(query)}"
+
+
+def _build_wa_me_url(phone: Optional[str], message_text: Optional[str] = None) -> Optional[str]:
+    if not phone:
+        return None
+    digits = re.sub(r"[^\d]", "", phone)
+    if digits.startswith("00"):
+        digits = digits[2:]
+    if len(digits) < 7:
+        return None
+    base = f"https://wa.me/{digits}"
+    if message_text:
+        return f"{base}?text={urllib.parse.quote(message_text)}"
+    return base
 
 
 def _is_safe_public_url(raw_url: str) -> Optional[str]:
@@ -266,6 +326,7 @@ def _build_default_config(tenant: Tenant, booking_url_hint: Optional[str] = None
     stored = dict((tenant.settings or {}).get(AUTOPILOT_SETTINGS_KEY) or {})
     niches = _clean_string_list(stored.get("niches"), DEFAULT_NICHES, 20)
     cities = _clean_string_list(stored.get("cities"), DEFAULT_CITIES, 40)
+    channels = _clean_channels(stored.get("channels"))
     try:
         daily_limit = min(max(int(stored.get("daily_draft_limit") or 5), 1), 15)
     except (TypeError, ValueError):
@@ -283,6 +344,8 @@ def _build_default_config(tenant: Tenant, booking_url_hint: Optional[str] = None
         "enabled": bool(stored.get("enabled", False)),
         "niches": niches,
         "cities": cities,
+        "channels": channels,
+        "require_human_approval": bool(stored.get("require_human_approval", True)),
         "daily_draft_limit": daily_limit,
         "service_offer": str(stored.get("service_offer") or DEFAULT_SERVICE_OFFER).strip() or DEFAULT_SERVICE_OFFER,
         "sender_name": str(stored.get("sender_name") or tenant.name or "Teloxtech AI Automation").strip(),
@@ -305,21 +368,8 @@ def _compute_rotation_target(niches: List[str], cities: List[str], rotation_inde
     return niche, city
 
 
-def _parse_iso_datetime(value: Optional[str]) -> Optional[datetime]:
-    """Parse an ISO-8601 timestamp safely into a UTC-aware datetime."""
-    if not value:
-        return None
-    try:
-        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc)
-    except Exception:
-        return None
-
-
-def _parse_ai_email_json(raw_content: str) -> Optional[Tuple[str, str]]:
-    """Extract (subject, body) JSON object from AI output, tolerating markdown code fences."""
+def _parse_ai_multichannel_json(raw_content: str) -> Optional[Dict[str, str]]:
+    """Extract multi-channel pitch JSON from AI response."""
     text = (raw_content or "").strip()
     if not text:
         return None
@@ -336,12 +386,21 @@ def _parse_ai_email_json(raw_content: str) -> Optional[Tuple[str, str]]:
         return None
     subject = str(data.get("subject") or "").strip()
     body = str(data.get("body") or "").strip()
+    whatsapp_message = str(data.get("whatsapp_message") or "").strip()
+    linkedin_note = str(data.get("linkedin_note") or "").strip()
+    linkedin_dm = str(data.get("linkedin_dm") or "").strip()
     if not subject or not body:
         return None
-    return subject[:140], body
+    return {
+        "subject": subject[:140],
+        "body": body,
+        "whatsapp_message": whatsapp_message,
+        "linkedin_note": linkedin_note[:290],
+        "linkedin_dm": linkedin_dm,
+    }
 
 
-async def _generate_company_email(
+async def _generate_company_multichannel_pitches(
     tenant_id: uuid.UUID,
     company_name: str,
     niche: str,
@@ -351,8 +410,8 @@ async def _generate_company_email(
     sender_name: str,
     service_offer: str,
     booking_url: str,
-) -> Tuple[str, str]:
-    """Generate a tailored outreach subject and email body specifically for one company."""
+) -> Dict[str, str]:
+    """Generate tailored Gmail, WhatsApp, and LinkedIn pitches specifically for one company."""
     context_parts = [f"Company Name: {company_name}", f"Industry/Niche: {niche}", f"City: {city}"]
     if website and "openstreetmap.org" not in website.lower():
         context_parts.append(f"Website: {website}")
@@ -360,46 +419,20 @@ async def _generate_company_email(
         context_parts.append(f"Location/Address: {address[:140]}")
 
     prompt = (
-        "Write one personalized cold B2B outreach email as strict JSON with keys \"subject\" and \"body\".\n"
+        "Write personalized B2B outreach copy for this exact company as strict JSON with keys: "
+        "\"subject\", \"body\", \"whatsapp_message\", \"linkedin_note\", \"linkedin_dm\".\n"
         f"{chr(10).join(context_parts)}\n"
         f"Sender Name / Agency: {sender_name}\n"
         f"Core Offer: {service_offer}\n"
         f"Booking Link: {booking_url}\n\n"
         "Rules:\n"
-        "1. Subject must be short (<= 60 chars), natural, no spammy punctuation, mentioning the company or city.\n"
-        "2. Open with 1 specific line referencing the company name, city, or website.\n"
-        "3. Keep body 85-135 words, plain text (no markdown bold/links), clear value for missed calls & lead follow-up.\n"
-        "4. Include the booking link on its own line and sign off cleanly with the sender name.\n"
-        "5. End with a brief 1-line polite opt-out sentence.\n"
-        "Return ONLY valid JSON: {\"subject\": \"...\", \"body\": \"...\"}"
+        "1. subject: <= 60 chars, natural, references company or city.\n"
+        "2. body (Gmail): 85-135 words plain text referencing company/city, clear value, booking link on its own line, sign-off, 1-line polite opt-out.\n"
+        "3. whatsapp_message: concise 2-3 sentence WhatsApp intro (<= 380 chars) naming the company + value + booking link + 'Reply STOP to opt out'.\n"
+        "4. linkedin_note: LinkedIn connection invite note strictly <= 260 chars mentioning their company.\n"
+        "5. linkedin_dm: friendly 3-sentence post-connect DM naming the company + quick question.\n"
+        "Return ONLY valid JSON."
     )
-
-    try:
-        budget_manager.check_execution_eligibility(str(tenant_id), estimated_tokens=450)
-        ai_res = await route_and_execute_ai_task(
-            task_type="outreach_email_draft",
-            prompt=prompt,
-            system_instruction=(
-                "You are a senior B2B growth copywriter who writes brief, specific, respectful "
-                "cold emails that sound human and avoid spam triggers. Output strict JSON only."
-            ),
-            tenant_id=str(tenant_id),
-            temperature=0.35,
-            max_tokens=500,
-        )
-        if ai_res.success and ai_res.total_tokens:
-            budget_manager.record_success(str(tenant_id), ai_res.total_tokens, ai_res.estimated_cost)
-        if ai_res.success and not ai_res.is_mock:
-            parsed = _parse_ai_email_json(ai_res.content)
-            if parsed:
-                return parsed
-    except Exception as exc:
-        logger.warning(
-            "AI outreach draft generation fell back to deterministic template",
-            tenant_id=str(tenant_id),
-            company_name=company_name,
-            error=str(exc),
-        )
 
     short_niche = niche.split("/")[0].strip()
     website_note = (
@@ -407,26 +440,146 @@ async def _generate_company_email(
         if website and "openstreetmap.org" not in website.lower()
         else ""
     )
-    subject = f"Quick question for {company_name} ({city})"
+    fallback_subject = f"Quick question for {company_name} ({city})"
     booking_line = (
-        f"\n\nIf you'd like to hear how a 2-minute live AI receptionist demo sounds, you can pick a slot here:\n{booking_url}"
+        f"\n\nIf you'd like to hear a quick 2-minute AI receptionist demo, pick any slot here:\n{booking_url}"
         if booking_url
         else ""
     )
-    body = (
+    fallback_body = (
         f"Hi {company_name} team,\n\n"
         f"I came across {company_name} while researching leading {short_niche.lower()} businesses in {city}{website_note}.\n\n"
-        f"Many busy {short_niche.lower()} teams lose high-intent callers when front-desk lines are busy or inquiries arrive after hours. "
-        f"We help businesses deploy a {service_offer}"
+        f"Many busy {short_niche.lower()} teams lose high-intent callers when lines are busy or inquiries arrive after hours. "
+        f"We help teams deploy a {service_offer}"
         f"{booking_line}\n\n"
         f"Best regards,\n{sender_name}\n\n"
-        "P.S. If this isn't a priority right now, simply reply 'no' and I won't follow up."
+        "P.S. If this isn't relevant right now, just reply 'no' and I won't follow up."
     )
-    return subject, body
+    fallback_whatsapp = (
+        f"Hi {company_name} team! Came across your {short_niche.lower()} business in {city}. "
+        f"We deploy 24/7 AI receptionists & automated lead follow-up that book appointments straight to your calendar. "
+        + (f"2-min demo slots: {booking_url} " if booking_url else "Happy to share a quick 2-min voice sample. ")
+        + "(Reply STOP to opt out)"
+    )
+    fallback_linkedin_note = (
+        f"Hi! Came across {company_name} in {city} — impressive {short_niche.lower()} work. "
+        f"Would love to connect and share how peer teams automate missed calls & bookings."
+    )[:280]
+    fallback_linkedin_dm = (
+        f"Thanks for connecting! Quick question for the {company_name} team in {city}: "
+        f"how are you currently handling missed calls and after-hours inquiries? "
+        f"We built a 24/7 AI receptionist that qualifies leads and books directly into Cal.com"
+        + (f" — happy to share a quick demo ({booking_url})." if booking_url else " — happy to send a 60-sec sample.")
+    )
+
+    try:
+        budget_manager.check_execution_eligibility(str(tenant_id), estimated_tokens=550)
+        ai_res = await route_and_execute_ai_task(
+            task_type="outreach_email_draft",
+            prompt=prompt,
+            system_instruction=(
+                "You are a senior B2B growth copywriter writing crisp, company-specific outreach "
+                "messages for Gmail, WhatsApp, and LinkedIn. Avoid spam triggers. Output strict JSON only."
+            ),
+            tenant_id=str(tenant_id),
+            temperature=0.35,
+            max_tokens=700,
+        )
+        if ai_res.success and ai_res.total_tokens:
+            budget_manager.record_success(str(tenant_id), ai_res.total_tokens, ai_res.estimated_cost)
+        if ai_res.success and not ai_res.is_mock:
+            parsed = _parse_ai_multichannel_json(ai_res.content)
+            if parsed:
+                return {
+                    "subject": parsed["subject"] or fallback_subject,
+                    "body": parsed["body"] or fallback_body,
+                    "whatsapp_message": parsed["whatsapp_message"] or fallback_whatsapp,
+                    "linkedin_note": parsed["linkedin_note"] or fallback_linkedin_note,
+                    "linkedin_dm": parsed["linkedin_dm"] or fallback_linkedin_dm,
+                }
+    except Exception as exc:
+        logger.warning(
+            "AI multi-channel pitch generation fell back to deterministic template",
+            tenant_id=str(tenant_id),
+            company_name=company_name,
+            error=str(exc),
+        )
+
+    return {
+        "subject": fallback_subject,
+        "body": fallback_body,
+        "whatsapp_message": fallback_whatsapp,
+        "linkedin_note": fallback_linkedin_note,
+        "linkedin_dm": fallback_linkedin_dm,
+    }
 
 
 class OutreachAutopilotService:
-    """Manages daily global niche lead discovery and Gmail Draft creation per workspace."""
+    """Manages monthly tiered quotas, global lead discovery, Gmail drafts, and HITL dispatch."""
+
+    async def compute_tenant_lead_quota(
+        self,
+        session: AsyncSession,
+        tenant_id: uuid.UUID,
+    ) -> Dict[str, Any]:
+        """Compute monthly lead-generation tier limit and usage for a workspace."""
+        now_utc = datetime.now(timezone.utc)
+        month_start = datetime(now_utc.year, now_utc.month, 1, tzinfo=timezone.utc)
+
+        sub_res = await session.execute(
+            select(ServiceSubscription, Service)
+            .join(Service, ServiceSubscription.service_id == Service.id)
+            .where(
+                ServiceSubscription.tenant_id == tenant_id,
+                ServiceSubscription.status == "active",
+            )
+        )
+
+        best_limit = 0
+        chosen_plan = "starter_default"
+        chosen_service_slug: Optional[str] = None
+
+        for sub, srv in sub_res.all():
+            exp = _ensure_utc_dt(sub.expires_at)
+            if exp is not None and exp < now_utc:
+                continue
+            if srv.slug not in ("lead-crm-qualification", "ai-marketing-growth"):
+                continue
+
+            plan_key = (sub.plan_name or "starter").strip().lower()
+            pkg_limit = 0
+            packages = (srv.configuration_schema or {}).get("packages") or []
+            for pkg in packages:
+                if str(pkg.get("plan_name", "")).strip().lower() == plan_key:
+                    pkg_limit = int(pkg.get("monthly_lead_limit") or 0)
+                    break
+            if pkg_limit <= 0:
+                pkg_limit = DEFAULT_LEAD_TIER_LIMITS.get(plan_key, 150)
+
+            if pkg_limit >= best_limit:
+                best_limit = pkg_limit
+                chosen_plan = f"{srv.slug}:{plan_key}"
+                chosen_service_slug = srv.slug
+
+        if best_limit <= 0:
+            best_limit = DEFAULT_LEAD_TIER_LIMITS["starter"]
+
+        leads_res = await session.execute(select(Lead.created_at).where(Lead.tenant_id == tenant_id))
+        used_this_month = sum(
+            1
+            for dt in leads_res.scalars().all()
+            if (_ensure_utc_dt(dt) or now_utc) >= month_start
+        )
+        remaining = max(0, best_limit - used_this_month)
+
+        return {
+            "plan_name": chosen_plan,
+            "service_slug": chosen_service_slug,
+            "monthly_lead_limit": best_limit,
+            "leads_used_this_month": used_this_month,
+            "remaining_leads": remaining,
+            "quota_exhausted": remaining == 0,
+        }
 
     async def _inspect_gmail_integration(
         self,
@@ -468,7 +621,6 @@ class OutreachAutopilotService:
             and not cfg.get("is_mock", False)
         )
         can_draft = bool(oauth_ready and (has_compose_scope or bool(raw_refresh)))
-        # Strictly require gmail.compose scope when Google reported scopes_granted
         if scopes and not has_compose_scope:
             can_draft = False
 
@@ -520,7 +672,7 @@ class OutreachAutopilotService:
         session: AsyncSession,
         tenant_id: uuid.UUID,
     ) -> Dict[str, Any]:
-        """Return autopilot configuration, Gmail OAuth status, next target, and saved company drafts."""
+        """Return autopilot configuration, quota, Gmail OAuth status, next target, and multi-channel drafts."""
         t_res = await session.execute(select(Tenant).where(Tenant.id == tenant_id))
         tenant = t_res.scalar_one_or_none()
         if not tenant:
@@ -533,6 +685,7 @@ class OutreachAutopilotService:
         booking_hint = recep_cfg.calcom_booking_url if recep_cfg and recep_cfg.calcom_booking_url else DEFAULT_BOOKING_URL
 
         config = _build_default_config(tenant, booking_url_hint=booking_hint)
+        quota = await self.compute_tenant_lead_quota(session, tenant_id)
         next_niche, next_city = _compute_rotation_target(
             config["niches"], config["cities"], config["rotation_index"]
         )
@@ -550,18 +703,34 @@ class OutreachAutopilotService:
         saved_in_gmail_count = 0
         pending_oauth_sync_count = 0
         contact_only_count = 0
+        pending_approval_count = 0
+        approved_sent_count = 0
 
         for row in leads:
             meta = dict(row.metadata_ or {})
-            if not (meta.get("gmail_draft_body") or meta.get("autopilot_discovered")):
+            if not (meta.get("gmail_draft_body") or meta.get("autopilot_discovered") or meta.get("whatsapp_pitch")):
                 continue
             d_status = str(meta.get("gmail_draft_status") or "saved_in_crm_oauth_required")
+            app_status = str(meta.get("approval_status") or "pending_approval")
+
             if d_status == "saved_in_gmail":
                 saved_in_gmail_count += 1
             elif d_status == "contact_only_no_email":
                 contact_only_count += 1
+            elif d_status == "sent_via_gmail":
+                saved_in_gmail_count += 1
             else:
                 pending_oauth_sync_count += 1
+
+            if app_status == "pending_approval":
+                pending_approval_count += 1
+            elif app_status == "approved_sent":
+                approved_sent_count += 1
+
+            city_val = meta.get("autopilot_city") or meta.get("location")
+            wa_pitch = meta.get("whatsapp_pitch")
+            wa_url = _build_wa_me_url(row.phone, wa_pitch)
+            li_url = meta.get("linkedin_search_url") or _build_linkedin_search_url(row.name, city_val)
 
             drafted_leads.append({
                 "lead_id": str(row.id),
@@ -570,11 +739,20 @@ class OutreachAutopilotService:
                 "phone": row.phone,
                 "website": meta.get("website"),
                 "niche": meta.get("autopilot_niche") or meta.get("industry"),
-                "city": meta.get("autopilot_city") or meta.get("location"),
+                "city": city_val,
                 "subject": meta.get("gmail_draft_subject"),
                 "body": meta.get("gmail_draft_body"),
+                "whatsapp_pitch": wa_pitch,
+                "whatsapp_url": wa_url,
+                "linkedin_note": meta.get("linkedin_note"),
+                "linkedin_dm": meta.get("linkedin_dm"),
+                "linkedin_search_url": li_url,
                 "draft_id": meta.get("gmail_draft_id"),
                 "draft_status": d_status,
+                "approval_status": app_status,
+                "gmail_sent_at": meta.get("gmail_sent_at"),
+                "whatsapp_status": meta.get("whatsapp_status"),
+                "linkedin_status": meta.get("linkedin_status"),
                 "drafted_at": meta.get("gmail_drafted_at") or row.created_at.isoformat(),
                 "email_source": meta.get("email_source"),
                 "gmail_error": meta.get("gmail_error"),
@@ -582,6 +760,7 @@ class OutreachAutopilotService:
 
         return {
             "config": config,
+            "quota": quota,
             "gmail_status": gmail_status,
             "next_target": {"niche": next_niche, "city": next_city},
             "stats": {
@@ -589,6 +768,8 @@ class OutreachAutopilotService:
                 "saved_in_gmail_count": saved_in_gmail_count,
                 "pending_oauth_sync_count": pending_oauth_sync_count,
                 "contact_only_count": contact_only_count,
+                "pending_approval_count": pending_approval_count,
+                "approved_sent_count": approved_sent_count,
             },
             "drafted_leads": drafted_leads[:40],
         }
@@ -613,6 +794,10 @@ class OutreachAutopilotService:
             current_cfg["niches"] = _clean_string_list(payload.niches, DEFAULT_NICHES, 20)
         if payload.cities is not None:
             current_cfg["cities"] = _clean_string_list(payload.cities, DEFAULT_CITIES, 40)
+        if payload.channels is not None:
+            current_cfg["channels"] = _clean_channels(payload.channels)
+        if payload.require_human_approval is not None:
+            current_cfg["require_human_approval"] = payload.require_human_approval
         if payload.daily_draft_limit is not None:
             current_cfg["daily_draft_limit"] = payload.daily_draft_limit
         if payload.service_offer is not None and payload.service_offer.strip():
@@ -638,6 +823,7 @@ class OutreachAutopilotService:
                 resource_id=tenant_id,
                 metadata_={
                     "enabled": current_cfg["enabled"],
+                    "channels": current_cfg["channels"],
                     "niches_count": len(current_cfg["niches"]),
                     "cities_count": len(current_cfg["cities"]),
                     "daily_draft_limit": current_cfg["daily_draft_limit"],
@@ -739,6 +925,263 @@ class OutreachAutopilotService:
             "state": state,
         }
 
+    async def approve_and_dispatch_lead_outreach(
+        self,
+        session: AsyncSession,
+        tenant_id: uuid.UUID,
+        reviewer_id: uuid.UUID,
+        lead_id: uuid.UUID,
+        payload: OutreachLeadApproveRequest,
+    ) -> Dict[str, Any]:
+        """Human-in-the-Loop approval gate to send or finalize outreach on Gmail, WhatsApp, or LinkedIn."""
+        res = await session.execute(
+            select(Lead).where(Lead.id == lead_id, Lead.tenant_id == tenant_id)
+        )
+        lead = res.scalar_one_or_none()
+        if not lead:
+            raise ResourceNotFoundError("Lead", str(lead_id))
+
+        meta = dict(lead.metadata_ or {})
+        if meta.get("opted_out") is True:
+            raise TaloxException(
+                message="Outreach blocked: recipient has opted out of communications.",
+                code="OPT_OUT_COMPLIANCE_BLOCK",
+                status_code=400,
+            )
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        new_meta = dict(meta)
+        action_result: Dict[str, Any] = {"channel": payload.channel, "mode": payload.mode}
+
+        if payload.channel == "gmail":
+            if not lead.email:
+                raise TaloxException(
+                    message="This company does not have an email address on record.",
+                    code="MISSING_EMAIL",
+                    status_code=400,
+                )
+            integ, gmail_status = await self._inspect_gmail_integration(session, tenant_id)
+            if not gmail_status["oauth_ready"]:
+                raise TaloxException(
+                    message="Authorize Gmail OAuth first before sending live Gmail messages.",
+                    code="GMAIL_OAUTH_REQUIRED",
+                    status_code=400,
+                )
+            access_token = await self._ensure_fresh_gmail_token(session, integ)
+            from_email = gmail_status.get("account")
+            subject = (payload.custom_subject or "").strip() or str(
+                meta.get("gmail_draft_subject") or f"Quick question for {lead.name}"
+            )
+            body = (payload.custom_body or "").strip() or str(meta.get("gmail_draft_body") or "")
+            if not body:
+                raise TaloxException(
+                    message="No email message body available to send.",
+                    code="EMPTY_MESSAGE_BODY",
+                    status_code=400,
+                )
+
+            if payload.mode == "draft":
+                api_res = await email_adapter.create_gmail_draft(
+                    tenant_id=str(tenant_id),
+                    to_email=lead.email,
+                    subject=subject,
+                    body=body,
+                    access_token=access_token,
+                    from_email=from_email,
+                )
+                if not api_res.get("success") and api_res.get("status_code") == 401:
+                    refreshed = await self._ensure_fresh_gmail_token(session, integ, force_refresh=True)
+                    if refreshed:
+                        api_res = await email_adapter.create_gmail_draft(
+                            tenant_id=str(tenant_id),
+                            to_email=lead.email,
+                            subject=subject,
+                            body=body,
+                            access_token=refreshed,
+                            from_email=from_email,
+                        )
+                if not api_res.get("success"):
+                    raise TaloxException(
+                        message=f"Gmail Draft save failed: {api_res.get('error')}",
+                        code="GMAIL_DISPATCH_FAILED",
+                        status_code=502,
+                    )
+                new_meta["gmail_draft_id"] = api_res.get("draft_id")
+                new_meta["gmail_draft_status"] = "saved_in_gmail"
+                new_meta["approval_status"] = "approved_drafted"
+                action_result.update({"status": "saved_in_gmail", "draft_id": api_res.get("draft_id")})
+            else:
+                api_res = await email_adapter.send_email(
+                    tenant_id=str(tenant_id),
+                    to_email=lead.email,
+                    subject=subject,
+                    body=body,
+                    access_token=access_token,
+                    from_email=from_email,
+                )
+                if not api_res.get("success") and api_res.get("status_code") == 401:
+                    refreshed = await self._ensure_fresh_gmail_token(session, integ, force_refresh=True)
+                    if refreshed:
+                        api_res = await email_adapter.send_email(
+                            tenant_id=str(tenant_id),
+                            to_email=lead.email,
+                            subject=subject,
+                            body=body,
+                            access_token=refreshed,
+                            from_email=from_email,
+                        )
+                if not api_res.get("success"):
+                    raise TaloxException(
+                        message=f"Gmail send failed: {api_res.get('error')}",
+                        code="GMAIL_DISPATCH_FAILED",
+                        status_code=502,
+                    )
+                new_meta["gmail_message_id"] = api_res.get("message_id")
+                new_meta["gmail_sent_at"] = now_iso
+                new_meta["gmail_draft_status"] = "sent_via_gmail"
+                new_meta["approval_status"] = "approved_sent"
+                new_meta["messages_sent_count"] = int(new_meta.get("messages_sent_count", 0)) + 1
+                if lead.status == "new":
+                    lead.status = "contacted"
+                action_result.update({"status": "sent", "message_id": api_res.get("message_id")})
+
+            new_meta["gmail_draft_subject"] = subject
+            new_meta["gmail_draft_body"] = body
+
+        elif payload.channel == "whatsapp":
+            message_text = (payload.custom_body or "").strip() or str(
+                meta.get("whatsapp_pitch") or meta.get("gmail_draft_body") or ""
+            )
+            if not message_text:
+                raise TaloxException(
+                    message="No WhatsApp pitch available to send.",
+                    code="EMPTY_MESSAGE_BODY",
+                    status_code=400,
+                )
+            wa_url = _build_wa_me_url(lead.phone, message_text)
+            if not wa_url:
+                raise TaloxException(
+                    message="This company does not have a valid phone number for WhatsApp.",
+                    code="MISSING_PHONE",
+                    status_code=400,
+                )
+
+            wa_int_res = await session.execute(
+                select(Integration).where(
+                    Integration.tenant_id == tenant_id,
+                    Integration.provider == "whatsapp",
+                    Integration.status == "connected",
+                )
+            )
+            wa_integ = wa_int_res.scalar_one_or_none()
+            sent_via_api = False
+            wa_msg_id: Optional[str] = None
+            if wa_integ and settings.whatsapp_provider == "meta":
+                cfg = dict(wa_integ.configuration or {})
+                tok = decrypt_secret(str(cfg.get("access_token") or "")) or decrypt_secret(str(cfg.get("api_key") or ""))
+                pid = cfg.get("phone_number_id") or wa_integ.external_account_id
+                if tok and pid and not tok.startswith(("meta_mock_", "oauth_access_")):
+                    send_res = await whatsapp_client.send_text_message(
+                        tenant_id=str(tenant_id),
+                        to_phone=lead.phone or "",
+                        message_body=message_text,
+                        phone_number_id=pid,
+                        access_token=tok,
+                    )
+                    sent_via_api = bool(send_res.get("success") and not send_res.get("is_mock"))
+                    wa_msg_id = send_res.get("message_id")
+
+            new_meta["whatsapp_pitch"] = message_text
+            new_meta["approval_status"] = "approved_sent"
+            if sent_via_api:
+                new_meta["whatsapp_status"] = "sent_via_cloud_api"
+                new_meta["whatsapp_message_id"] = wa_msg_id
+                action_result.update({"status": "sent_via_cloud_api", "message_id": wa_msg_id, "whatsapp_url": wa_url})
+            else:
+                new_meta["whatsapp_status"] = "approved_wa_me_ready"
+                action_result.update({"status": "approved_wa_me_ready", "whatsapp_url": wa_url})
+
+            new_meta["messages_sent_count"] = int(new_meta.get("messages_sent_count", 0)) + 1
+            if lead.status == "new":
+                lead.status = "contacted"
+
+        else:  # linkedin
+            li_note = (payload.custom_body or "").strip() or str(meta.get("linkedin_note") or "")
+            city_val = meta.get("autopilot_city") or meta.get("location")
+            li_url = meta.get("linkedin_search_url") or _build_linkedin_search_url(lead.name, city_val)
+            new_meta["linkedin_note"] = li_note[:290]
+            new_meta["linkedin_status"] = "approved_ready_to_send"
+            new_meta["linkedin_approved_at"] = now_iso
+            new_meta["approval_status"] = "approved_sent"
+            new_meta["messages_sent_count"] = int(new_meta.get("messages_sent_count", 0)) + 1
+            if lead.status == "new":
+                lead.status = "contacted"
+            action_result.update({
+                "status": "approved_ready_to_send",
+                "linkedin_search_url": li_url,
+                "linkedin_note": new_meta["linkedin_note"],
+                "linkedin_dm": meta.get("linkedin_dm"),
+            })
+
+        new_meta["approved_by"] = str(reviewer_id)
+        new_meta["approved_at"] = now_iso
+        lead.metadata_ = new_meta
+
+        session.add(
+            AuditLog(
+                tenant_id=tenant_id,
+                actor_id=reviewer_id,
+                actor_type="user",
+                action=f"outreach_autopilot.lead.approved_{payload.channel}",
+                resource_type="lead",
+                resource_id=lead.id,
+                metadata_={"channel": payload.channel, "mode": payload.mode, "company_name": lead.name},
+            )
+        )
+        await session.commit()
+        state = await self.get_autopilot_state(session, tenant_id)
+        return {
+            "action_result": action_result,
+            "state": state,
+        }
+
+    async def reject_lead_outreach(
+        self,
+        session: AsyncSession,
+        tenant_id: uuid.UUID,
+        reviewer_id: uuid.UUID,
+        lead_id: uuid.UUID,
+        reason: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Mark a prepared multi-channel lead pitch as rejected/skipped by the human reviewer."""
+        res = await session.execute(
+            select(Lead).where(Lead.id == lead_id, Lead.tenant_id == tenant_id)
+        )
+        lead = res.scalar_one_or_none()
+        if not lead:
+            raise ResourceNotFoundError("Lead", str(lead_id))
+
+        new_meta = dict(lead.metadata_ or {})
+        new_meta["approval_status"] = "rejected"
+        new_meta["rejection_reason"] = (reason or "Skipped by reviewer").strip()
+        new_meta["rejected_at"] = datetime.now(timezone.utc).isoformat()
+        lead.metadata_ = new_meta
+
+        session.add(
+            AuditLog(
+                tenant_id=tenant_id,
+                actor_id=reviewer_id,
+                actor_type="user",
+                action="outreach_autopilot.lead.rejected",
+                resource_type="lead",
+                resource_id=lead.id,
+                metadata_={"company_name": lead.name, "reason": new_meta["rejection_reason"]},
+            )
+        )
+        await session.commit()
+        state = await self.get_autopilot_state(session, tenant_id)
+        return {"rejected": True, "state": state}
+
     async def run_autopilot_cycle(
         self,
         session: AsyncSession,
@@ -749,14 +1192,22 @@ class OutreachAutopilotService:
         limit_override: Optional[int] = None,
         sync_pending_crm_drafts: bool = False,
     ) -> Dict[str, Any]:
-        """Discover global businesses for one niche & city, craft company-specific pitches, and save Gmail drafts.
-
-        Strictly Human-in-the-Loop: NEVER auto-sends any email.
-        """
+        """Discover global businesses, generate Gmail/WhatsApp/LinkedIn pitches, save Gmail drafts & queue for HITL."""
         t_res = await session.execute(select(Tenant).where(Tenant.id == tenant_id))
         tenant = t_res.scalar_one_or_none()
         if not tenant:
             raise ResourceNotFoundError("Tenant", str(tenant_id))
+
+        quota = await self.compute_tenant_lead_quota(session, tenant_id)
+        if quota["quota_exhausted"]:
+            raise TaloxException(
+                message=(
+                    f"Monthly lead tier limit ({quota['monthly_lead_limit']} leads) reached for this workspace. "
+                    "Upgrade your Lead Tier on /billing to unlock higher monthly volume."
+                ),
+                code="LEAD_QUOTA_EXCEEDED",
+                status_code=402,
+            )
 
         rc_res = await session.execute(
             select(ReceptionistConfig).where(ReceptionistConfig.tenant_id == tenant_id).limit(1)
@@ -777,7 +1228,8 @@ class OutreachAutopilotService:
         )
         target_niche = (niche_override or "").strip() or rot_niche
         target_city = (city_override or "").strip() or rot_city
-        target_limit = min(max(limit_override or config["daily_draft_limit"], 1), 15)
+        requested_limit = min(max(limit_override or config["daily_draft_limit"], 1), 15)
+        target_limit = min(requested_limit, quota["remaining_leads"])
         search_keyword = NICHE_SEARCH_KEYWORDS.get(target_niche.lower(), target_niche)
 
         gen_result = await marketing_service.generate_leads_from_google_maps(
@@ -788,13 +1240,12 @@ class OutreachAutopilotService:
                 industry=target_niche[:100],
                 location=target_city[:120],
                 keywords=search_keyword[:200],
-                limit=min(max(target_limit * 3, 10), 20),
+                limit=min(max(target_limit * 2, target_limit), 20),
             ),
         )
         created_ids = [item["id"] for item in gen_result.get("leads", []) if item.get("id")]
         created_id_set = set(created_ids)
 
-        # Load recent tenant leads, prioritizing newly discovered rows first
         leads_res = await session.execute(
             select(Lead)
             .where(Lead.tenant_id == tenant_id)
@@ -808,7 +1259,7 @@ class OutreachAutopilotService:
             meta = dict(row.metadata_ or {})
             if meta.get("opted_out") is True:
                 continue
-            if meta.get("outreach_drafted") is True or meta.get("gmail_draft_status") == "saved_in_gmail":
+            if meta.get("outreach_drafted") is True or meta.get("gmail_draft_status") in ("saved_in_gmail", "sent_via_gmail"):
                 continue
             undrafted_candidates.append(row)
 
@@ -819,7 +1270,7 @@ class OutreachAutopilotService:
             )
         )
 
-        # Step A: Enrich leads missing an email by checking their real website (strictly concurrent, no DB)
+        # Enrich leads missing an email by checking their real website (concurrent, no DB calls inside gather)
         enrich_targets: List[Tuple[Lead, str]] = []
         for row in undrafted_candidates:
             if row.email:
@@ -854,18 +1305,18 @@ class OutreachAutopilotService:
             if not row.email and str(row.id) in created_id_set
         ][:target_limit]
 
-        # Step B: Generate company-specific AI emails concurrently (no DB calls inside gather)
+        # Generate tailored multi-channel pitches concurrently (no DB calls inside gather)
         pitch_targets = [*email_ready_leads, *contact_only_leads]
-        generated_pitches: Dict[str, Tuple[str, str]] = {}
+        generated_pitches: Dict[str, Dict[str, str]] = {}
         if pitch_targets:
             ai_sem = asyncio.Semaphore(3)
 
-            async def _build_pitch(row: Lead) -> Tuple[str, Tuple[str, str]]:
+            async def _build_pitch(row: Lead) -> Tuple[str, Dict[str, str]]:
                 meta = dict(row.metadata_ or {})
                 row_niche = str(meta.get("industry") or target_niche)
                 row_city = str(meta.get("location") or target_city)
                 async with ai_sem:
-                    subj_body = await _generate_company_email(
+                    pitches = await _generate_company_multichannel_pitches(
                         tenant_id=tenant_id,
                         company_name=row.name,
                         niche=row_niche,
@@ -876,12 +1327,11 @@ class OutreachAutopilotService:
                         service_offer=config["service_offer"],
                         booking_url=config["booking_url"],
                     )
-                return str(row.id), subj_body
+                return str(row.id), pitches
 
             pitch_results = await asyncio.gather(*[_build_pitch(row) for row in pitch_targets])
             generated_pitches = dict(pitch_results)
 
-        # Step C: Save Gmail drafts sequentially (DB-safe + OAuth token refresh on 401; NEVER auto-send!)
         access_token: Optional[str] = None
         if gmail_status["can_create_live_drafts"]:
             access_token = await self._ensure_fresh_gmail_token(session, integ)
@@ -894,7 +1344,9 @@ class OutreachAutopilotService:
         from_email = gmail_status.get("account")
 
         for row in email_ready_leads:
-            subject, body = generated_pitches[str(row.id)]
+            pitches = generated_pitches[str(row.id)]
+            subject = pitches["subject"]
+            body = pitches["body"]
             meta = dict(row.metadata_ or {})
 
             if gmail_status["can_create_live_drafts"]:
@@ -941,17 +1393,23 @@ class OutreachAutopilotService:
                 draft_errors += 1
                 err_note = str(draft_res.get("error") or "Gmail API draft creation failed")
 
+            row_city = str(meta.get("location") or target_city)
             new_meta = dict(meta)
             new_meta.update({
                 "autopilot_discovered": True,
                 "autopilot_niche": str(meta.get("industry") or target_niche),
-                "autopilot_city": str(meta.get("location") or target_city),
+                "autopilot_city": row_city,
                 "outreach_drafted": True,
+                "approval_status": "pending_approval",
                 "gmail_draft_id": draft_res.get("draft_id"),
                 "gmail_draft_subject": subject,
                 "gmail_draft_body": body,
                 "gmail_draft_status": d_status,
                 "gmail_drafted_at": now_iso,
+                "whatsapp_pitch": pitches["whatsapp_message"],
+                "linkedin_note": pitches["linkedin_note"],
+                "linkedin_dm": pitches["linkedin_dm"],
+                "linkedin_search_url": _build_linkedin_search_url(row.name, row_city),
             })
             if err_note:
                 new_meta["gmail_error"] = err_note
@@ -965,27 +1423,33 @@ class OutreachAutopilotService:
                 "email": row.email,
                 "phone": row.phone,
                 "niche": new_meta["autopilot_niche"],
-                "city": new_meta["autopilot_city"],
+                "city": row_city,
                 "subject": subject,
                 "draft_id": draft_res.get("draft_id"),
                 "draft_status": d_status,
+                "approval_status": "pending_approval",
             })
 
         for row in contact_only_leads:
-            subject, body = generated_pitches[str(row.id)]
+            pitches = generated_pitches[str(row.id)]
             new_meta = dict(row.metadata_ or {})
+            row_city = str(new_meta.get("location") or target_city)
             new_meta.update({
                 "autopilot_discovered": True,
                 "autopilot_niche": str(new_meta.get("industry") or target_niche),
-                "autopilot_city": str(new_meta.get("location") or target_city),
-                "gmail_draft_subject": subject,
-                "gmail_draft_body": body,
+                "autopilot_city": row_city,
+                "approval_status": "pending_approval",
+                "gmail_draft_subject": pitches["subject"],
+                "gmail_draft_body": pitches["body"],
                 "gmail_draft_status": "contact_only_no_email",
                 "gmail_drafted_at": now_iso,
+                "whatsapp_pitch": pitches["whatsapp_message"],
+                "linkedin_note": pitches["linkedin_note"],
+                "linkedin_dm": pitches["linkedin_dm"],
+                "linkedin_search_url": _build_linkedin_search_url(row.name, row_city),
             })
             row.metadata_ = new_meta
 
-        # Step D: Persist updated rotation & run telemetry on tenant.settings
         if not niche_override and not city_override:
             config["rotation_index"] = config["rotation_index"] + 1
         config["last_run_at"] = now_iso
@@ -1023,10 +1487,10 @@ class OutreachAutopilotService:
         await notification_service.send_notification(
             session=session,
             tenant_id=tenant_id,
-            title=f"Daily Global Outreach: {saved_in_gmail + saved_in_crm} Drafts Ready",
+            title=f"Daily Global Outreach: {saved_in_gmail + saved_in_crm} Multi-Channel Pitches Ready",
             message=(
-                f"Searched {target_niche} in {target_city}: discovered {run_summary['leads_discovered']} new leads, "
-                f"saved {saved_in_gmail} live Gmail drafts and {saved_in_crm} CRM drafts for review."
+                f"Searched {target_niche} in {target_city}: {run_summary['leads_discovered']} new leads, "
+                f"{saved_in_gmail} live Gmail drafts + WhatsApp/LinkedIn pitches queued for approval."
             ),
             channel="in_app",
         )

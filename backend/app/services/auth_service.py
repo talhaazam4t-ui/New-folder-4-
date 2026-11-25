@@ -1,19 +1,33 @@
 """Authentication Service — Handles User Registration, Login, and Profile Management.
 """
 
+from datetime import datetime, timedelta, timezone
+import hashlib
 import hmac
+import secrets
+from typing import Any, Dict, Optional, Set
 import uuid
-from typing import Dict, Optional, Set
 
 from app.config import settings
 from app.core.exceptions import TaloxException
 from app.core.logging import logger
 from app.core.security import create_access_token, get_password_hash, verify_password
-from app.database.models.automation import AuditLog
+from app.database.models.automation import AuditLog, AuthToken
 from app.database.models.tenant import Profile
+from app.integrations.email.adapter import email_adapter
 from app.schemas.auth import TokenResponse, UserLoginRequest, UserRegisterRequest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+
+def _hash_auth_token(raw_token: str) -> str:
+    return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+
+
+def _ensure_utc(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 
 class AuthService:
@@ -140,6 +154,12 @@ class AuthService:
             )
         await session.commit()
         await session.refresh(profile)
+
+        # Dispatch email verification link (non-blocking if transactional email fails)
+        try:
+            await self.send_verification_email(session, profile)
+        except Exception as exc:
+            logger.warning("Failed to issue verification email on signup", error=str(exc))
 
         # 3. Store in local cache for speed
         self._local_password_hashes[str(user_id)] = hashed_password
@@ -300,6 +320,185 @@ class AuthService:
         query = select(Profile).where(Profile.id == user_id)
         result = await session.execute(query)
         return result.scalar_one_or_none()
+
+    async def _issue_auth_token(
+        self,
+        session: AsyncSession,
+        user_id: uuid.UUID,
+        token_type: str,
+        ttl_minutes: int,
+    ) -> str:
+        """Create a single-use cryptographic token, persisting only its SHA-256 hash."""
+        raw_token = secrets.token_urlsafe(32)
+        now_utc = datetime.now(timezone.utc)
+        row = AuthToken(
+            user_id=user_id,
+            token_hash=_hash_auth_token(raw_token),
+            token_type=token_type,
+            expires_at=now_utc + timedelta(minutes=ttl_minutes),
+        )
+        session.add(row)
+        await session.commit()
+        return raw_token
+
+    async def send_verification_email(
+        self,
+        session: AsyncSession,
+        profile: Profile,
+    ) -> Dict[str, Any]:
+        """Issue an email verification token and dispatch the verification link."""
+        raw_token = await self._issue_auth_token(
+            session=session,
+            user_id=profile.id,
+            token_type="email_verify",
+            ttl_minutes=60 * 24,
+        )
+        verify_url = f"{settings.frontend_url.rstrip('/')}/verify-email?token={raw_token}"
+        delivery = await email_adapter.send_transactional_email(
+            to_email=profile.email,
+            subject="Verify your Talox Tech Stream email",
+            html_body=(
+                f"<p>Hi {profile.full_name},</p>"
+                "<p>Confirm your email address to secure your Talox Tech Stream workspace:</p>"
+                f"<p><a href='{verify_url}'>{verify_url}</a></p>"
+                "<p>This link expires in 24 hours.</p>"
+            ),
+            text_body=f"Hi {profile.full_name},\n\nVerify your email: {verify_url}\n\nThis link expires in 24 hours.",
+        )
+        return {"sent": True, "delivery": delivery}
+
+    async def verify_email(
+        self,
+        session: AsyncSession,
+        token: str,
+    ) -> Dict[str, Any]:
+        """Validate email verification token and mark profile.email_verified = True."""
+        now_utc = datetime.now(timezone.utc)
+        token_hash = _hash_auth_token(token.strip())
+        res = await session.execute(
+            select(AuthToken).where(
+                AuthToken.token_hash == token_hash,
+                AuthToken.token_type == "email_verify",
+            )
+        )
+        auth_tok = res.scalar_one_or_none()
+        if not auth_tok or auth_tok.used_at is not None or _ensure_utc(auth_tok.expires_at) < now_utc:
+            raise TaloxException(
+                message="Verification link is invalid or has expired.",
+                code="INVALID_VERIFICATION_TOKEN",
+                status_code=400,
+            )
+
+        prof_res = await session.execute(select(Profile).where(Profile.id == auth_tok.user_id))
+        profile = prof_res.scalar_one_or_none()
+        if not profile:
+            raise TaloxException(message="Account not found", code="USER_NOT_FOUND", status_code=404)
+
+        profile.email_verified = True
+        auth_tok.used_at = now_utc
+        session.add(
+            AuditLog(
+                actor_id=profile.id,
+                actor_type="user",
+                action="auth.email.verified",
+                resource_type="profile",
+                resource_id=profile.id,
+                metadata_={"email": profile.email},
+            )
+        )
+        await session.commit()
+        return {"email_verified": True, "email": profile.email}
+
+    async def request_password_reset(
+        self,
+        session: AsyncSession,
+        email: str,
+    ) -> Dict[str, Any]:
+        """Issue a 30-minute single-use password reset link if an account matches."""
+        email_clean = email.strip().lower()
+        res = await session.execute(select(Profile).where(Profile.email == email_clean))
+        profile = res.scalar_one_or_none()
+
+        if profile:
+            raw_token = await self._issue_auth_token(
+                session=session,
+                user_id=profile.id,
+                token_type="password_reset",
+                ttl_minutes=30,
+            )
+            reset_url = f"{settings.frontend_url.rstrip('/')}/reset-password?token={raw_token}"
+            await email_adapter.send_transactional_email(
+                to_email=profile.email,
+                subject="Reset your Talox Tech Stream password",
+                html_body=(
+                    f"<p>Hi {profile.full_name},</p>"
+                    "<p>Click below to set a new password (valid for 30 minutes):</p>"
+                    f"<p><a href='{reset_url}'>{reset_url}</a></p>"
+                    "<p>If you did not request this, you can safely ignore this email.</p>"
+                ),
+                text_body=f"Hi {profile.full_name},\n\nReset your password (valid 30 min): {reset_url}",
+            )
+            session.add(
+                AuditLog(
+                    actor_id=profile.id,
+                    actor_type="user",
+                    action="auth.password_reset.requested",
+                    resource_type="profile",
+                    resource_id=profile.id,
+                    metadata_={"email": profile.email},
+                )
+            )
+            await session.commit()
+
+        return {
+            "accepted": True,
+            "message": "If an account exists for that email address, a password reset link has been sent.",
+        }
+
+    async def reset_password(
+        self,
+        session: AsyncSession,
+        token: str,
+        new_password: str,
+    ) -> Dict[str, Any]:
+        """Validate password reset token, update bcrypt hash, and mark token used."""
+        now_utc = datetime.now(timezone.utc)
+        token_hash = _hash_auth_token(token.strip())
+        res = await session.execute(
+            select(AuthToken).where(
+                AuthToken.token_hash == token_hash,
+                AuthToken.token_type == "password_reset",
+            )
+        )
+        auth_tok = res.scalar_one_or_none()
+        if not auth_tok or auth_tok.used_at is not None or _ensure_utc(auth_tok.expires_at) < now_utc:
+            raise TaloxException(
+                message="Password reset link is invalid or has expired.",
+                code="INVALID_RESET_TOKEN",
+                status_code=400,
+            )
+
+        prof_res = await session.execute(select(Profile).where(Profile.id == auth_tok.user_id))
+        profile = prof_res.scalar_one_or_none()
+        if not profile:
+            raise TaloxException(message="Account not found", code="USER_NOT_FOUND", status_code=404)
+
+        new_hash = get_password_hash(new_password)
+        profile.password_hash = new_hash
+        self._local_password_hashes[str(profile.id)] = new_hash
+        auth_tok.used_at = now_utc
+        session.add(
+            AuditLog(
+                actor_id=profile.id,
+                actor_type="user",
+                action="auth.password.reset_completed",
+                resource_type="profile",
+                resource_id=profile.id,
+                metadata_={"email": profile.email},
+            )
+        )
+        await session.commit()
+        return {"reset": True, "email": profile.email}
 
 
 auth_service = AuthService()

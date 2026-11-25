@@ -20,7 +20,11 @@ from app.schemas.payment import (
     PaymentCreateRequest,
     PaymentResponse,
 )
-from app.services.billing_service import COMPANY_BANK_DETAILS, billing_service
+from app.services.billing_service import (
+    COMPANY_BANK_DETAILS,
+    billing_service,
+    get_payment_rails_info,
+)
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -71,6 +75,12 @@ async def record_payment(
 async def get_company_bank_details():
     """Retrieve official company bank details for direct transfer payments."""
     return {"success": True, "data": COMPANY_BANK_DETAILS}
+
+
+@router.get("/rails")
+async def get_supported_payment_rails():
+    """Retrieve local Faysal Bank (PKR) and international Payoneer (USD) payment details."""
+    return {"success": True, "data": get_payment_rails_info()}
 
 
 @router.post("/bank-transfer/notify")

@@ -12,6 +12,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
+from app.config import settings
 from app.core.exceptions import ResourceNotFoundError, TaloxException
 from app.core.logging import logger
 from app.database.models.automation import AuditLog
@@ -118,6 +119,34 @@ COMPANY_BANK_DETAILS = {
     "account_number": "3398701000005292",
     "iban": "PK97FAYS3398701000005292",
 }
+
+
+def get_payment_rails_info() -> Dict[str, Any]:
+    """Return client-safe local (Faysal Bank PKR) and international (Payoneer USD) payment rails."""
+    payoneer_email = (settings.payoneer_account_email or "").strip()
+    payoneer_details = (settings.payoneer_receiving_details or "").strip()
+    payoneer_active = bool(payoneer_email and payoneer_email.lower() != "mock")
+    return {
+        "bank_transfer": COMPANY_BANK_DETAILS,
+        "payoneer": {
+            "enabled": payoneer_active,
+            "status": "active" if payoneer_active else "approval_pending",
+            "account_email": payoneer_email if payoneer_active else "Pending Payoneer Approval",
+            "receiving_details": (
+                payoneer_details
+                or (
+                    f"Send international USD subscription/retainer payments via Payoneer to {payoneer_email}, then submit your Transaction Reference ID."
+                    if payoneer_active
+                    else "Your Payoneer USD receiving account is currently pending verification. Once approved, set PAYONEER_ACCOUNT_EMAIL & PAYONEER_RECEIVING_DETAILS in Render to display it automatically."
+                )
+            ),
+            "currency": "USD",
+        },
+        "gateways": {
+            "stripe_usd": "ready_phase2",
+            "payfast_pkr": "ready_phase2",
+        },
+    }
 
 
 def normalize_industry(industry: Optional[str]) -> str:

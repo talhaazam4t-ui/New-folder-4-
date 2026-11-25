@@ -1,8 +1,8 @@
 """Pydantic Schemas for Authentication and User Profiles.
 """
 
-import uuid
 from typing import Optional
+import uuid
 
 from pydantic import BaseModel, EmailStr, Field
 
@@ -13,11 +13,27 @@ class UserRegisterRequest(BaseModel):
     full_name: str = Field(min_length=2, max_length=255)
     phone: Optional[str] = None
     account_type: Optional[str] = Field(default=None, description="Optional account role hint: client or owner")
+    turnstile_token: Optional[str] = None
 
 
 class UserLoginRequest(BaseModel):
     email: EmailStr
     password: str
+    turnstile_token: Optional[str] = None
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+    turnstile_token: Optional[str] = None
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str = Field(min_length=16, max_length=256)
+    new_password: str = Field(min_length=8, max_length=128)
+
+
+class VerifyEmailRequest(BaseModel):
+    token: str = Field(min_length=16, max_length=256)
 
 
 class TokenResponse(BaseModel):
@@ -35,3 +51,4 @@ class UserProfileResponse(BaseModel):
     full_name: str
     phone: Optional[str] = None
     is_super_admin: bool = False
+    email_verified: bool = False

@@ -1,8 +1,8 @@
 """Pydantic Schemas for Multi-Agent Orchestration, Registry, and Telemetry.
 """
 
+from typing import Any, Dict, List, Literal, Optional
 import uuid
-from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -61,6 +61,8 @@ class OutreachAutopilotConfigUpdate(BaseModel):
     enabled: Optional[bool] = None
     niches: Optional[List[str]] = Field(default=None, max_length=20)
     cities: Optional[List[str]] = Field(default=None, max_length=40)
+    channels: Optional[List[str]] = Field(default=None, max_length=5)
+    require_human_approval: Optional[bool] = None
     daily_draft_limit: Optional[int] = Field(default=None, ge=1, le=15)
     service_offer: Optional[str] = Field(default=None, max_length=1200)
     sender_name: Optional[str] = Field(default=None, max_length=150)
@@ -73,4 +75,15 @@ class OutreachAutopilotRunRequest(BaseModel):
     city: Optional[str] = Field(default=None, max_length=120)
     limit: Optional[int] = Field(default=None, ge=1, le=15)
     sync_pending_crm_drafts: bool = False
+
+
+class OutreachLeadApproveRequest(BaseModel):
+    channel: Literal["gmail", "whatsapp", "linkedin"]
+    mode: Literal["send", "draft"] = "send"
+    custom_subject: Optional[str] = Field(default=None, max_length=200)
+    custom_body: Optional[str] = Field(default=None, max_length=4000)
+
+
+class OutreachLeadRejectRequest(BaseModel):
+    reason: Optional[str] = Field(default=None, max_length=500)
 

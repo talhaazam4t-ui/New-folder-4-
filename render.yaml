@@ -19,7 +19,7 @@ services:
       - key: APP_SECRET_KEY
         sync: false
       - key: SUPER_ADMIN_EMAILS
-        value: '["talhazam4@gmail.com","talhaazam4t@gmail.com","talazam40@gmail.com"]'
+        value: '["talhaazam4t@gmail.com"]'
       - key: FRONTEND_URL
         sync: false
       - key: BACKEND_URL
@@ -90,3 +90,15 @@ services:
         sync: false
       - key: PAYMENT_PROVIDER
         value: manual
+      - key: TURNSTILE_SITE_KEY
+        sync: false
+      - key: TURNSTILE_SECRET_KEY
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: RESEND_FROM_EMAIL
+        sync: false
+      - key: PAYONEER_ACCOUNT_EMAIL
+        sync: false
+      - key: PAYONEER_RECEIVING_DETAILS
+        sync: false
