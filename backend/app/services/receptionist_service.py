@@ -673,8 +673,10 @@ class ReceptionistService:
         await session.refresh(call_log)
 
         from app.services.noshow_recovery_service import noshow_recovery_service
+        from app.services.review_booster_service import review_booster_service
 
         await noshow_recovery_service.schedule_appointment_reminder(session, tenant_id, call_log)
+        await review_booster_service.schedule_post_appointment_review(session, tenant_id, call_log)
         return booking
 
     async def handle_retell_webhook(
@@ -944,6 +946,10 @@ class ReceptionistService:
         from app.services.call_intelligence_service import call_intelligence_service
 
         await call_intelligence_service.analyze_call_and_score_lead(session, tenant_id, log)
+        if log.booking_status == "booked" and log.booked_appointment_at:
+            from app.services.review_booster_service import review_booster_service
+
+            await review_booster_service.schedule_post_appointment_review(session, tenant_id, log)
         await session.refresh(log)
 
         return self._to_call_dict(log)

@@ -253,6 +253,44 @@ class WhatsAppCloudClient(BaseIntegrationAdapter):
                 "is_mock": False,
             }
 
+    async def download_media(
+        self,
+        media_id: str,
+        access_token: Optional[str] = None,
+    ) -> tuple[Optional[bytes], str]:
+        """Download binary media bytes from Meta WhatsApp Cloud API (returns (None, mime) in mock/test)."""
+        effective_token = access_token or settings.whatsapp_access_token
+        is_mock_token = (
+            not effective_token
+            or effective_token.startswith("meta_mock_")
+            or effective_token.startswith("meta_sys_token_waba_mock")
+            or effective_token.startswith("oauth_access_")
+        )
+        if not media_id or settings.whatsapp_provider == "mock" or is_mock_token or settings.app_env == "test":
+            return None, "image/jpeg"
+
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                meta_resp = await client.get(
+                    f"{self.graph_api_url}/{media_id}",
+                    headers={"Authorization": f"Bearer {effective_token}"},
+                )
+                meta_resp.raise_for_status()
+                meta_data = meta_resp.json()
+                media_url = meta_data.get("url")
+                mime_type = str(meta_data.get("mime_type") or "image/jpeg")
+                if not media_url:
+                    return None, mime_type
+                bin_resp = await client.get(
+                    media_url,
+                    headers={"Authorization": f"Bearer {effective_token}"},
+                )
+                bin_resp.raise_for_status()
+                return bin_resp.content, mime_type
+        except Exception as exc:
+            logger.warning("Failed to download WhatsApp media asset", media_id=media_id, error=str(exc))
+            return None, "image/jpeg"
+
     def parse_and_classify_inbound_message(self, message_text: str) -> ParsedWhatsAppIntent:
         """Classify inbound WhatsApp text into confirmed financial, ambiguous financial, or lead inquiry."""
         lower = message_text.lower().strip()

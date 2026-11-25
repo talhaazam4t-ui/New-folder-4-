@@ -9,6 +9,7 @@ from app.api.v1.assistant import router as assistant_router
 from app.api.v1.auth import router as auth_router
 from app.api.v1.business import router as business_router
 from app.api.v1.finance import router as finance_router
+from app.api.v1.growth_upsells import router as growth_upsells_router
 from app.api.v1.inbox import router as inbox_router
 from app.api.v1.integrations import router as integrations_router
 from app.api.v1.internal import router as internal_router
@@ -48,5 +49,6 @@ api_v1_router.include_router(assistant_router)
 api_v1_router.include_router(support_router)
 api_v1_router.include_router(receptionist_router)
 api_v1_router.include_router(knowledge_router)
+api_v1_router.include_router(growth_upsells_router)
 api_v1_router.include_router(internal_router)
 api_v1_router.include_router(admin_router)

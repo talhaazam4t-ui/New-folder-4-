@@ -41,6 +41,12 @@ from app.database.models.receptionist import (
 )
 from app.database.models.service import Service, ServiceSubscription
 from app.database.models.tenant import GUID, Profile, Tenant, TenantMember
+from app.database.models.upsells import (
+    DocumentExtraction,
+    ReviewRequest,
+    SocialCommentRule,
+    SocialDmLog,
+)
 
 __all__ = [
     "Base",
@@ -85,4 +91,8 @@ __all__ = [
     "KnowledgeChunk",
     "OmnichannelSession",
     "WhatsAppMessage",
+    "SocialCommentRule",
+    "SocialDmLog",
+    "ReviewRequest",
+    "DocumentExtraction",
 ]

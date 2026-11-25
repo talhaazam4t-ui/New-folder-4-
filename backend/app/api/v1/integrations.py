@@ -225,14 +225,15 @@ async def get_credentials_handshake_checklist(
             "key": "meta_social",
             "title": "Meta (Instagram & Facebook Comment-to-DM Webhooks)",
             "category": "Social Automation",
-            "status": "connected" if integ_map.get("meta_social") and integ_map["meta_social"].status == "connected" else "planned_phase4",
+            "status": "connected" if integ_map.get("meta_social") and integ_map["meta_social"].status == "connected" else "disconnected",
             "account": integ_map["meta_social"].external_account_id if integ_map.get("meta_social") else None,
-            "auth_method": "oauth",
+            "auth_method": "api_key",
             "oauth_provider": None,
             "requires_browser_login": True,
-            "action_url": "/settings",
+            "action_url": "/growth-tools",
             "checklist_steps": [
-                "Links your Facebook Page & Instagram Business account via Meta browser login for Comment-to-DM automation in Phase 4.",
+                "Open Meta Developer Portal in Chrome, copy your Page Access Token & FB Page / IG Account ID into /growth-tools.",
+                f"Point Meta Webhooks (comments / feed) to {settings.backend_url}/api/v1/growth/webhooks/meta using your WHATSAPP_VERIFY_TOKEN.",
             ],
         },
         {
@@ -607,14 +608,19 @@ async def process_whatsapp_meta_webhook(
                 interactive_reply_id = (
                     interactive_reply.get("id") or button_reply.get("payload") or None
                 )
+                image_obj = msg.get("image") or {}
+                image_media_id = image_obj.get("id")
+                image_mime_type = image_obj.get("mime_type") or "image/jpeg"
+                image_caption = image_obj.get("caption")
                 msg_text = (
                     (msg.get("text") or {}).get("body")
+                    or image_caption
                     or interactive_reply.get("title")
                     or button_reply.get("text")
-                    or ""
+                    or (f"[Image attachment {image_media_id}]" if image_media_id else "")
                 )
 
-                if msg_text or interactive_reply_id:
+                if msg_text or interactive_reply_id or image_media_id:
                     res = await integration_service.process_inbound_whatsapp_message(
                         session=session,
                         tenant_id=tenant_id,
@@ -624,6 +630,8 @@ async def process_whatsapp_meta_webhook(
                         message_id=msg_id,
                         dispatch_live_reply=(settings.whatsapp_provider == "meta"),
                         interactive_reply_id=interactive_reply_id,
+                        image_media_id=image_media_id,
+                        image_mime_type=image_mime_type,
                     )
                     results.append(res)
                     processed_count += 1
@@ -633,7 +641,7 @@ async def process_whatsapp_meta_webhook(
         not entries
         and settings.app_env in ("development", "test")
         and "sender_phone" in payload
-        and "message_text" in payload
+        and ("message_text" in payload or "image_base64" in payload or "image_media_id" in payload)
     ):
         tenant_id = None
         header_tenant = raw_request.headers.get("x-tenant-id")
@@ -665,9 +673,12 @@ async def process_whatsapp_meta_webhook(
             tenant_id=tenant_id,
             sender_phone=payload.get("sender_phone"),
             sender_name=payload.get("sender_name", "WhatsApp Contact"),
-            message_text=payload.get("message_text"),
+            message_text=payload.get("message_text") or "[Image attachment]",
             message_id=payload.get("message_id"),
             interactive_reply_id=payload.get("interactive_reply_id"),
+            image_media_id=payload.get("image_media_id"),
+            image_base64=payload.get("image_base64"),
+            image_mime_type=payload.get("image_mime_type") or "image/jpeg",
         )
         results.append(res)
         processed_count += 1

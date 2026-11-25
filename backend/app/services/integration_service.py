@@ -11,6 +11,7 @@ Implements:
 6. Onboarding readiness gate: keeps tenant automation inactive until all required integrations and approvals are satisfied.
 """
 
+import base64
 import urllib.parse
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -109,6 +110,15 @@ SUPPORTED_INTEGRATION_PROVIDERS: Dict[str, Dict[str, Any]] = {
         "oauth_provider": None,
         "scopes": [],
         "description": "Connect your clinic/property/consultation booking system via API Key and webhook URL.",
+    },
+    "meta_social": {
+        "provider": "meta_social",
+        "display_name": "Meta (Instagram & Facebook Comment-to-DM)",
+        "integration_type": "social",
+        "auth_method": "api_key",
+        "oauth_provider": None,
+        "scopes": ["pages_manage_metadata", "pages_messaging", "instagram_basic", "instagram_manage_comments", "instagram_manage_messages"],
+        "description": "Connect your Facebook Page / Instagram Business Account via Page Access Token & Account ID for native Comment-to-DM automation.",
     },
 }
 
@@ -739,6 +749,14 @@ class IntegrationService:
                     (extra_config or {}).get("waba_id")
                     or settings.whatsapp_business_account_id,
                 )
+            elif provider_key == "meta_social":
+                raw_config["access_token"] = api_key
+                raw_config.setdefault(
+                    "page_id",
+                    (extra_config or {}).get("page_id") or account_identifier,
+                )
+                if (extra_config or {}).get("ig_account_id"):
+                    raw_config["ig_account_id"] = str((extra_config or {})["ig_account_id"]).strip()
         if extra_config:
             raw_config.update(extra_config)
 
@@ -1039,13 +1057,19 @@ class IntegrationService:
         user_id: Optional[uuid.UUID] = None,
         dispatch_live_reply: bool = False,
         interactive_reply_id: Optional[str] = None,
+        image_media_id: Optional[str] = None,
+        image_base64: Optional[str] = None,
+        image_mime_type: str = "image/jpeg",
     ) -> Dict[str, Any]:
         """Process an inbound WhatsApp message with unified inbox logging, no-show recovery,
-        financial ambiguity guardrails, HITL live takeover pause, and RAG grounding.
+        Smart Review Booster routing, Vision OCR image extraction, financial guardrails,
+        HITL live takeover pause, and RAG grounding.
         """
         from app.services.inbox_service import inbox_service
         from app.services.noshow_recovery_service import noshow_recovery_service
         from app.services.rag_service import rag_service
+        from app.services.review_booster_service import review_booster_service
+        from app.services.vision_ocr_service import vision_ocr_service
 
         msg_ref = message_id or f"wamid.{uuid.uuid4().hex[:10]}"
         chat_session = await inbox_service.get_or_create_session(
@@ -1063,7 +1087,10 @@ class IntegrationService:
             sender_id=sender_phone,
             content=message_text,
             message_id=msg_ref,
-            raw_payload={"interactive_reply_id": interactive_reply_id} if interactive_reply_id else {},
+            raw_payload={
+                **({"interactive_reply_id": interactive_reply_id} if interactive_reply_id else {}),
+                **({"image_media_id": image_media_id} if image_media_id else {}),
+            },
         )
 
         # 0. Interactive Appointment Confirm / Reschedule Reply (No-Show Recovery)
@@ -1114,6 +1141,110 @@ class IntegrationService:
                     "session_id": str(chat_session.id),
                     **noshow_res,
                 }
+
+        # 0b. Smart Google Review Booster 1-5 Star Reply & Negative Shield
+        if image_media_id is None and image_base64 is None:
+            rb_res = await review_booster_service.handle_whatsapp_rating_reply(
+                session=session,
+                tenant_id=tenant_id,
+                sender_phone=sender_phone,
+                message_text=message_text,
+                interactive_reply_id=interactive_reply_id,
+            )
+            if rb_res.get("handled"):
+                rb_reply = str(rb_res.get("reply_text") or "Thank you for your feedback.")
+                await inbox_service.record_message(
+                    session=session,
+                    tenant_id=tenant_id,
+                    chat_session=chat_session,
+                    direction="outbound",
+                    sender_id="ai_review_booster",
+                    content=rb_reply,
+                )
+                await session.commit()
+                if dispatch_live_reply and sender_phone:
+                    try:
+                        wa_creds = await self.get_tenant_whatsapp_credentials(session, tenant_id)
+                        await whatsapp_client.send_text_message(
+                            tenant_id=str(tenant_id),
+                            to_phone=sender_phone,
+                            message_body=rb_reply,
+                            phone_number_id=wa_creds.get("phone_number_id"),
+                            access_token=wa_creds.get("access_token"),
+                        )
+                    except Exception as exc:
+                        logger.warning("Failed to dispatch review booster reply", error=str(exc))
+                return {
+                    "classification": f"review_{rb_res.get('outcome')}",
+                    "requires_confirmation": False,
+                    "session_id": str(chat_session.id),
+                    **rb_res,
+                }
+
+        # 0c. WhatsApp Vision OCR Image Extraction (Receipts, Prescriptions, Lab Reports)
+        if image_media_id or image_base64:
+            img_bytes = b""
+            eff_mime = image_mime_type or "image/jpeg"
+            if image_base64:
+                try:
+                    img_bytes = base64.b64decode(image_base64)
+                except Exception:
+                    img_bytes = image_base64.encode("utf-8", errors="ignore")
+            elif image_media_id:
+                wa_creds = await self.get_tenant_whatsapp_credentials(session, tenant_id)
+                dl_bytes, dl_mime = await whatsapp_client.download_media(
+                    image_media_id, access_token=wa_creds.get("access_token")
+                )
+                if dl_bytes:
+                    img_bytes = dl_bytes
+                    eff_mime = dl_mime
+
+            ocr_res = await vision_ocr_service.extract_from_image(
+                session=session,
+                tenant_id=tenant_id,
+                image_bytes=img_bytes or (message_text or "").encode("utf-8"),
+                mime_type=eff_mime,
+                source_channel="whatsapp",
+                sender_phone=sender_phone,
+                sender_name=sender_name,
+                caption=message_text,
+                media_id=image_media_id,
+                user_id=user_id,
+            )
+            ack_reply = (
+                "Thank you! We extracted your payment receipt details and queued them for quick admin verification."
+                if ocr_res.get("document_type") == "payment_receipt"
+                else f"Thank you! We received your {ocr_res.get('document_type', 'document').replace('_', ' ')} and saved the structured details to your profile."
+            )
+            await inbox_service.record_message(
+                session=session,
+                tenant_id=tenant_id,
+                chat_session=chat_session,
+                direction="outbound",
+                sender_id="ai_vision_ocr",
+                content=ack_reply,
+            )
+            await session.commit()
+            if dispatch_live_reply and sender_phone:
+                try:
+                    wa_creds = await self.get_tenant_whatsapp_credentials(session, tenant_id)
+                    await whatsapp_client.send_text_message(
+                        tenant_id=str(tenant_id),
+                        to_phone=sender_phone,
+                        message_body=ack_reply,
+                        phone_number_id=wa_creds.get("phone_number_id"),
+                        access_token=wa_creds.get("access_token"),
+                    )
+                except Exception as exc:
+                    logger.warning("Failed to dispatch Vision OCR acknowledgment", error=str(exc))
+            return {
+                "classification": f"vision_ocr_{ocr_res.get('document_type')}",
+                "requires_confirmation": ocr_res.get("status") == "pending_approval",
+                "approval_id": ocr_res.get("approval_id"),
+                "extraction_id": ocr_res.get("id"),
+                "ocr_extraction": ocr_res,
+                "session_id": str(chat_session.id),
+            }
 
         parsed = whatsapp_client.parse_and_classify_inbound_message(message_text)
 

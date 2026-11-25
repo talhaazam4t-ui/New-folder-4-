@@ -323,8 +323,6 @@ export default function SettingsPage() {
                       ? "Sandbox / Token"
                       : ck.status === "bank_ready"
                       ? "Bank Ready"
-                      : ck.status === "planned_phase4"
-                      ? "Phase 4 Meta Webhook"
                       : "Setup Needed";
 
                   return (

@@ -44,6 +44,37 @@ class JobEngineService:
         self.register_handler("outreach_autopilot_run", self._handle_outreach_autopilot_run)
         self.register_handler("webhook_dispatch", self._handle_webhook_dispatch)
         self.register_handler("appointment_reminder", self._handle_appointment_reminder)
+        self.register_handler("review_booster_prompt", self._handle_review_booster_prompt)
+
+    async def _handle_review_booster_prompt(self, session: AsyncSession, job: ScheduledJob) -> Any:
+        if not job.tenant_id:
+            return {"skipped": "missing_tenant_id"}
+        payload = dict(job.payload or {})
+        call_log_id_raw = payload.get("call_log_id")
+        phone = str(payload.get("customer_phone") or "").strip()
+        from app.services.review_booster_service import review_booster_service
+
+        if call_log_id_raw and not phone:
+            from app.database.models.receptionist import ReceptionistCallLog
+
+            c_res = await session.execute(
+                select(ReceptionistCallLog).where(
+                    ReceptionistCallLog.id == uuid.UUID(str(call_log_id_raw)),
+                    ReceptionistCallLog.tenant_id == job.tenant_id,
+                )
+            )
+            call_log = c_res.scalar_one_or_none()
+            if call_log:
+                phone = call_log.caller_phone
+                payload.setdefault("customer_name", call_log.caller_name)
+
+        return await review_booster_service.dispatch_review_prompt(
+            session=session,
+            tenant_id=job.tenant_id,
+            customer_phone=phone,
+            customer_name=payload.get("customer_name"),
+            call_log_id=uuid.UUID(str(call_log_id_raw)) if call_log_id_raw else None,
+        )
 
     async def _handle_appointment_reminder(self, session: AsyncSession, job: ScheduledJob) -> Any:
         if not job.tenant_id:

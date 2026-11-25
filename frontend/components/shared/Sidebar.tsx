@@ -14,6 +14,7 @@ import {
   PhoneCall,
   X,
   LifeBuoy,
+  Zap,
 } from "lucide-react";
 import {
   getActiveTenant,
@@ -130,6 +131,7 @@ export function Sidebar({
       icon: Bot,
       visible: hasAny(["multi_agent_orchestration", "lead_crm", "marketing_growth", "lead_funnel"]),
     },
+    { label: "Growth Upsells", href: "/growth-tools", icon: Zap, visible: true },
     { label: "Integrations & Security", href: "/settings", icon: Settings, visible: true },
   ];
 

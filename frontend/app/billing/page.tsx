@@ -4,7 +4,7 @@ import React, { useEffect, useState } from "react";
 import { Navbar } from "@/components/shared/Navbar";
 import { Sidebar } from "@/components/shared/Sidebar";
 import { StatCard } from "@/components/dashboard/StatCard";
-import { apiRequest } from "@/lib/api";
+import { apiFetchResponse, apiRequest } from "@/lib/api";
 import { getActiveTenant, getAuthToken } from "@/lib/auth";
 import {
   CreditCard,
@@ -23,6 +23,7 @@ import {
   ShieldAlert,
   RotateCcw,
   ExternalLink,
+  Download,
 } from "lucide-react";
 
 interface ServiceItem {
@@ -281,6 +282,29 @@ export default function BillingPage() {
     } else {
       setActionError(true);
       setActionMessage(res.error?.message || "Failed to subscribe.");
+    }
+  };
+
+  const handleDownloadInvoicePdf = async (invoiceId: string, invoiceNumber: string) => {
+    try {
+      const resp = await apiFetchResponse(`/api/v1/growth/pdf/invoice/${invoiceId}`);
+      if (!resp.ok) {
+        setActionError(true);
+        setActionMessage(`Failed to render PDF for ${invoiceNumber}.`);
+        return;
+      }
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${invoiceNumber.toLowerCase()}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch {
+      setActionError(true);
+      setActionMessage(`Failed to download PDF for ${invoiceNumber}.`);
     }
   };
 
@@ -1145,35 +1169,46 @@ export default function BillingPage() {
                           {new Date(inv.created_at).toLocaleDateString()}
                         </td>
                         <td className="py-3 px-4 text-right">
-                          {inv.status === "issued" || inv.status === "overdue" ? (
-                            <div className="inline-flex flex-wrap justify-end gap-1.5">
-                              <button
-                                type="button"
-                                disabled={checkoutLoading}
-                                onClick={() =>
-                                  handleStartCheckout("subscription", undefined, inv.id, undefined, "lemonsqueezy")
-                                }
-                                className="rounded bg-slate-900 px-2.5 py-1 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-50 transition"
-                              >
-                                Lemon Squeezy
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handlePayInvoice(inv.id)}
-                                className="rounded bg-emerald-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-emerald-500 transition"
-                              >
-                                Bank Transfer
-                              </button>
-                            </div>
-                          ) : inv.status === "payment_pending" ? (
-                            <span className="text-[11px] text-amber-600 font-semibold">
-                              Pending Confirmation
-                            </span>
-                          ) : inv.status === "paid" ? (
-                            <span className="text-[11px] text-emerald-600 font-medium">Settled</span>
-                          ) : (
-                            <span className="text-[11px] text-slate-400 uppercase">{inv.status}</span>
-                          )}
+                          <div className="inline-flex flex-wrap items-center justify-end gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => handleDownloadInvoicePdf(inv.id, inv.invoice_number)}
+                              className="inline-flex items-center gap-1 rounded border border-slate-300 bg-white px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100 transition"
+                              title="Download Invoice PDF"
+                            >
+                              <Download className="h-3 w-3" />
+                              <span>PDF</span>
+                            </button>
+                            {inv.status === "issued" || inv.status === "overdue" ? (
+                              <>
+                                <button
+                                  type="button"
+                                  disabled={checkoutLoading}
+                                  onClick={() =>
+                                    handleStartCheckout("subscription", undefined, inv.id, undefined, "lemonsqueezy")
+                                  }
+                                  className="rounded bg-slate-900 px-2.5 py-1 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-50 transition"
+                                >
+                                  Lemon Squeezy
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handlePayInvoice(inv.id)}
+                                  className="rounded bg-emerald-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-emerald-500 transition"
+                                >
+                                  Bank Transfer
+                                </button>
+                              </>
+                            ) : inv.status === "payment_pending" ? (
+                              <span className="text-[11px] text-amber-600 font-semibold">
+                                Pending Confirmation
+                              </span>
+                            ) : inv.status === "paid" ? (
+                              <span className="text-[11px] text-emerald-600 font-medium">Settled</span>
+                            ) : (
+                              <span className="text-[11px] text-slate-400 uppercase">{inv.status}</span>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     ))
