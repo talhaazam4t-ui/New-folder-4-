@@ -39,6 +39,20 @@ interface OverviewPayload {
   is_payment_approved?: boolean;
   payment_notified?: boolean;
   payment_reference?: string | null;
+  wallet_summary?: {
+    balance_credits: number;
+    low_balance_threshold: number;
+    auto_pause_enabled: boolean;
+    is_paused: boolean;
+    low_balance_alert: boolean;
+  };
+  trial_info?: {
+    trial_used: boolean;
+    trial_active: boolean;
+    trial_expired: boolean;
+    trial_ends_at: string | null;
+    trial_days_remaining: number;
+  };
   bank_details?: {
     bank_name: string;
     account_name: string;
@@ -162,6 +176,28 @@ export default function ClientDashboardPage() {
   const [notifyLoading, setNotifyLoading] = useState(false);
   const [notifySuccessMsg, setNotifySuccessMsg] = useState<string | null>(null);
   const [notifyErrorMsg, setNotifyErrorMsg] = useState<string | null>(null);
+  const [trialStarting, setTrialStarting] = useState(false);
+
+  const handleStartTrialFromDashboard = async () => {
+    setTrialStarting(true);
+    setNotifyErrorMsg(null);
+    setNotifySuccessMsg(null);
+    try {
+      const res = await apiRequest("/api/v1/payments/start-trial", { method: "POST" });
+      if (res.success || (res as any).data?.wallet) {
+        setNotifySuccessMsg(
+          "7-Day Free Trial activated with 100 starter credits! Your AI services are now unlocked."
+        );
+        await loadClientPerformance();
+      } else {
+        setNotifyErrorMsg(res.error?.message || "Failed to activate 7-day free trial.");
+      }
+    } catch (err: any) {
+      setNotifyErrorMsg(err?.message || "Failed to activate 7-day free trial.");
+    } finally {
+      setTrialStarting(false);
+    }
+  };
 
   const loadClientPerformance = async () => {
     const tenant = getActiveTenant();
@@ -362,6 +398,27 @@ export default function ClientDashboardPage() {
                   {overview?.selected_industry || "Not Selected"}
                 </strong>
               </div>
+              <a
+                href="/billing"
+                className={`flex items-center gap-2 rounded-lg border px-3.5 py-2 text-xs font-semibold shadow-sm transition ${
+                  overview?.wallet_summary?.is_paused
+                    ? "border-red-300 bg-red-50 text-red-800 hover:bg-red-100"
+                    : overview?.wallet_summary?.low_balance_alert
+                    ? "border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100"
+                    : "border-slate-200 bg-white text-slate-700 hover:border-emerald-300"
+                }`}
+              >
+                <CreditCard className="h-4 w-4 text-emerald-600" />
+                <span>Credits:</span>
+                <strong className="font-mono text-slate-900">
+                  {(overview?.wallet_summary?.balance_credits ?? 0).toFixed(0)} cr
+                </strong>
+                {overview?.trial_info?.trial_active && (
+                  <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-emerald-800">
+                    Trial {overview.trial_info.trial_days_remaining}d
+                  </span>
+                )}
+              </a>
               <a
                 href="/onboarding"
                 className="flex items-center gap-1.5 rounded-lg bg-slate-900 px-3.5 py-2 text-xs font-semibold text-white hover:bg-slate-800 transition"
@@ -595,17 +652,31 @@ export default function ClientDashboardPage() {
 
             {/* Inactive Notice Banner when not approved */}
             {!isApproved && (
-              <div className="flex items-start gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-200">
-                <Lock className="h-4 w-4 shrink-0 text-amber-400 mt-0.5" />
-                <div>
-                  <p className="font-bold text-amber-300">
-                    AI Services Currently Locked — Awaiting Payment Approval
-                  </p>
-                  <p className="text-slate-300 mt-0.5">
-                    Your managed AI services remain inactive until payment is received and approved by our administrator.
-                    Once confirmed, your AI concierge, automated lead pipelines, and calendar bookings will unlock immediately.
-                  </p>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3.5 text-xs text-amber-200">
+                <div className="flex items-start gap-3">
+                  <Lock className="h-4 w-4 shrink-0 text-amber-400 mt-0.5" />
+                  <div>
+                    <p className="font-bold text-amber-300">
+                      AI Services Currently Locked — Awaiting Payment Approval
+                    </p>
+                    <p className="text-slate-300 mt-0.5">
+                      Your managed AI services remain inactive until payment is received or you start your 7-Day Free Trial (100 credits included).
+                    </p>
+                  </div>
                 </div>
+                {!overview?.trial_info?.trial_used && (
+                  <button
+                    type="button"
+                    disabled={trialStarting}
+                    onClick={handleStartTrialFromDashboard}
+                    className="shrink-0 inline-flex items-center gap-1.5 rounded-lg bg-emerald-500 px-3.5 py-2 text-xs font-extrabold text-slate-950 hover:bg-emerald-400 disabled:opacity-50 transition"
+                  >
+                    <Sparkles className="h-3.5 w-3.5" />
+                    <span>
+                      {trialStarting ? "Activating..." : "Start 7-Day Free Trial (100 Credits)"}
+                    </span>
+                  </button>
+                )}
               </div>
             )}
           </div>

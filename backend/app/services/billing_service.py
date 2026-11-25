@@ -122,10 +122,16 @@ COMPANY_BANK_DETAILS = {
 
 
 def get_payment_rails_info() -> Dict[str, Any]:
-    """Return client-safe local (Faysal Bank PKR) and international (Payoneer USD) payment rails."""
+    """Return client-safe local (Faysal Bank/PayFast/Safepay PKR) and international (Payoneer/Stripe USD) rails."""
+    from app.services.wallet_service import CREDIT_PACKS, TRIAL_DURATION_DAYS, TRIAL_GRANT_CREDITS
+
     payoneer_email = (settings.payoneer_account_email or "").strip()
     payoneer_details = (settings.payoneer_receiving_details or "").strip()
     payoneer_active = bool(payoneer_email and payoneer_email.lower() != "mock")
+    stripe_live = bool((settings.stripe_secret_key or "").strip().startswith("sk_"))
+    payfast_live = bool((settings.payfast_merchant_id or "").strip() and (settings.payfast_secured_key or "").strip())
+    safepay_live = bool((settings.safepay_api_key or "").strip())
+
     return {
         "bank_transfer": COMPANY_BANK_DETAILS,
         "payoneer": {
@@ -143,8 +149,46 @@ def get_payment_rails_info() -> Dict[str, Any]:
             "currency": "USD",
         },
         "gateways": {
-            "stripe_usd": "ready_phase2",
-            "payfast_pkr": "ready_phase2",
+            "payfast": {
+                "provider": "payfast",
+                "name": "PayFast Pakistan (Cards / JazzCash / Easypaisa / Bank)",
+                "currency": "PKR",
+                "status": "live" if payfast_live else "sandbox",
+                "enabled": payfast_live,
+            },
+            "safepay": {
+                "provider": "safepay",
+                "name": "Safepay Pakistan (PKR / International Cards)",
+                "currency": "PKR",
+                "status": "live" if safepay_live else "sandbox",
+                "enabled": safepay_live,
+            },
+            "stripe": {
+                "provider": "stripe",
+                "name": "Stripe International (USD Cards / Apple Pay)",
+                "currency": "USD",
+                "status": "live" if stripe_live else "sandbox",
+                "enabled": stripe_live,
+            },
+            "payoneer": {
+                "provider": "payoneer",
+                "name": "Payoneer Business (USD Receiving Account)",
+                "currency": "USD",
+                "status": "live" if payoneer_active else "approval_pending",
+                "enabled": payoneer_active,
+            },
+            "bank_transfer": {
+                "provider": "bank_transfer",
+                "name": "Faysal Bank Direct Transfer (PKR)",
+                "currency": "PKR",
+                "status": "live",
+                "enabled": True,
+            },
+        },
+        "credit_packs": CREDIT_PACKS,
+        "trial_offer": {
+            "duration_days": TRIAL_DURATION_DAYS,
+            "grant_credits": TRIAL_GRANT_CREDITS,
         },
     }
 
@@ -575,11 +619,31 @@ class BillingService:
         tenant_q = select(Tenant).where(Tenant.id == payment.tenant_id)
         tenant_res = await session.execute(tenant_q)
         tenant = tenant_res.scalar_one_or_none()
-        if tenant and tenant.status in ("pending_approval", "unpaid"):
-            tenant.status = "active"
+        if tenant:
+            curr_settings = dict(tenant.settings or {})
+            curr_settings["payment_approved"] = True
+            curr_settings["automation_approved_by_owner"] = True
+            curr_settings["trial_active"] = False
+            curr_settings["trial_expired"] = False
+            curr_settings["payment_approved_at"] = now.isoformat()
+            tenant.settings = curr_settings
+            if tenant.status in ("pending_approval", "unpaid"):
+                tenant.status = "active"
 
         await session.commit()
         await session.refresh(payment)
+
+        from app.services.wallet_service import PLAN_ACTIVATION_BONUS_CREDITS, wallet_service
+
+        await wallet_service.credit_wallet(
+            session=session,
+            tenant_id=payment.tenant_id,
+            credits=PLAN_ACTIVATION_BONUS_CREDITS,
+            category="plan_grant",
+            description="Plan activation prepaid credit grant",
+            entry_type="plan_grant",
+            reference_id=f"payment_confirm:{payment.id}",
+        )
 
         logger.info(
             "Payment manually confirmed by Super Admin",
@@ -762,6 +826,8 @@ class BillingService:
         curr_settings = dict(tenant.settings or {})
         curr_settings["payment_approved"] = True
         curr_settings["automation_approved_by_owner"] = True
+        curr_settings["trial_active"] = False
+        curr_settings["trial_expired"] = False
         curr_settings["payment_approved_at"] = now.isoformat()
         if notes:
             curr_settings["payment_approval_notes"] = notes
@@ -811,6 +877,18 @@ class BillingService:
         session.add(audit)
         await session.commit()
 
+        from app.services.wallet_service import PLAN_ACTIVATION_BONUS_CREDITS, wallet_service
+
+        await wallet_service.credit_wallet(
+            session=session,
+            tenant_id=tenant_id,
+            credits=PLAN_ACTIVATION_BONUS_CREDITS,
+            category="plan_grant",
+            description="Subscription payment verified — starter prepaid credits added",
+            entry_type="plan_grant",
+            reference_id=f"admin_approve_plan:{tenant_id}:{now.strftime('%Y%m%d')}",
+        )
+
         logger.info(
             "Tenant payment approved and services activated",
             tenant_id=str(tenant_id),
@@ -824,6 +902,223 @@ class BillingService:
             "automation_active": True,
             "message": "Payment verified and approved. Client AI services are now activated.",
         }
+
+    async def reconcile_verified_payment(
+        self,
+        session: AsyncSession,
+        tenant_id: uuid.UUID,
+        provider: str,
+        provider_reference: str,
+        amount: float,
+        currency: str = "USD",
+        purpose: str = "subscription",
+        credits_to_grant: Optional[float] = None,
+        invoice_id: Optional[uuid.UUID] = None,
+        subscription_id: Optional[uuid.UUID] = None,
+    ) -> Dict[str, Any]:
+        """Idempotently verify/complete a gateway payment and provision workspace plan & credits."""
+        t_res = await session.execute(select(Tenant).where(Tenant.id == tenant_id))
+        tenant = t_res.scalar_one_or_none()
+        if not tenant:
+            raise ResourceNotFoundError("Tenant", str(tenant_id))
+
+        now = datetime.now(timezone.utc)
+        pay_res = await session.execute(
+            select(Payment).where(
+                Payment.tenant_id == tenant_id,
+                Payment.provider_reference == provider_reference,
+            )
+        )
+        payment = pay_res.scalar_one_or_none()
+        if payment and payment.status == "completed":
+            return {
+                "reconciled": False,
+                "idempotent": True,
+                "payment_id": str(payment.id),
+                "message": "Webhook event already processed",
+            }
+
+        if payment:
+            payment.status = "completed"
+            payment.paid_at = now
+            if amount > 0:
+                payment.amount = amount
+            payment.currency = currency.upper()[:3]
+            if invoice_id is None and payment.subscription_id and subscription_id is None:
+                subscription_id = payment.subscription_id
+        else:
+            payment = Payment(
+                tenant_id=tenant_id,
+                subscription_id=subscription_id,
+                amount=amount,
+                currency=currency.upper()[:3],
+                payment_method=provider.lower(),
+                provider_reference=provider_reference,
+                status="completed",
+                paid_at=now,
+            )
+            session.add(payment)
+
+        if invoice_id:
+            inv_res = await session.execute(
+                select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id)
+            )
+            invoice = inv_res.scalar_one_or_none()
+            if invoice:
+                invoice.status = "paid"
+
+        if purpose != "wallet_topup":
+            if subscription_id:
+                sub_res = await session.execute(
+                    select(ServiceSubscription).where(
+                        ServiceSubscription.id == subscription_id,
+                        ServiceSubscription.tenant_id == tenant_id,
+                    )
+                )
+                sub = sub_res.scalar_one_or_none()
+                if sub:
+                    sub.status = "active"
+            else:
+                sub_res = await session.execute(
+                    select(ServiceSubscription).where(ServiceSubscription.tenant_id == tenant_id)
+                )
+                for sub in sub_res.scalars().all():
+                    if sub.status != "canceled":
+                        sub.status = "active"
+
+            if not invoice_id:
+                open_inv_res = await session.execute(
+                    select(Invoice).where(
+                        Invoice.tenant_id == tenant_id,
+                        Invoice.status.in_(["issued", "payment_pending"]),
+                    )
+                )
+                for inv in open_inv_res.scalars().all():
+                    inv.status = "paid"
+
+        curr_settings = dict(tenant.settings or {})
+        curr_settings["payment_approved"] = True
+        curr_settings["automation_approved_by_owner"] = True
+        curr_settings["trial_active"] = False
+        curr_settings["trial_expired"] = False
+        curr_settings["payment_approved_at"] = now.isoformat()
+        curr_settings["last_payment_provider"] = provider.lower()
+        curr_settings["last_payment_reference"] = provider_reference
+        tenant.settings = curr_settings
+        if tenant.status in ("pending_approval", "unpaid"):
+            tenant.status = "active"
+
+        await session.flush()
+        session.add(
+            AuditLog(
+                tenant_id=tenant_id,
+                actor_type="system",
+                action="payment.webhook_reconciled",
+                resource_type="payment",
+                resource_id=payment.id,
+                metadata_={
+                    "provider": provider.lower(),
+                    "provider_reference": provider_reference,
+                    "amount": float(payment.amount),
+                    "currency": payment.currency,
+                    "purpose": purpose,
+                },
+            )
+        )
+        await session.commit()
+        await session.refresh(payment)
+
+        from app.services.wallet_service import PLAN_ACTIVATION_BONUS_CREDITS, wallet_service
+
+        if purpose == "wallet_topup":
+            grant_credits = float(credits_to_grant or max(100.0, round(float(amount) * 10.0, 2)))
+            entry_type = "credit"
+            cat = "wallet_topup"
+            desc = f"{provider.title()} prepaid credit top-up ({provider_reference})"
+        else:
+            grant_credits = float(credits_to_grant or PLAN_ACTIVATION_BONUS_CREDITS)
+            entry_type = "plan_grant"
+            cat = "plan_grant"
+            desc = f"{provider.title()} subscription activation credit grant ({provider_reference})"
+
+        wallet_res = await wallet_service.credit_wallet(
+            session=session,
+            tenant_id=tenant_id,
+            credits=grant_credits,
+            category=cat,
+            description=desc,
+            entry_type=entry_type,
+            reference_id=f"payment_webhook:{provider_reference}",
+            metadata={"provider": provider.lower(), "payment_id": str(payment.id)},
+            enable_auto_pause=True if purpose == "wallet_topup" else None,
+        )
+
+        from app.services.notification_service import notification_service
+
+        await notification_service.send_notification(
+            session=session,
+            tenant_id=tenant_id,
+            title=f"{provider.title()} Payment Verified (+{grant_credits:.0f} Credits)",
+            message=f"Payment {provider_reference} ({payment.amount:.2f} {payment.currency}) verified. Your workspace and {grant_credits:.0f} credits are ready.",
+            channel="in_app",
+        )
+
+        return {
+            "reconciled": True,
+            "idempotent": False,
+            "payment_id": str(payment.id),
+            "credits_granted": grant_credits,
+            "wallet": wallet_res["wallet"],
+            "message": "Webhook verified and payment provisioned",
+        }
+
+    async def execute_approved_refund(
+        self,
+        session: AsyncSession,
+        tenant_id: uuid.UUID,
+        payment_id: uuid.UUID,
+        reviewer_id: uuid.UUID,
+        reason: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Complete a refund strictly after Human-in-the-Loop ApprovalManager authorization."""
+        res = await session.execute(
+            select(Payment).where(Payment.id == payment_id, Payment.tenant_id == tenant_id)
+        )
+        payment = res.scalar_one_or_none()
+        if not payment:
+            raise ResourceNotFoundError("Payment", str(payment_id))
+        if payment.status == "refunded":
+            return {"payment_id": str(payment.id), "status": "refunded", "idempotent": True}
+
+        payment.status = "refunded"
+        session.add(
+            AuditLog(
+                tenant_id=tenant_id,
+                actor_id=reviewer_id,
+                actor_type="user",
+                action="payment.refunded_approved",
+                resource_type="payment",
+                resource_id=payment.id,
+                metadata_={
+                    "amount": float(payment.amount),
+                    "currency": payment.currency,
+                    "reason": reason,
+                },
+            )
+        )
+        await session.commit()
+
+        from app.services.notification_service import notification_service
+
+        await notification_service.send_notification(
+            session=session,
+            tenant_id=tenant_id,
+            title="Refund Request Approved",
+            message=f"Payment {payment.provider_reference} ({float(payment.amount):.2f} {payment.currency}) has been marked refunded after human review.",
+            channel="in_app",
+        )
+
+        return {"payment_id": str(payment.id), "status": "refunded", "idempotent": False}
 
 
 billing_service = BillingService()

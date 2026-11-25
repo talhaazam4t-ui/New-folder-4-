@@ -70,6 +70,7 @@ async def approve_pending_action(
         "data": {
             "approval": result["approval"].model_dump(mode="json"),
             "task": result["task"].model_dump(mode="json") if result["task"] else None,
+            "refund": result.get("refund"),
         },
         "message": "Action approved and resumed",
     }

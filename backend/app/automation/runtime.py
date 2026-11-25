@@ -64,9 +64,25 @@ class AutomationRuntime:
                 tenant_id=tenant_id,
                 task_id=approval_resp.task_id,
             )
+
+        refund_result: Optional[Dict[str, Any]] = None
+        if approval_resp.action_type == "refund_payment":
+            payment_id_raw = (approval_resp.proposed_action or {}).get("payment_id")
+            if payment_id_raw:
+                from app.services.billing_service import billing_service
+
+                refund_result = await billing_service.execute_approved_refund(
+                    session=session,
+                    tenant_id=tenant_id,
+                    payment_id=uuid.UUID(str(payment_id_raw)),
+                    reviewer_id=reviewer_id,
+                    reason=reason,
+                )
+
         return {
             "approval": approval_resp,
             "task": task_resp,
+            "refund": refund_result,
         }
 
 

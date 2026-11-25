@@ -949,6 +949,12 @@ class OutreachAutopilotService:
                 status_code=400,
             )
 
+        from app.services.wallet_service import wallet_service
+
+        is_billable_dispatch = payload.channel in ("whatsapp", "linkedin") or payload.mode == "send"
+        if is_billable_dispatch:
+            await wallet_service.assert_wallet_active(session, tenant_id, estimated_credits=1.0)
+
         now_iso = datetime.now(timezone.utc).isoformat()
         new_meta = dict(meta)
         action_result: Dict[str, Any] = {"channel": payload.channel, "mode": payload.mode}
@@ -1139,6 +1145,16 @@ class OutreachAutopilotService:
             )
         )
         await session.commit()
+        if is_billable_dispatch:
+            await wallet_service.debit_credits(
+                session=session,
+                tenant_id=tenant_id,
+                category="outreach_dispatch",
+                unit_count=1.0,
+                description=f"Approved {payload.channel} outreach dispatch to {lead.name}",
+                metadata={"channel": payload.channel, "lead_id": str(lead.id)},
+                enforce_pause=False,
+            )
         state = await self.get_autopilot_state(session, tenant_id)
         return {
             "action_result": action_result,
@@ -1208,6 +1224,10 @@ class OutreachAutopilotService:
                 code="LEAD_QUOTA_EXCEEDED",
                 status_code=402,
             )
+
+        from app.services.wallet_service import wallet_service
+
+        await wallet_service.assert_wallet_active(session, tenant_id, estimated_credits=2.0)
 
         rc_res = await session.execute(
             select(ReceptionistConfig).where(ReceptionistConfig.tenant_id == tenant_id).limit(1)
@@ -1483,6 +1503,18 @@ class OutreachAutopilotService:
             )
         )
         await session.commit()
+
+        discovered_count = int(gen_result.get("created_count", 0) or 0)
+        if discovered_count > 0:
+            await wallet_service.debit_credits(
+                session=session,
+                tenant_id=tenant_id,
+                category="lead_scrape",
+                unit_count=float(discovered_count),
+                description=f"Global lead discovery ({target_niche} in {target_city}: {discovered_count} leads)",
+                metadata={"niche": target_niche, "city": target_city},
+                enforce_pause=False,
+            )
 
         await notification_service.send_notification(
             session=session,

@@ -50,6 +50,11 @@ PROTECTED_TENANT_SETTING_KEYS = {
     "automation_approved_by_owner",
     "payment_approved_at",
     "payment_approval_notes",
+    "trial_used",
+    "trial_active",
+    "trial_expired",
+    "trial_started_at",
+    "trial_ends_at",
 }
 
 

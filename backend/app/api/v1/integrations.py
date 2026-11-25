@@ -246,9 +246,8 @@ async def get_credentials_handshake_checklist(
             "requires_browser_login": True,
             "action_url": "/dashboard",
             "checklist_steps": [
-                f"Local PKR: {rails['bank_transfer']['bank_name']} ({rails['bank_transfer']['iban']}) is active immediately.",
-                "International USD: Once your Payoneer account is approved, add PAYONEER_ACCOUNT_EMAIL in Render env vars.",
-                "Automated PayFast (PKR) & Stripe (USD) webhooks activate in Phase 2.",
+                f"Local PKR: {rails['bank_transfer']['bank_name']} ({rails['bank_transfer']['iban']}) + PayFast & Safepay PKR gateways ready on /billing.",
+                "International USD: Payoneer & Stripe USD rails supported on /billing; configure gateway secrets in Render env vars for live checkout.",
             ],
         },
     ]
@@ -676,6 +675,9 @@ async def send_whatsapp_message(
     session: AsyncSession = Depends(get_db),
 ):
     """Send an outbound WhatsApp message to a customer or tenant member."""
+    from app.services.wallet_service import wallet_service
+
+    await wallet_service.assert_wallet_active(session, context.tenant_id, estimated_credits=1.0)
     wa_creds = await integration_service.get_tenant_whatsapp_credentials(session, context.tenant_id)
     result = await whatsapp_client.send_text_message(
         tenant_id=str(context.tenant_id),
@@ -683,6 +685,15 @@ async def send_whatsapp_message(
         message_body=request.message_body,
         phone_number_id=wa_creds.get("phone_number_id"),
         access_token=wa_creds.get("access_token"),
+    )
+    await wallet_service.debit_credits(
+        session=session,
+        tenant_id=context.tenant_id,
+        category="whatsapp_message",
+        unit_count=1.0,
+        description=f"Outbound WhatsApp message to {request.to_phone}",
+        metadata={"to_phone": request.to_phone},
+        enforce_pause=False,
     )
     return {"success": True, "data": result}
 

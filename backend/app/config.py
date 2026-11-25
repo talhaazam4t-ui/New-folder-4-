@@ -179,15 +179,33 @@ class Settings(BaseSettings):
     meta_app_secret: Optional[str] = Field(default=None, alias="META_APP_SECRET")
     meta_config_id: Optional[str] = Field(default=None, alias="META_CONFIG_ID")
 
-    # Payment Rails
-    payment_provider: str = Field(default="manual", alias="PAYMENT_PROVIDER")  # manual | mock
+    # Payment Rails & Multi-Currency Gateways (PKR + USD)
+    payment_provider: str = Field(default="manual", alias="PAYMENT_PROVIDER")  # manual | stripe | payfast | safepay | payoneer | mock
     payment_secret_key: Optional[str] = Field(default=None, alias="PAYMENT_SECRET_KEY")
     payment_webhook_secret: Optional[str] = Field(default=None, alias="PAYMENT_WEBHOOK_SECRET")
+    stripe_secret_key: Optional[str] = Field(default=None, alias="STRIPE_SECRET_KEY")
+    stripe_webhook_secret: Optional[str] = Field(default=None, alias="STRIPE_WEBHOOK_SECRET")
+    payfast_merchant_id: Optional[str] = Field(default=None, alias="PAYFAST_MERCHANT_ID")
+    payfast_secured_key: Optional[str] = Field(default=None, alias="PAYFAST_SECURED_KEY")
+    payfast_base_url: str = Field(
+        default="https://ipguat.apps.net.pk/Ecommerce/api/Transaction",
+        alias="PAYFAST_BASE_URL",
+    )
+    safepay_api_key: Optional[str] = Field(default=None, alias="SAFEPAY_API_KEY")
+    safepay_webhook_secret: Optional[str] = Field(default=None, alias="SAFEPAY_WEBHOOK_SECRET")
+    safepay_base_url: str = Field(
+        default="https://sandbox.api.getsafepay.com",
+        alias="SAFEPAY_BASE_URL",
+    )
     payoneer_account_email: Optional[str] = Field(default=None, alias="PAYONEER_ACCOUNT_EMAIL")
     payoneer_receiving_details: Optional[str] = Field(
         default=None,
         alias="PAYONEER_RECEIVING_DETAILS",
     )
+    payoneer_webhook_secret: Optional[str] = Field(default=None, alias="PAYONEER_WEBHOOK_SECRET")
+
+    # External Cron / Native Asyncio Scheduler Tick Protection
+    cron_secret: Optional[str] = Field(default=None, alias="CRON_SECRET")
 
     # Anti-Bot Security (Cloudflare Turnstile) & Transactional Email (Resend)
     turnstile_site_key: Optional[str] = Field(default=None, alias="TURNSTILE_SITE_KEY")

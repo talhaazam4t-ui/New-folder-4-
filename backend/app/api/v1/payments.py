@@ -5,26 +5,34 @@ import json
 import uuid
 from typing import List, Optional
 
+from app.automation.approval_manager import approval_manager
 from app.config import settings
+from app.core.exceptions import ResourceNotFoundError, TaloxException
 from app.core.logging import logger
 from app.core.tenant_context import TenantContext
+from app.database.models.automation import Approval
 from app.database.models.billing import Invoice, Payment
 from app.database.models.service import ServiceSubscription
 from app.database.models.tenant import Tenant
 from app.database.supabase import get_db
 from app.dependencies import require_permission
 from app.integrations.payment.base import get_payment_provider
+from app.schemas.approval import ApprovalCreateRequest
 from app.schemas.payment import (
     BankTransferNotifyRequest,
+    CheckoutCreateRequest,
     InvoiceResponse,
     PaymentCreateRequest,
     PaymentResponse,
+    RefundRequestCreate,
+    WalletSettingsUpdateRequest,
 )
 from app.services.billing_service import (
     COMPANY_BANK_DETAILS,
     billing_service,
     get_payment_rails_info,
 )
+from app.services.wallet_service import get_credit_pack, wallet_service
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -289,4 +297,377 @@ async def payment_webhook(
         "reconciled": reconciled,
         "payment_id": payment_id,
         "message": "Webhook verified and processed",
+    }
+
+
+@router.get("/wallet")
+async def get_tenant_wallet_summary(
+    limit: int = 50,
+    context: TenantContext = Depends(require_permission("payments.read")),
+    session: AsyncSession = Depends(get_db),
+):
+    """Retrieve prepaid credit wallet balance, rates, packs, trial state, and usage ledger."""
+    summary = await wallet_service.get_wallet_summary(session, context.tenant_id, ledger_limit=min(max(limit, 1), 100))
+    return {"success": True, "data": summary}
+
+
+@router.patch("/wallet/settings")
+async def update_tenant_wallet_settings(
+    request: WalletSettingsUpdateRequest,
+    context: TenantContext = Depends(require_permission("payments.create")),
+    session: AsyncSession = Depends(get_db),
+):
+    """Update low-balance alert threshold or auto-pause enforcement."""
+    wallet = await wallet_service.update_wallet_settings(
+        session=session,
+        tenant_id=context.tenant_id,
+        low_balance_threshold=request.low_balance_threshold,
+        auto_pause_enabled=request.auto_pause_enabled,
+    )
+    return {"success": True, "data": wallet, "message": "Wallet settings updated"}
+
+
+@router.post("/start-trial")
+async def activate_free_trial(
+    context: TenantContext = Depends(require_permission("payments.create")),
+    session: AsyncSession = Depends(get_db),
+):
+    """Start a 7-Day Free Trial / Free Audit with 100 starter prepaid credits."""
+    data = await wallet_service.start_free_trial(session, context.tenant_id, context.user_id)
+    return {"success": True, "data": data, "message": "7-Day Free Trial activated with 100 credits"}
+
+
+@router.post("/checkout")
+async def create_multi_currency_checkout(
+    request: CheckoutCreateRequest,
+    context: TenantContext = Depends(require_permission("payments.create")),
+    session: AsyncSession = Depends(get_db),
+):
+    """Initiate PKR (PayFast/Safepay/Faysal Bank) or USD (Stripe/Payoneer) checkout."""
+    provider_key = request.provider.strip().lower()
+    if provider_key not in ("payfast", "safepay", "stripe", "payoneer", "bank_transfer", "manual"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported checkout provider '{request.provider}'",
+        )
+
+    purpose = request.purpose.strip().lower()
+    if purpose not in ("subscription", "wallet_topup"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Checkout purpose must be 'subscription' or 'wallet_topup'",
+        )
+
+    default_curr = "PKR" if provider_key in ("payfast", "safepay", "bank_transfer", "manual") else "USD"
+    currency = (request.currency or default_curr).upper()[:3]
+    amount = float(request.amount or 0.0)
+    credits_grant: Optional[float] = None
+    description = request.description or "TaloxTech AI Automation Subscription"
+
+    if purpose == "wallet_topup":
+        pack = get_credit_pack(request.pack_id)
+        if pack:
+            credits_grant = float(pack["credits"])
+            amount = float(pack["amount_pkr"] if currency == "PKR" else pack["amount_usd"])
+            description = pack["name"]
+        elif amount <= 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Provide a valid pack_id or positive amount for wallet top-up",
+            )
+        else:
+            credits_grant = round(amount * (0.04 if currency == "PKR" else 10.0), 2)
+    else:
+        if request.invoice_id:
+            inv_res = await session.execute(
+                select(Invoice).where(Invoice.id == request.invoice_id, Invoice.tenant_id == context.tenant_id)
+            )
+            inv = inv_res.scalar_one_or_none()
+            if not inv:
+                raise HTTPException(status_code=404, detail="Invoice not found")
+            if amount <= 0:
+                amount = float(inv.total)
+            currency = (request.currency or inv.currency or default_curr).upper()[:3]
+            description = f"Invoice {inv.invoice_number}"
+        elif amount <= 0:
+            subs_res = await session.execute(
+                select(ServiceSubscription).where(ServiceSubscription.tenant_id == context.tenant_id)
+            )
+            subs = subs_res.scalars().all()
+            usd_total = sum(float(s.price or 0.0) for s in subs if s.status != "canceled") or 149.0
+            amount = round(usd_total * 278.0, 2) if currency == "PKR" else round(usd_total, 2)
+
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="Checkout amount must be greater than zero")
+
+    provider = get_payment_provider("manual" if provider_key == "bank_transfer" else provider_key)
+    intent = await provider.create_payment_intent(
+        tenant_id=str(context.tenant_id),
+        amount=amount,
+        currency=currency,
+        metadata={
+            "tenant_id": str(context.tenant_id),
+            "purpose": purpose,
+            "credits": credits_grant,
+            "invoice_id": str(request.invoice_id) if request.invoice_id else None,
+            "subscription_id": str(request.subscription_id) if request.subscription_id else None,
+            "description": description,
+        },
+    )
+
+    payment = Payment(
+        tenant_id=context.tenant_id,
+        subscription_id=request.subscription_id,
+        amount=amount,
+        currency=currency,
+        payment_method=provider_key,
+        provider_reference=intent.reference_id,
+        status="pending",
+        paid_at=None,
+    )
+    session.add(payment)
+    await session.commit()
+    await session.refresh(payment)
+
+    return {
+        "success": True,
+        "data": {
+            "payment_id": str(payment.id),
+            "provider": provider_key,
+            "purpose": purpose,
+            "reference_id": intent.reference_id,
+            "amount": amount,
+            "currency": currency,
+            "credits_to_grant": credits_grant,
+            "checkout_url": intent.checkout_url,
+            "checkout_fields": intent.checkout_fields,
+            "instructions": intent.instructions,
+            "is_mock": intent.is_mock,
+            "status": payment.status,
+        },
+        "message": "Checkout session initialized",
+    }
+
+
+@router.post("/webhooks/{provider_name}")
+async def multi_gateway_payment_webhook(
+    provider_name: str,
+    request: Request,
+    stripe_signature: Optional[str] = Header(None, alias="Stripe-Signature"),
+    x_payfast_signature: Optional[str] = Header(None, alias="X-PayFast-Signature"),
+    x_sfpy_signature: Optional[str] = Header(None, alias="X-SFPY-SIGNATURE"),
+    x_payoneer_signature: Optional[str] = Header(None, alias="X-Payoneer-Signature"),
+    x_webhook_signature: Optional[str] = Header(None, alias="X-Webhook-Signature"),
+    session: AsyncSession = Depends(get_db),
+):
+    """Cryptographically verified webhook endpoint for PayFast, Safepay, Stripe, and Payoneer."""
+    normalized = provider_name.strip().lower()
+    if normalized not in ("payfast", "safepay", "stripe", "payoneer"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Automated webhooks are not supported for provider '{provider_name}'",
+        )
+
+    body = await request.body()
+    sig_by_provider = {
+        "stripe": stripe_signature or x_webhook_signature or "",
+        "payfast": x_payfast_signature or x_webhook_signature or "",
+        "safepay": x_sfpy_signature or x_webhook_signature or "",
+        "payoneer": x_payoneer_signature or x_webhook_signature or "",
+    }
+    provider = get_payment_provider(normalized)
+    if not provider.verify_webhook_signature(body, sig_by_provider[normalized]):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid {normalized} webhook signature",
+        )
+
+    try:
+        payload = json.loads(body.decode("utf-8")) if body else {}
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Malformed webhook JSON payload")
+
+    data_obj = (payload.get("data") or {}).get("object") or (payload.get("data") or {})
+    if not isinstance(data_obj, dict):
+        data_obj = {}
+    metadata = data_obj.get("metadata") or payload.get("metadata") or {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+
+    event_type = str(
+        payload.get("type")
+        or payload.get("event")
+        or payload.get("status")
+        or payload.get("err_code")
+        or "payment.succeeded"
+    ).strip().lower()
+    success_events = {
+        "checkout.session.completed",
+        "payment_intent.succeeded",
+        "invoice.paid",
+        "payment.succeeded",
+        "payment.completed",
+        "paid",
+        "completed",
+        "success",
+        "000",
+    }
+    if event_type not in success_events:
+        return {"success": True, "reconciled": False, "message": f"Ignored non-terminal event '{event_type}'"}
+
+    provider_ref = str(
+        payload.get("provider_reference")
+        or data_obj.get("payment_intent")
+        or data_obj.get("token")
+        or payload.get("BASKET_ID")
+        or payload.get("basket_id")
+        or payload.get("transaction_id")
+        or payload.get("reference_id")
+        or data_obj.get("id")
+        or payload.get("id")
+        or ""
+    ).strip()
+
+    tenant_id_raw = metadata.get("tenant_id") or data_obj.get("tenant_id") or payload.get("tenant_id")
+    pending_payment: Optional[Payment] = None
+    if provider_ref:
+        p_res = await session.execute(
+            select(Payment).where(Payment.provider_reference == provider_ref).limit(1)
+        )
+        pending_payment = p_res.scalar_one_or_none()
+        if pending_payment and not tenant_id_raw:
+            tenant_id_raw = str(pending_payment.tenant_id)
+
+    if not tenant_id_raw:
+        return {"success": True, "reconciled": False, "message": "Webhook verified; no matching tenant reference"}
+
+    try:
+        tenant_uuid = uuid.UUID(str(tenant_id_raw))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid tenant_id in webhook payload")
+
+    if not provider_ref:
+        provider_ref = f"{normalized}_{uuid.uuid4().hex[:12]}"
+
+    raw_amount = (
+        metadata.get("amount")
+        or payload.get("TXNAMT")
+        or payload.get("amount")
+        or data_obj.get("amount")
+    )
+    if raw_amount is not None:
+        amount = float(raw_amount)
+    else:
+        cents = (
+            data_obj.get("amount_total")
+            or data_obj.get("amount_received")
+            or data_obj.get("amount_paid")
+            or 0
+        )
+        amount = float(cents) / 100.0
+    if amount <= 0 and pending_payment:
+        amount = float(pending_payment.amount or 0.0)
+
+    default_curr = "PKR" if normalized in ("payfast", "safepay") else "USD"
+    currency = str(
+        metadata.get("currency")
+        or data_obj.get("currency")
+        or payload.get("CURRENCY_CODE")
+        or payload.get("currency")
+        or (pending_payment.currency if pending_payment else default_curr)
+    ).upper()[:3]
+
+    purpose = str(metadata.get("purpose") or payload.get("purpose") or "subscription").lower()
+    raw_credits = metadata.get("credits") or payload.get("credits")
+    credits_grant = float(raw_credits) if raw_credits is not None else None
+
+    invoice_uuid: Optional[uuid.UUID] = None
+    if metadata.get("invoice_id") or payload.get("invoice_id"):
+        try:
+            invoice_uuid = uuid.UUID(str(metadata.get("invoice_id") or payload.get("invoice_id")))
+        except ValueError:
+            invoice_uuid = None
+
+    sub_uuid: Optional[uuid.UUID] = None
+    if metadata.get("subscription_id") or payload.get("subscription_id"):
+        try:
+            sub_uuid = uuid.UUID(str(metadata.get("subscription_id") or payload.get("subscription_id")))
+        except ValueError:
+            sub_uuid = None
+
+    result = await billing_service.reconcile_verified_payment(
+        session=session,
+        tenant_id=tenant_uuid,
+        provider=normalized,
+        provider_reference=provider_ref,
+        amount=amount,
+        currency=currency,
+        purpose=purpose,
+        credits_to_grant=credits_grant,
+        invoice_id=invoice_uuid,
+        subscription_id=sub_uuid,
+    )
+    return {"success": True, **result}
+
+
+@router.post("/{payment_id}/refund-request", status_code=status.HTTP_201_CREATED)
+async def request_payment_refund(
+    payment_id: uuid.UUID,
+    request: RefundRequestCreate,
+    context: TenantContext = Depends(require_permission("payments.create")),
+    session: AsyncSession = Depends(get_db),
+):
+    """Queue a Human-in-the-Loop approval request before refunding any completed payment."""
+    res = await session.execute(
+        select(Payment).where(Payment.id == payment_id, Payment.tenant_id == context.tenant_id)
+    )
+    payment = res.scalar_one_or_none()
+    if not payment:
+        raise ResourceNotFoundError("Payment", str(payment_id))
+    if payment.status != "completed":
+        raise TaloxException(
+            message=f"Only completed payments can be refunded (current status: '{payment.status}').",
+            code="INVALID_REFUND_STATUS",
+            status_code=400,
+        )
+
+    pending_res = await session.execute(
+        select(Approval).where(
+            Approval.tenant_id == context.tenant_id,
+            Approval.action_type == "refund_payment",
+            Approval.status == "pending",
+        )
+    )
+    for app_row in pending_res.scalars().all():
+        if str((app_row.proposed_action or {}).get("payment_id")) == str(payment_id):
+            raise TaloxException(
+                message="A refund approval request for this payment is already pending review.",
+                code="REFUND_ALREADY_PENDING",
+                status_code=409,
+            )
+
+    approval = await approval_manager.request_approval(
+        session=session,
+        tenant_id=context.tenant_id,
+        request=ApprovalCreateRequest(
+            action_type="refund_payment",
+            proposed_action={
+                "payment_id": str(payment.id),
+                "amount": float(payment.amount),
+                "currency": payment.currency,
+                "payment_method": payment.payment_method,
+                "provider_reference": payment.provider_reference,
+                "reason": request.reason.strip(),
+            },
+            requested_by=str(context.user_id),
+            expires_in_hours=72,
+        ),
+    )
+    return {
+        "success": True,
+        "data": {
+            "approval": approval.model_dump(mode="json"),
+            "payment_status": payment.status,
+        },
+        "message": "Refund queued for Human-in-the-Loop admin approval",
     }

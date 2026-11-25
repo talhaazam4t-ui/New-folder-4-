@@ -33,6 +33,7 @@ from app.services.billing_service import (
 from app.services.integration_service import integration_service
 from app.services.outreach_autopilot_service import outreach_autopilot_service
 from app.services.tenant_service import PROTECTED_TENANT_SETTING_KEYS, tenant_service
+from app.services.wallet_service import wallet_service
 from fastapi import APIRouter, Depends, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -290,6 +291,11 @@ async def get_tenant_overview(
         elif app_st == "approved_sent":
             approved_sent_count += 1
 
+    # 6.5. Prepaid Wallet & 7-Day Free Trial State
+    wallet = await wallet_service.get_or_create_wallet(session, tenant_id)
+    wallet_summary = wallet_service._serialize_wallet(wallet)
+    trial_info = wallet_service.get_trial_state(tenant)
+
     # 7. Recent Client-Safe Activity Feed
     audit_res = await session.execute(
         select(AuditLog)
@@ -336,6 +342,8 @@ async def get_tenant_overview(
             "payment_reference": payment_reference,
             "bank_details": COMPANY_BANK_DETAILS,
             "payment_rails": get_payment_rails_info(),
+            "wallet_summary": wallet_summary,
+            "trial_info": trial_info,
             "current_package": current_package,
             "purchased_services": purchased_services,
             "purchased_service_slugs": service_slugs,

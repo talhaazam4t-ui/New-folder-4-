@@ -52,3 +52,29 @@ class InvoiceResponse(BaseModel):
     status: str
     due_at: datetime
     created_at: datetime
+
+
+class WalletSettingsUpdateRequest(BaseModel):
+    low_balance_threshold: Optional[float] = Field(default=None, ge=0.0, le=100000.0)
+    auto_pause_enabled: Optional[bool] = None
+
+
+class CheckoutCreateRequest(BaseModel):
+    provider: str = Field(
+        default="payfast",
+        description="payfast | safepay | stripe | payoneer | bank_transfer",
+    )
+    purpose: str = Field(
+        default="subscription",
+        description="subscription | wallet_topup",
+    )
+    pack_id: Optional[str] = Field(default=None, max_length=60)
+    amount: Optional[float] = Field(default=None, gt=0.0)
+    currency: Optional[str] = Field(default=None, min_length=3, max_length=3)
+    invoice_id: Optional[uuid.UUID] = None
+    subscription_id: Optional[uuid.UUID] = None
+    description: Optional[str] = Field(default=None, max_length=200)
+
+
+class RefundRequestCreate(BaseModel):
+    reason: str = Field(min_length=3, max_length=500)

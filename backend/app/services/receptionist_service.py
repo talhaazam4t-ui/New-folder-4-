@@ -10,6 +10,7 @@ Handles:
    and call logs / booked appointments analytics.
 """
 
+import math
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -742,6 +743,22 @@ class ReceptionistService:
             session.add(log)
 
         await session.commit()
+
+        if status_val in ("completed", "transferred") and duration_sec > 0:
+            from app.services.wallet_service import wallet_service
+
+            billable_minutes = max(1, math.ceil(duration_sec / 60))
+            await wallet_service.debit_credits(
+                session=session,
+                tenant_id=cfg.tenant_id,
+                category="ai_call_minute",
+                unit_count=float(billable_minutes),
+                description=f"AI Voice Receptionist call ({duration_sec}s / {billable_minutes} min)",
+                reference_id=f"retell_call:{external_call_id}",
+                metadata={"duration_seconds": duration_sec, "status": status_val},
+                enforce_pause=False,
+            )
+
         return {"processed": True, "call_log_id": str(log.id), "tenant_id": str(cfg.tenant_id)}
 
     async def handle_telnyx_voice_webhook(
@@ -805,6 +822,10 @@ class ReceptionistService:
         cfg = res.scalar_one_or_none()
         if not cfg:
             raise ResourceNotFoundError("ReceptionistConfig", str(tenant_id))
+
+        from app.services.wallet_service import wallet_service
+
+        await wallet_service.assert_wallet_active(session, tenant_id, estimated_credits=5.0)
 
         call_id = f"sim_call_{uuid.uuid4().hex[:10]}"
         if request.scenario == "emergency_transfer":
@@ -891,6 +912,19 @@ class ReceptionistService:
 
         await session.commit()
         await session.refresh(log)
+
+        billable_minutes = max(1, math.ceil(int(log.duration_seconds or 60) / 60))
+        await wallet_service.debit_credits(
+            session=session,
+            tenant_id=tenant_id,
+            category="ai_call_minute",
+            unit_count=float(billable_minutes),
+            description=f"Simulated AI Receptionist call ({request.scenario}, {billable_minutes} min)",
+            reference_id=f"sim_call:{call_id}",
+            metadata={"scenario": request.scenario},
+            enforce_pause=False,
+        )
+
         return self._to_call_dict(log)
 
     async def list_calls_and_summary(

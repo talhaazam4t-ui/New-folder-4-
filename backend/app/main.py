@@ -21,7 +21,9 @@ from app.core.exceptions import TaloxException
 from app.core.logging import logger, setup_logging
 from app.core.rate_limit import limiter
 from app.database.supabase import get_session_factory, init_db
+from app.services.job_engine_service import job_engine_service
 from app.services.outreach_autopilot_service import outreach_autopilot_service
+from app.services.wallet_service import wallet_service
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -64,6 +66,26 @@ async def _run_daily_outreach_autopilot_tick() -> None:
         logger.error("Daily global outreach autopilot tick failed", error=str(exc))
 
 
+async def _run_scheduled_jobs_tick() -> None:
+    """Periodic worker wrapper for DB-backed delayed asyncio jobs & exponential backoff retries."""
+    try:
+        factory = get_session_factory()
+        async with factory() as session:
+            await job_engine_service.process_due_jobs(session)
+    except Exception as exc:
+        logger.error("Scheduled jobs tick failed", error=str(exc))
+
+
+async def _run_trial_expiration_tick() -> None:
+    """Periodic worker wrapper to expire unpaid 7-day free trials."""
+    try:
+        factory = get_session_factory()
+        async with factory() as session:
+            await wallet_service.expire_elapsed_trials(session)
+    except Exception as exc:
+        logger.error("Trial expiration tick failed", error=str(exc))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application startup and shutdown lifecycle management."""
@@ -97,6 +119,16 @@ async def lifespan(app: FastAPI):
             job_id="daily_global_outreach_autopilot",
             func=_run_daily_outreach_autopilot_tick,
             seconds=1800,
+        )
+        automation_scheduler.schedule_interval_job(
+            job_id="native_scheduled_jobs_worker",
+            func=_run_scheduled_jobs_tick,
+            seconds=30,
+        )
+        automation_scheduler.schedule_interval_job(
+            job_id="free_trial_expiration_sweep",
+            func=_run_trial_expiration_tick,
+            seconds=900,
         )
 
     yield

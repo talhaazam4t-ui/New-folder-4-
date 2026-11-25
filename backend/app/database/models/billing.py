@@ -1,13 +1,13 @@
-"""SQLAlchemy Models for Payments and Invoices.
+"""SQLAlchemy Models for Payments, Invoices, Prepaid Credit Wallets, and Usage Ledger.
 """
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from app.database.models.base import Base, TimestampMixin
 from app.database.models.tenant import GUID
-from sqlalchemy import DateTime, ForeignKey, Numeric, String
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 
@@ -51,3 +51,61 @@ class Invoice(Base, TimestampMixin):
     currency: Mapped[str] = mapped_column(String(10), default="USD", nullable=False)
     status: Mapped[str] = mapped_column(String(50), default="issued", nullable=False, index=True)
     due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class TenantWallet(Base, TimestampMixin):
+    __tablename__ = "tenant_wallets"
+
+    id: Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(),
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        unique=True,
+        nullable=False,
+        index=True,
+    )
+    balance_credits: Mapped[float] = mapped_column(Numeric(14, 2), default=0.00, nullable=False)
+    reserved_credits: Mapped[float] = mapped_column(Numeric(14, 2), default=0.00, nullable=False)
+    currency: Mapped[str] = mapped_column(String(10), default="USD", nullable=False)
+    low_balance_threshold: Mapped[float] = mapped_column(Numeric(14, 2), default=25.00, nullable=False)
+    auto_pause_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    is_paused: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    low_balance_notified_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    lifetime_credited: Mapped[float] = mapped_column(Numeric(14, 2), default=0.00, nullable=False)
+    lifetime_debited: Mapped[float] = mapped_column(Numeric(14, 2), default=0.00, nullable=False)
+
+
+class UsageLedger(Base):
+    __tablename__ = "usage_ledger"
+    __table_args__ = (
+        Index("uq_usage_ledger_tenant_ref", "tenant_id", "reference_id", unique=True),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(),
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    wallet_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(),
+        ForeignKey("tenant_wallets.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    entry_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    category: Mapped[str] = mapped_column(String(80), nullable=False)
+    credits_delta: Mapped[float] = mapped_column(Numeric(14, 2), nullable=False)
+    balance_after: Mapped[float] = mapped_column(Numeric(14, 2), nullable=False)
+    unit_count: Mapped[float] = mapped_column(Numeric(12, 2), default=1.00, nullable=False)
+    unit_cost: Mapped[float] = mapped_column(Numeric(12, 4), default=0.0000, nullable=False)
+    reference_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    metadata_: Mapped[dict] = mapped_column("metadata", JSON, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+        index=True,
+    )

@@ -9,14 +9,17 @@ from app.database.models.agent import (
     TenantAgent,
 )
 from app.database.models.automation import (
+    AnalyticsEvent,
     Approval,
     AuditLog,
+    AuthToken,
     Integration,
     Notification,
+    ScheduledJob,
     UsageRecord,
 )
 from app.database.models.base import Base, TimestampMixin
-from app.database.models.billing import Invoice, Payment
+from app.database.models.billing import Invoice, Payment, TenantWallet, UsageLedger
 from app.database.models.business import BusinessMetric, BusinessRecord
 from app.database.models.finance import (
     FinancialAccount,
@@ -44,6 +47,8 @@ __all__ = [
     "ServiceSubscription",
     "Payment",
     "Invoice",
+    "TenantWallet",
+    "UsageLedger",
     "BusinessRecord",
     "BusinessMetric",
     "FinancialAccount",
@@ -63,6 +68,9 @@ __all__ = [
     "Notification",
     "AuditLog",
     "UsageRecord",
+    "AuthToken",
+    "AnalyticsEvent",
+    "ScheduledJob",
     "PlatformVoiceCredential",
     "ReceptionistConfig",
     "ReceptionistCallLog",
