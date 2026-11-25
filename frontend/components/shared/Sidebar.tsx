@@ -15,6 +15,7 @@ import {
   X,
   LifeBuoy,
   Zap,
+  Target,
 } from "lucide-react";
 import {
   getActiveTenant,
@@ -132,6 +133,7 @@ export function Sidebar({
       visible: hasAny(["multi_agent_orchestration", "lead_crm", "marketing_growth", "lead_funnel"]),
     },
     { label: "Growth Upsells", href: "/growth-tools", icon: Zap, visible: true },
+    { label: "Lead Hunter (Intl)", href: "/lead-hunter", icon: Target, visible: true },
     { label: "Integrations & Security", href: "/settings", icon: Settings, visible: true },
   ];
 

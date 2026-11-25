@@ -220,11 +220,12 @@ class Settings(BaseSettings):
         alias="RESEND_FROM_EMAIL",
     )
 
-    # Google Services (Maps/Places, Gmail, Calendar OAuth)
+    # Google Services (Maps/Places, Gmail, Calendar OAuth) & Apollo.io Lead Enrichment
     google_client_id: Optional[str] = Field(default=None, alias="GOOGLE_CLIENT_ID")
     google_client_secret: Optional[str] = Field(default=None, alias="GOOGLE_CLIENT_SECRET")
     google_redirect_uri: Optional[str] = Field(default=None, alias="GOOGLE_REDIRECT_URI")
     google_places_api_key: Optional[str] = Field(default=None, alias="GOOGLE_PLACES_API_KEY")
+    apollo_api_key: Optional[str] = Field(default=None, alias="APOLLO_API_KEY")
 
     # Office Receptionist — AI Voice Agent (Retell AI, Telnyx, Cal.com)
     retell_api_key: Optional[str] = Field(default=None, alias="RETELL_API_KEY")

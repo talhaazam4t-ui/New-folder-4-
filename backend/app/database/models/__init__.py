@@ -33,6 +33,13 @@ from app.database.models.knowledge import (
     OmnichannelSession,
     WhatsAppMessage,
 )
+from app.database.models.lead_hunter import (
+    HunterConversation,
+    HunterDemo,
+    HunterFollowup,
+    HunterLead,
+    HunterModuleSetting,
+)
 from app.database.models.marketing import Lead, MarketingCampaign, MarketingMetric
 from app.database.models.receptionist import (
     PlatformVoiceCredential,
@@ -95,4 +102,9 @@ __all__ = [
     "SocialDmLog",
     "ReviewRequest",
     "DocumentExtraction",
+    "HunterLead",
+    "HunterDemo",
+    "HunterFollowup",
+    "HunterConversation",
+    "HunterModuleSetting",
 ]

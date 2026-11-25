@@ -74,6 +74,10 @@ services:
         sync: false
       - key: GOOGLE_PLACES_API_KEY
         sync: false
+      - key: APOLLO_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
       - key: RETELL_API_KEY
         sync: false
       - key: RETELL_WEBHOOK_SECRET

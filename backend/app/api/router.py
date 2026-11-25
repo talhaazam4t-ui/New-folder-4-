@@ -14,6 +14,7 @@ from app.api.v1.inbox import router as inbox_router
 from app.api.v1.integrations import router as integrations_router
 from app.api.v1.internal import router as internal_router
 from app.api.v1.knowledge import router as knowledge_router
+from app.api.v1.lead_hunter import router as lead_hunter_router
 from app.api.v1.marketing import router as marketing_router
 from app.api.v1.notifications import router as notifications_router
 from app.api.v1.payments import router as payments_router
@@ -50,5 +51,6 @@ api_v1_router.include_router(support_router)
 api_v1_router.include_router(receptionist_router)
 api_v1_router.include_router(knowledge_router)
 api_v1_router.include_router(growth_upsells_router)
+api_v1_router.include_router(lead_hunter_router)
 api_v1_router.include_router(internal_router)
 api_v1_router.include_router(admin_router)

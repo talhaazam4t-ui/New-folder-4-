@@ -19,6 +19,7 @@ from app.database.supabase import get_db
 from app.dependencies import require_permission
 from app.services.call_intelligence_service import call_intelligence_service
 from app.services.job_engine_service import job_engine_service
+from app.services.lead_hunter_outreach_service import lead_hunter_outreach_service
 from app.services.outreach_autopilot_service import outreach_autopilot_service
 from app.services.wallet_service import wallet_service
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
@@ -66,6 +67,7 @@ async def trigger_internal_cron_tick(
     expired_trials_res = await wallet_service.expire_elapsed_trials(session)
     autopilot_res = await outreach_autopilot_service.run_scheduled_autopilot_tick(session)
     weekly_roi_res = await call_intelligence_service.run_monday_weekly_roi_tick(session)
+    hunter_fu_res = await lead_hunter_outreach_service.process_due_followups_global(session)
 
     return {
         "success": True,
@@ -77,6 +79,7 @@ async def trigger_internal_cron_tick(
             "trial_expiration": expired_trials_res,
             "outreach_autopilot": autopilot_res,
             "weekly_roi": weekly_roi_res,
+            "lead_hunter_followups": hunter_fu_res,
         },
         "message": "Native asyncio scheduler tick completed cleanly",
     }
