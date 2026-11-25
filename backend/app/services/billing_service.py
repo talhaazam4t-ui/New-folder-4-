@@ -16,7 +16,7 @@ from app.config import settings
 from app.core.exceptions import ResourceNotFoundError, TaloxException
 from app.core.logging import logger
 from app.database.models.automation import AuditLog
-from app.database.models.billing import Invoice, Payment
+from app.database.models.billing import Invoice, Payment, Subscription
 from app.database.models.service import Service, ServiceSubscription
 from app.database.models.tenant import Tenant
 from app.schemas.payment import (
@@ -122,33 +122,48 @@ COMPANY_BANK_DETAILS = {
 
 
 def get_payment_rails_info() -> Dict[str, Any]:
-    """Return client-safe local (Faysal Bank/PayFast/Safepay PKR) and international (Payoneer/Stripe USD) rails."""
+    """Return client-safe payment rails (Lemon Squeezy Global Subscriptions + PKR/USD gateways + Faysal Bank)."""
     from app.services.wallet_service import CREDIT_PACKS, TRIAL_DURATION_DAYS, TRIAL_GRANT_CREDITS
 
-    payoneer_email = (settings.payoneer_account_email or "").strip()
-    payoneer_details = (settings.payoneer_receiving_details or "").strip()
-    payoneer_active = bool(payoneer_email and payoneer_email.lower() != "mock")
+    ls_store = (settings.lemonsqueezy_store_id or "").strip()
+    ls_key = (settings.lemonsqueezy_api_key or "").strip()
+    ls_enabled = bool(
+        ls_store
+        and (
+            ls_key
+            or settings.lemonsqueezy_variant_id_starter
+            or settings.lemonsqueezy_checkout_url_starter
+        )
+    )
     stripe_live = bool((settings.stripe_secret_key or "").strip().startswith("sk_"))
     payfast_live = bool((settings.payfast_merchant_id or "").strip() and (settings.payfast_secured_key or "").strip())
     safepay_live = bool((settings.safepay_api_key or "").strip())
 
     return {
         "bank_transfer": COMPANY_BANK_DETAILS,
-        "payoneer": {
-            "enabled": payoneer_active,
-            "status": "active" if payoneer_active else "approval_pending",
-            "account_email": payoneer_email if payoneer_active else "Pending Payoneer Approval",
-            "receiving_details": (
-                payoneer_details
-                or (
-                    f"Send international USD subscription/retainer payments via Payoneer to {payoneer_email}, then submit your Transaction Reference ID."
-                    if payoneer_active
-                    else "Your Payoneer USD receiving account is currently pending verification. Once approved, set PAYONEER_ACCOUNT_EMAIL & PAYONEER_RECEIVING_DETAILS in Render to display it automatically."
-                )
+        "lemonsqueezy": {
+            "enabled": ls_enabled,
+            "test_mode": bool(settings.lemonsqueezy_test_mode),
+            "store_id": ls_store or None,
+            "status": (
+                "test_mode"
+                if (ls_enabled and settings.lemonsqueezy_test_mode)
+                else ("active" if ls_enabled else "not_configured")
             ),
-            "currency": "USD",
+            "variants": {
+                "starter": settings.lemonsqueezy_variant_id_starter,
+                "growth": settings.lemonsqueezy_variant_id_growth,
+                "enterprise": settings.lemonsqueezy_variant_id_enterprise,
+            },
         },
         "gateways": {
+            "lemonsqueezy": {
+                "provider": "lemonsqueezy",
+                "name": "Lemon Squeezy (Global Cards / PayPal / Apple Pay — Subscriptions)",
+                "currency": "PKR",
+                "status": "test_mode" if settings.lemonsqueezy_test_mode else ("live" if ls_enabled else "sandbox"),
+                "enabled": ls_enabled,
+            },
             "payfast": {
                 "provider": "payfast",
                 "name": "PayFast Pakistan (Cards / JazzCash / Easypaisa / Bank)",
@@ -169,13 +184,6 @@ def get_payment_rails_info() -> Dict[str, Any]:
                 "currency": "USD",
                 "status": "live" if stripe_live else "sandbox",
                 "enabled": stripe_live,
-            },
-            "payoneer": {
-                "provider": "payoneer",
-                "name": "Payoneer Business (USD Receiving Account)",
-                "currency": "USD",
-                "status": "live" if payoneer_active else "approval_pending",
-                "enabled": payoneer_active,
             },
             "bank_transfer": {
                 "provider": "bank_transfer",
@@ -1119,6 +1127,308 @@ class BillingService:
         )
 
         return {"payment_id": str(payment.id), "status": "refunded", "idempotent": False}
+
+    @staticmethod
+    def _parse_optional_iso(raw: Optional[str]) -> Optional[datetime]:
+        if not raw:
+            return None
+        try:
+            dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _resolve_ls_tier(variant_id: str, variant_name: Optional[str], custom_plan: Optional[str]) -> str:
+        if custom_plan:
+            cp = custom_plan.strip().lower()
+            if "ent" in cp:
+                return "enterprise"
+            if "grow" in cp or "pro" in cp:
+                return "growth"
+            if "start" in cp:
+                return "starter"
+        vid = (variant_id or "").strip()
+        if vid and settings.lemonsqueezy_variant_id_enterprise and vid == settings.lemonsqueezy_variant_id_enterprise.strip():
+            return "enterprise"
+        if vid and settings.lemonsqueezy_variant_id_growth and vid == settings.lemonsqueezy_variant_id_growth.strip():
+            return "growth"
+        if vid and settings.lemonsqueezy_variant_id_starter and vid == settings.lemonsqueezy_variant_id_starter.strip():
+            return "starter"
+        vname = (variant_name or "").lower()
+        if "ent" in vname:
+            return "enterprise"
+        if "grow" in vname or "pro" in vname:
+            return "growth"
+        return "starter"
+
+    async def get_tenant_lemon_subscription(
+        self,
+        session: AsyncSession,
+        tenant_id: uuid.UUID,
+    ) -> Optional[Dict[str, Any]]:
+        res = await session.execute(
+            select(Subscription)
+            .where(Subscription.tenant_id == tenant_id)
+            .order_by(Subscription.updated_at.desc())
+            .limit(1)
+        )
+        sub = res.scalar_one_or_none()
+        if not sub:
+            return None
+        return {
+            "id": str(sub.id),
+            "provider": sub.provider,
+            "provider_subscription_id": sub.provider_subscription_id,
+            "tier": sub.tier,
+            "status": sub.status,
+            "product_name": sub.product_name,
+            "variant_name": sub.variant_name,
+            "renews_at": sub.renews_at.isoformat() if sub.renews_at else None,
+            "ends_at": sub.ends_at.isoformat() if sub.ends_at else None,
+            "customer_portal_url": sub.customer_portal_url,
+            "update_payment_method_url": sub.update_payment_method_url,
+            "is_paused": bool(sub.is_paused),
+        }
+
+    async def handle_lemonsqueezy_webhook_event(
+        self,
+        session: AsyncSession,
+        event_name: str,
+        payload: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Process Lemon Squeezy webhook events (`subscription_created`, `subscription_updated`,
+        `subscription_cancelled`, `order_created`) and sync `public.subscriptions` + tenant status.
+        """
+        meta = payload.get("meta") or {}
+        custom_data = meta.get("custom_data") or {}
+        data_obj = payload.get("data") or {}
+        attrs = data_obj.get("attributes") or {}
+        provider_obj_id = str(data_obj.get("id") or attrs.get("subscription_id") or "").strip()
+        clean_event = (event_name or str(meta.get("event_name") or "")).strip().lower()
+
+        # Resolve tenant_id either from checkout custom metadata or existing Subscription record
+        tenant_uuid: Optional[uuid.UUID] = None
+        if custom_data.get("tenant_id"):
+            try:
+                tenant_uuid = uuid.UUID(str(custom_data["tenant_id"]))
+            except ValueError:
+                tenant_uuid = None
+
+        existing_sub: Optional[Subscription] = None
+        if provider_obj_id:
+            s_res = await session.execute(
+                select(Subscription).where(Subscription.provider_subscription_id == provider_obj_id)
+            )
+            existing_sub = s_res.scalar_one_or_none()
+            if existing_sub and not tenant_uuid:
+                tenant_uuid = existing_sub.tenant_id
+
+        if not tenant_uuid:
+            return {
+                "reconciled": False,
+                "event_name": clean_event,
+                "message": "Webhook verified; no tenant_id found in custom_data or subscriptions",
+            }
+
+        t_res = await session.execute(select(Tenant).where(Tenant.id == tenant_uuid))
+        tenant = t_res.scalar_one_or_none()
+        if not tenant:
+            return {
+                "reconciled": False,
+                "event_name": clean_event,
+                "message": "Webhook verified; tenant not found",
+            }
+
+        # Order payments (wallet top-ups or initial order webhook)
+        if clean_event == "order_created":
+            purpose = str(custom_data.get("purpose") or "subscription").lower()
+            total_cents = float(attrs.get("total") or 0)
+            amount_major = round(total_cents / 100.0, 2) if total_cents > 0 else float(custom_data.get("amount") or 0.0)
+            currency = str(attrs.get("currency") or custom_data.get("currency") or "USD").upper()[:3]
+            raw_credits = custom_data.get("credits")
+            credits_val = float(raw_credits) if raw_credits is not None else None
+            order_ref = f"ls_order_{provider_obj_id or uuid.uuid4().hex[:10]}"
+            rec = await self.reconcile_verified_payment(
+                session=session,
+                tenant_id=tenant_uuid,
+                provider="lemonsqueezy",
+                provider_reference=order_ref,
+                amount=amount_major or 1.0,
+                currency=currency,
+                purpose=purpose,
+                credits_to_grant=credits_val,
+            )
+            return {"event_name": clean_event, **rec}
+
+        if clean_event not in ("subscription_created", "subscription_updated", "subscription_cancelled"):
+            return {
+                "reconciled": False,
+                "event_name": clean_event,
+                "message": f"Ignored unhandled Lemon Squeezy event '{clean_event}'",
+            }
+
+        sub_id_str = provider_obj_id or f"ls_sub_{uuid.uuid4().hex[:12]}"
+        variant_id = str(attrs.get("variant_id") or (existing_sub.variant_id if existing_sub else ""))
+        product_id = str(attrs.get("product_id") or (existing_sub.product_id if existing_sub else ""))
+        customer_id = str(attrs.get("customer_id") or (existing_sub.provider_customer_id if existing_sub else ""))
+        product_name = attrs.get("product_name") or (existing_sub.product_name if existing_sub else None)
+        variant_name = attrs.get("variant_name") or (existing_sub.variant_name if existing_sub else None)
+        tier = self._resolve_ls_tier(variant_id, variant_name, custom_data.get("plan_name"))
+
+        raw_status = str(attrs.get("status") or "").strip().lower()
+        if clean_event == "subscription_cancelled":
+            sub_status = "cancelled"
+        elif raw_status:
+            sub_status = raw_status
+        else:
+            sub_status = "active"
+
+        urls = attrs.get("urls") or {}
+        portal_url = urls.get("customer_portal") or (existing_sub.customer_portal_url if existing_sub else None)
+        update_pm_url = urls.get("update_payment_method") or (existing_sub.update_payment_method_url if existing_sub else None)
+        renews_at = self._parse_optional_iso(attrs.get("renews_at"))
+        ends_at = self._parse_optional_iso(attrs.get("ends_at"))
+        trial_ends_at = self._parse_optional_iso(attrs.get("trial_ends_at"))
+        is_paused = bool(attrs.get("pause") is not None or sub_status == "paused")
+
+        if existing_sub:
+            existing_sub.provider_customer_id = customer_id or existing_sub.provider_customer_id
+            existing_sub.order_id = str(attrs.get("order_id") or existing_sub.order_id or "") or None
+            existing_sub.product_id = product_id or existing_sub.product_id
+            existing_sub.variant_id = variant_id or existing_sub.variant_id
+            existing_sub.product_name = product_name
+            existing_sub.variant_name = variant_name
+            existing_sub.tier = tier
+            existing_sub.status = sub_status
+            existing_sub.card_brand = attrs.get("card_brand") or existing_sub.card_brand
+            existing_sub.card_last_four = attrs.get("card_last_four") or existing_sub.card_last_four
+            existing_sub.billing_anchor = attrs.get("billing_anchor") or existing_sub.billing_anchor
+            existing_sub.renews_at = renews_at or existing_sub.renews_at
+            existing_sub.ends_at = ends_at or existing_sub.ends_at
+            existing_sub.trial_ends_at = trial_ends_at or existing_sub.trial_ends_at
+            existing_sub.customer_portal_url = portal_url
+            existing_sub.update_payment_method_url = update_pm_url
+            existing_sub.is_paused = is_paused
+            existing_sub.metadata_ = {"last_event": clean_event, "test_mode": bool(meta.get("test_mode"))}
+            sub_row = existing_sub
+        else:
+            sub_row = Subscription(
+                tenant_id=tenant_uuid,
+                provider="lemon_squeezy",
+                provider_subscription_id=sub_id_str,
+                provider_customer_id=customer_id,
+                order_id=str(attrs.get("order_id")) if attrs.get("order_id") else None,
+                product_id=product_id,
+                variant_id=variant_id,
+                product_name=product_name,
+                variant_name=variant_name,
+                tier=tier,
+                status=sub_status,
+                card_brand=attrs.get("card_brand"),
+                card_last_four=attrs.get("card_last_four"),
+                billing_anchor=attrs.get("billing_anchor"),
+                renews_at=renews_at,
+                ends_at=ends_at,
+                trial_ends_at=trial_ends_at,
+                customer_portal_url=portal_url,
+                update_payment_method_url=update_pm_url,
+                is_paused=is_paused,
+                metadata_={"last_event": clean_event, "test_mode": bool(meta.get("test_mode"))},
+            )
+            session.add(sub_row)
+
+        now_utc = datetime.now(timezone.utc)
+        is_entitled = sub_status in ("active", "on_trial")
+        curr_settings = dict(tenant.settings or {})
+        curr_settings["subscription_provider"] = "lemon_squeezy"
+        curr_settings["subscription_status"] = sub_status
+        curr_settings["active_plan_tier"] = tier
+        if customer_id:
+            curr_settings["lemon_squeezy_customer_id"] = customer_id
+
+        if is_entitled:
+            curr_settings["payment_approved"] = True
+            curr_settings["automation_approved_by_owner"] = True
+            curr_settings["trial_active"] = sub_status == "on_trial"
+            curr_settings["trial_expired"] = False
+            curr_settings["payment_approved_at"] = now_utc.isoformat()
+            if tenant.status in ("pending_approval", "unpaid"):
+                tenant.status = "active"
+        elif sub_status in ("cancelled", "expired", "unpaid", "paused"):
+            curr_settings["payment_approved"] = False
+            curr_settings["automation_approved_by_owner"] = False
+            if sub_status in ("expired", "unpaid"):
+                tenant.status = "pending_approval"
+
+        tenant.settings = curr_settings
+
+        # Sync existing ServiceSubscription rows for this tenant
+        svc_subs_res = await session.execute(
+            select(ServiceSubscription).where(ServiceSubscription.tenant_id == tenant_uuid)
+        )
+        for srv_sub in svc_subs_res.scalars().all():
+            if is_entitled:
+                srv_sub.status = "active"
+                srv_sub.plan_name = tier
+                if renews_at:
+                    srv_sub.expires_at = renews_at
+            elif sub_status in ("cancelled", "expired"):
+                srv_sub.status = "canceled"
+
+        await session.flush()
+        session.add(
+            AuditLog(
+                tenant_id=tenant_uuid,
+                actor_type="system",
+                action=f"lemonsqueezy.{clean_event}",
+                resource_type="subscription",
+                resource_id=sub_row.id,
+                metadata_={
+                    "provider_subscription_id": sub_id_str,
+                    "tier": tier,
+                    "status": sub_status,
+                },
+            )
+        )
+        await session.commit()
+        await session.refresh(sub_row)
+
+        if clean_event == "subscription_created" and is_entitled:
+            from app.services.wallet_service import PLAN_ACTIVATION_BONUS_CREDITS, wallet_service
+
+            await wallet_service.credit_wallet(
+                session=session,
+                tenant_id=tenant_uuid,
+                credits=PLAN_ACTIVATION_BONUS_CREDITS,
+                category="plan_grant",
+                description=f"Lemon Squeezy {tier.title()} subscription activation bonus ({sub_id_str})",
+                entry_type="plan_grant",
+                reference_id=f"ls_sub_bonus:{sub_id_str}",
+                metadata={"provider": "lemon_squeezy", "subscription_id": sub_id_str, "tier": tier},
+            )
+
+        from app.services.notification_service import notification_service
+
+        await notification_service.send_notification(
+            session=session,
+            tenant_id=tenant_uuid,
+            title=f"Subscription {sub_status.replace('_', ' ').title()} ({tier.title()})",
+            message=(
+                f"Lemon Squeezy event '{clean_event}' processed for {tier.title()} tier "
+                f"(status: {sub_status})."
+            ),
+            channel="in_app",
+        )
+
+        return {
+            "reconciled": True,
+            "event_name": clean_event,
+            "subscription_id": str(sub_row.id),
+            "provider_subscription_id": sub_id_str,
+            "tier": tier,
+            "status": sub_status,
+        }
 
 
 billing_service = BillingService()

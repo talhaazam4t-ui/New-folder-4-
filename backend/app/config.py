@@ -179,10 +179,20 @@ class Settings(BaseSettings):
     meta_app_secret: Optional[str] = Field(default=None, alias="META_APP_SECRET")
     meta_config_id: Optional[str] = Field(default=None, alias="META_CONFIG_ID")
 
-    # Payment Rails & Multi-Currency Gateways (PKR + USD)
-    payment_provider: str = Field(default="manual", alias="PAYMENT_PROVIDER")  # manual | stripe | payfast | safepay | payoneer | mock
+    # Payment Rails & Multi-Currency Gateways (Lemon Squeezy + PKR/USD)
+    payment_provider: str = Field(default="manual", alias="PAYMENT_PROVIDER")  # manual | lemonsqueezy | stripe | payfast | safepay | mock
     payment_secret_key: Optional[str] = Field(default=None, alias="PAYMENT_SECRET_KEY")
     payment_webhook_secret: Optional[str] = Field(default=None, alias="PAYMENT_WEBHOOK_SECRET")
+    lemonsqueezy_api_key: Optional[str] = Field(default=None, alias="LEMONSQUEEZY_API_KEY")
+    lemonsqueezy_store_id: Optional[str] = Field(default=None, alias="LEMONSQUEEZY_STORE_ID")
+    lemonsqueezy_webhook_secret: Optional[str] = Field(default=None, alias="LEMONSQUEEZY_WEBHOOK_SECRET")
+    lemonsqueezy_test_mode: bool = Field(default=True, alias="LEMONSQUEEZY_TEST_MODE")
+    lemonsqueezy_variant_id_starter: Optional[str] = Field(default=None, alias="LEMONSQUEEZY_VARIANT_ID_STARTER")
+    lemonsqueezy_variant_id_growth: Optional[str] = Field(default=None, alias="LEMONSQUEEZY_VARIANT_ID_GROWTH")
+    lemonsqueezy_variant_id_enterprise: Optional[str] = Field(default=None, alias="LEMONSQUEEZY_VARIANT_ID_ENTERPRISE")
+    lemonsqueezy_checkout_url_starter: Optional[str] = Field(default=None, alias="LEMONSQUEEZY_CHECKOUT_URL_STARTER")
+    lemonsqueezy_checkout_url_growth: Optional[str] = Field(default=None, alias="LEMONSQUEEZY_CHECKOUT_URL_GROWTH")
+    lemonsqueezy_checkout_url_enterprise: Optional[str] = Field(default=None, alias="LEMONSQUEEZY_CHECKOUT_URL_ENTERPRISE")
     stripe_secret_key: Optional[str] = Field(default=None, alias="STRIPE_SECRET_KEY")
     stripe_webhook_secret: Optional[str] = Field(default=None, alias="STRIPE_WEBHOOK_SECRET")
     payfast_merchant_id: Optional[str] = Field(default=None, alias="PAYFAST_MERCHANT_ID")
@@ -197,12 +207,6 @@ class Settings(BaseSettings):
         default="https://sandbox.api.getsafepay.com",
         alias="SAFEPAY_BASE_URL",
     )
-    payoneer_account_email: Optional[str] = Field(default=None, alias="PAYONEER_ACCOUNT_EMAIL")
-    payoneer_receiving_details: Optional[str] = Field(
-        default=None,
-        alias="PAYONEER_RECEIVING_DETAILS",
-    )
-    payoneer_webhook_secret: Optional[str] = Field(default=None, alias="PAYONEER_WEBHOOK_SECRET")
 
     # External Cron / Native Asyncio Scheduler Tick Protection
     cron_secret: Optional[str] = Field(default=None, alias="CRON_SECRET")

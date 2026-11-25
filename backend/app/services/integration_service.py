@@ -1038,16 +1038,84 @@ class IntegrationService:
         message_id: Optional[str] = None,
         user_id: Optional[uuid.UUID] = None,
         dispatch_live_reply: bool = False,
+        interactive_reply_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Process an inbound WhatsApp message with financial ambiguity guardrails.
-
-        1. Unambiguous financial message -> records `BusinessRecord` (`source='whatsapp'`).
-        2. Ambiguous financial message -> queues `Approval` (`confirm_ambiguous_whatsapp_transaction`)
-           and sends notification WITHOUT altering the ledger.
-        3. Customer inquiry -> captures `Lead` (`source='whatsapp'`) and drafts fast-tier AI reply.
+        """Process an inbound WhatsApp message with unified inbox logging, no-show recovery,
+        financial ambiguity guardrails, HITL live takeover pause, and RAG grounding.
         """
-        parsed = whatsapp_client.parse_and_classify_inbound_message(message_text)
+        from app.services.inbox_service import inbox_service
+        from app.services.noshow_recovery_service import noshow_recovery_service
+        from app.services.rag_service import rag_service
+
         msg_ref = message_id or f"wamid.{uuid.uuid4().hex[:10]}"
+        chat_session = await inbox_service.get_or_create_session(
+            session=session,
+            tenant_id=tenant_id,
+            channel="whatsapp",
+            external_user_id=sender_phone,
+            contact_name=sender_name,
+        )
+        await inbox_service.record_message(
+            session=session,
+            tenant_id=tenant_id,
+            chat_session=chat_session,
+            direction="inbound",
+            sender_id=sender_phone,
+            content=message_text,
+            message_id=msg_ref,
+            raw_payload={"interactive_reply_id": interactive_reply_id} if interactive_reply_id else {},
+        )
+
+        # 0. Interactive Appointment Confirm / Reschedule Reply (No-Show Recovery)
+        reply_id_str = (interactive_reply_id or "").strip()
+        if reply_id_str.startswith(("appt_confirm:", "appt_reschedule:")):
+            prefix, _, raw_call_id = reply_id_str.partition(":")
+            reply_action = "confirm" if prefix == "appt_confirm" else "reschedule"
+            parsed_call_uuid: Optional[uuid.UUID] = None
+            try:
+                if raw_call_id:
+                    parsed_call_uuid = uuid.UUID(raw_call_id)
+            except ValueError:
+                parsed_call_uuid = None
+
+            noshow_res = await noshow_recovery_service.handle_appointment_reply(
+                session=session,
+                tenant_id=tenant_id,
+                sender_phone=sender_phone,
+                reply_action=reply_action,
+                call_log_id=parsed_call_uuid,
+            )
+            if noshow_res.get("handled"):
+                reply_txt = str(noshow_res.get("reply_text") or "Appointment updated.")
+                await inbox_service.record_message(
+                    session=session,
+                    tenant_id=tenant_id,
+                    chat_session=chat_session,
+                    direction="outbound",
+                    sender_id="ai_noshow_recovery",
+                    content=reply_txt,
+                )
+                await session.commit()
+                if dispatch_live_reply and sender_phone:
+                    try:
+                        wa_creds = await self.get_tenant_whatsapp_credentials(session, tenant_id)
+                        await whatsapp_client.send_text_message(
+                            tenant_id=str(tenant_id),
+                            to_phone=sender_phone,
+                            message_body=reply_txt,
+                            phone_number_id=wa_creds.get("phone_number_id"),
+                            access_token=wa_creds.get("access_token"),
+                        )
+                    except Exception as exc:
+                        logger.warning("Failed to dispatch no-show recovery reply", error=str(exc))
+                return {
+                    "classification": f"appointment_{reply_action}",
+                    "requires_confirmation": False,
+                    "session_id": str(chat_session.id),
+                    **noshow_res,
+                }
+
+        parsed = whatsapp_client.parse_and_classify_inbound_message(message_text)
 
         if parsed.intent_type == "financial_confirmed" and parsed.amount and parsed.record_type:
             record = await business_service.create_record(
@@ -1064,7 +1132,6 @@ class IntegrationService:
                     reference_id=msg_ref,
                 ),
             )
-            # Mirror into FinancialTransaction ledger so /finance and /dashboard stay in sync
             from app.database.models.finance import FinancialTransaction
             ft_type = "expense" if parsed.record_type == "expense" else ("rent" if parsed.record_type == "rent" else "income")
             session.add(
@@ -1093,6 +1160,7 @@ class IntegrationService:
                 "business_record_id": str(record.id),
                 "amount": parsed.amount,
                 "record_type": parsed.record_type,
+                "session_id": str(chat_session.id),
             }
 
         if parsed.intent_type == "financial_ambiguous":
@@ -1124,9 +1192,29 @@ class IntegrationService:
                 "requires_confirmation": True,
                 "approval_id": str(approval.id),
                 "business_record_id": None,
+                "session_id": str(chat_session.id),
             }
 
-        # General customer lead / inquiry
+        # HITL Live Takeover Gate: pause AI auto-replies immediately while human staff chats
+        if chat_session.human_takeover:
+            await session.commit()
+            await notification_service.send_notification(
+                session=session,
+                tenant_id=tenant_id,
+                title=f"Live Inbox Reply Needed: {sender_name}",
+                message=f"{sender_name} ({sender_phone}) sent: '{message_text[:140]}' (AI paused for human takeover).",
+                channel="in_app",
+            )
+            return {
+                "classification": "human_takeover_paused",
+                "requires_confirmation": False,
+                "ai_paused": True,
+                "session_id": str(chat_session.id),
+                "auto_reply": None,
+                "outbound_message_id": None,
+            }
+
+        # General customer lead / inquiry + RAG grounding
         lead = await marketing_service.create_lead(
             session=session,
             tenant_id=tenant_id,
@@ -1138,9 +1226,23 @@ class IntegrationService:
                 notes=message_text,
             ),
         )
+        if not chat_session.lead_id:
+            chat_session.lead_id = lead.id
+
+        rag_matches = await rag_service.search_knowledge(
+            session=session,
+            tenant_id=tenant_id,
+            query=message_text,
+            top_k=3,
+        )
+        rag_context = ""
+        if rag_matches:
+            snippets = "\n".join(f"- [{m['document_title']}]: {m['content'][:320]}" for m in rag_matches)
+            rag_context = f"\n\nRelevant verified business knowledge:\n{snippets}"
+
         ai_reply = await route_and_execute_ai_task(
             task_type="whatsapp_reply",
-            prompt=f"Customer {sender_name} wrote via WhatsApp: '{message_text}'. Write a helpful reply.",
+            prompt=f"Customer {sender_name} wrote via WhatsApp: '{message_text}'. Write a helpful reply.{rag_context}",
             tenant_id=str(tenant_id),
         )
         if not ai_reply.success:
@@ -1165,13 +1267,28 @@ class IntegrationService:
             except Exception as exc:
                 logger.warning("Failed to dispatch outbound WhatsApp auto-reply", error=str(exc))
 
+        await inbox_service.record_message(
+            session=session,
+            tenant_id=tenant_id,
+            chat_session=chat_session,
+            direction="outbound",
+            sender_id="ai_concierge",
+            content=reply_content,
+            message_id=outbound_message_id,
+            raw_payload={"rag_sources_used": len(rag_matches), "model_used": ai_reply.model},
+        )
+        await session.commit()
+
         return {
             "classification": "lead_inquiry",
             "requires_confirmation": False,
             "lead_id": str(lead.id),
+            "session_id": str(chat_session.id),
             "auto_reply": reply_content,
             "outbound_message_id": outbound_message_id,
             "model_used": ai_reply.model,
+            "rag_sources_used": len(rag_matches),
+            "rag_matches": rag_matches,
         }
 
 

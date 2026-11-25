@@ -15,9 +15,12 @@ from app.schemas.receptionist import (
     ReceptionistFaqsUpdateRequest,
     SimulateVoiceCallRequest,
 )
+from app.services.noshow_recovery_service import noshow_recovery_service
+from app.services.rag_service import rag_service
 from app.services.receptionist_service import receptionist_service
 from fastapi import APIRouter, Depends, Form, Header, HTTPException, Query, Request, status
 from fastapi.responses import Response
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter(prefix="/receptionist", tags=["Office Receptionist (AI Voice)"])
@@ -195,6 +198,62 @@ async def retell_tool_calcom_availability(
         date_str=request.date,
     )
     return {"success": True, "data": result}
+
+
+class RetellKnowledgeToolRequest(BaseModel):
+    query: str = Field(default="", max_length=1000)
+
+
+class WaitlistToggleRequest(BaseModel):
+    waitlist: bool = True
+
+
+@router.post("/tools/{tenant_id}/knowledge/search")
+async def retell_tool_knowledge_search(
+    tenant_id: uuid.UUID,
+    request: RetellKnowledgeToolRequest,
+    session: AsyncSession = Depends(get_db),
+):
+    """Retell AI tool endpoint: retrieve top RAG chunks from the client's website/PDF knowledge base."""
+    matches = await rag_service.search_knowledge(
+        session=session,
+        tenant_id=tenant_id,
+        query=request.query,
+        top_k=3,
+    )
+    return {"success": True, "data": {"matches": matches}}
+
+
+@router.post("/appointments/{call_log_id}/trigger-reminder")
+async def trigger_appointment_noshow_reminder(
+    call_log_id: uuid.UUID,
+    context: TenantContext = Depends(require_permission("notifications.send")),
+    session: AsyncSession = Depends(get_db),
+):
+    """Send an immediate WhatsApp Confirm/Reschedule interactive prompt for a booked appointment."""
+    res = await noshow_recovery_service.dispatch_appointment_reminder(
+        session=session,
+        tenant_id=context.tenant_id,
+        call_log_id=call_log_id,
+    )
+    return {"success": True, "data": res}
+
+
+@router.post("/waitlist/{lead_id}")
+async def toggle_lead_waitlist_status(
+    lead_id: uuid.UUID,
+    request: WaitlistToggleRequest,
+    context: TenantContext = Depends(require_permission("leads.update")),
+    session: AsyncSession = Depends(get_db),
+):
+    """Add or remove a lead from the smart appointment no-show cancellation waitlist."""
+    data = await noshow_recovery_service.set_lead_waitlist(
+        session=session,
+        tenant_id=context.tenant_id,
+        lead_id=lead_id,
+        waitlisted=request.waitlist,
+    )
+    return {"success": True, "data": data}
 
 
 @router.post("/tools/{tenant_id}/calcom/book")

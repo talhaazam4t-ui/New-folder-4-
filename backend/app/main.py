@@ -11,20 +11,23 @@ Configures:
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Optional, cast
 
 from app.api.router import api_v1_router
+from app.api.v1.payments import process_lemonsqueezy_webhook_request
 from app.automation.scheduler import automation_scheduler
 from app.automation.workers.task_worker import background_task_worker
 from app.config import settings
 from app.core.exceptions import TaloxException
 from app.core.logging import logger, setup_logging
 from app.core.rate_limit import limiter
-from app.database.supabase import get_session_factory, init_db
+from app.database.supabase import get_db, get_session_factory, init_db
+from app.services.call_intelligence_service import call_intelligence_service
 from app.services.job_engine_service import job_engine_service
 from app.services.outreach_autopilot_service import outreach_autopilot_service
 from app.services.wallet_service import wallet_service
-from fastapi import FastAPI, HTTPException, Request, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
+from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -86,6 +89,16 @@ async def _run_trial_expiration_tick() -> None:
         logger.error("Trial expiration tick failed", error=str(exc))
 
 
+async def _run_weekly_roi_tick() -> None:
+    """Periodic Monday morning worker wrapper to deliver Weekly AI ROI reports."""
+    try:
+        factory = get_session_factory()
+        async with factory() as session:
+            await call_intelligence_service.run_monday_weekly_roi_tick(session)
+    except Exception as exc:
+        logger.error("Weekly ROI report tick failed", error=str(exc))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application startup and shutdown lifecycle management."""
@@ -130,6 +143,11 @@ async def lifespan(app: FastAPI):
             func=_run_trial_expiration_tick,
             seconds=900,
         )
+        automation_scheduler.schedule_interval_job(
+            job_id="weekly_roi_monday_sweep",
+            func=_run_weekly_roi_tick,
+            seconds=1800,
+        )
 
     yield
     automation_scheduler.shutdown()
@@ -167,6 +185,17 @@ app.add_middleware(
 
 # Mount API v1 Endpoints
 app.include_router(api_v1_router)
+
+
+@app.post("/api/webhooks/lemonsqueezy", tags=["Billing & Payments"])
+async def root_lemonsqueezy_webhook(
+    request: Request,
+    x_signature: Optional[str] = Header(None, alias="X-Signature"),
+    x_event_name: Optional[str] = Header(None, alias="X-Event-Name"),
+    session: AsyncSession = Depends(get_db),
+):
+    """Primary Lemon Squeezy webhook callback endpoint (`/api/webhooks/lemonsqueezy`)."""
+    return await process_lemonsqueezy_webhook_request(request, x_signature, x_event_name, session)
 
 # Locate built frontend static directory
 FRONTEND_DIST_DIRS = [

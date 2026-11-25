@@ -237,17 +237,17 @@ async def get_credentials_handshake_checklist(
         },
         {
             "key": "payments",
-            "title": "Payment Rails (Faysal Bank PKR + Payoneer USD)",
+            "title": "Payment Rails (Lemon Squeezy Global + Faysal Bank PKR)",
             "category": "Billing & Payouts",
-            "status": "connected" if rails["payoneer"]["enabled"] else "bank_ready_payoneer_pending",
-            "account": rails["payoneer"]["account_email"],
+            "status": "connected" if rails["lemonsqueezy"]["enabled"] else "bank_ready",
+            "account": f"Store #{rails['lemonsqueezy']['store_id']}" if rails["lemonsqueezy"]["store_id"] else rails["bank_transfer"]["bank_name"],
             "auth_method": "manual_and_gateway",
             "oauth_provider": None,
             "requires_browser_login": True,
-            "action_url": "/dashboard",
+            "action_url": "/billing",
             "checklist_steps": [
+                "Global Cards & Subscriptions: Lemon Squeezy checkout + webhook verification configured on /billing.",
                 f"Local PKR: {rails['bank_transfer']['bank_name']} ({rails['bank_transfer']['iban']}) + PayFast & Safepay PKR gateways ready on /billing.",
-                "International USD: Payoneer & Stripe USD rails supported on /billing; configure gateway secrets in Render env vars for live checkout.",
             ],
         },
     ]
@@ -602,17 +602,28 @@ async def process_whatsapp_meta_webhook(
                 msg_id = msg.get("id")
                 sender_phone = msg.get("from", "")
                 sender_name = contacts.get(sender_phone, "WhatsApp Contact")
-                msg_text = msg.get("text", {}).get("body", "")
+                interactive_reply = (msg.get("interactive") or {}).get("button_reply") or {}
+                button_reply = msg.get("button") or {}
+                interactive_reply_id = (
+                    interactive_reply.get("id") or button_reply.get("payload") or None
+                )
+                msg_text = (
+                    (msg.get("text") or {}).get("body")
+                    or interactive_reply.get("title")
+                    or button_reply.get("text")
+                    or ""
+                )
 
-                if msg_text:
+                if msg_text or interactive_reply_id:
                     res = await integration_service.process_inbound_whatsapp_message(
                         session=session,
                         tenant_id=tenant_id,
                         sender_phone=sender_phone,
                         sender_name=sender_name,
-                        message_text=msg_text,
+                        message_text=msg_text or str(interactive_reply_id),
                         message_id=msg_id,
                         dispatch_live_reply=(settings.whatsapp_provider == "meta"),
+                        interactive_reply_id=interactive_reply_id,
                     )
                     results.append(res)
                     processed_count += 1
@@ -656,6 +667,7 @@ async def process_whatsapp_meta_webhook(
             sender_name=payload.get("sender_name", "WhatsApp Contact"),
             message_text=payload.get("message_text"),
             message_id=payload.get("message_id"),
+            interactive_reply_id=payload.get("interactive_reply_id"),
         )
         results.append(res)
         processed_count += 1

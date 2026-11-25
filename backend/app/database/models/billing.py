@@ -7,7 +7,7 @@ from typing import Optional
 
 from app.database.models.base import Base, TimestampMixin
 from app.database.models.tenant import GUID
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Numeric, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 
@@ -109,3 +109,36 @@ class UsageLedger(Base):
         nullable=False,
         index=True,
     )
+
+
+class Subscription(Base, TimestampMixin):
+    __tablename__ = "subscriptions"
+
+    id: Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(),
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    provider: Mapped[str] = mapped_column(String(50), default="lemon_squeezy", nullable=False)
+    provider_subscription_id: Mapped[str] = mapped_column(String(120), unique=True, nullable=False, index=True)
+    provider_customer_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    order_id: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    product_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    variant_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    product_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    variant_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    tier: Mapped[str] = mapped_column(String(50), default="starter", nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    card_brand: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    card_last_four: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    billing_anchor: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    renews_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    ends_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    trial_ends_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    customer_portal_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    update_payment_method_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    is_paused: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    pause_resumes_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    metadata_: Mapped[dict] = mapped_column("metadata", JSON, default=dict, nullable=False)

@@ -182,6 +182,77 @@ class WhatsAppCloudClient(BaseIntegrationAdapter):
                 "is_mock": False,
             }
 
+    async def send_interactive_buttons(
+        self,
+        tenant_id: str,
+        to_phone: str,
+        body_text: str,
+        buttons: list[Dict[str, str]],
+        phone_number_id: Optional[str] = None,
+        access_token: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Send an interactive WhatsApp quick-reply button message (up to 3 buttons) or sandbox mock."""
+        clean_buttons = [
+            {
+                "type": "reply",
+                "reply": {
+                    "id": str(b.get("id") or f"btn_{idx}")[:256],
+                    "title": str(b.get("title") or "Reply")[:20],
+                },
+            }
+            for idx, b in enumerate((buttons or [])[:3])
+        ]
+        effective_token = access_token or settings.whatsapp_access_token
+        target_phone_id = phone_number_id or settings.whatsapp_phone_number_id
+        is_mock_token = (
+            not effective_token
+            or effective_token.startswith("meta_mock_")
+            or effective_token.startswith("meta_sys_token_waba_mock")
+            or effective_token.startswith("oauth_access_")
+        )
+        if settings.whatsapp_provider == "mock" or is_mock_token or not target_phone_id or not clean_buttons:
+            msg_id = f"wamid.btn.mock.{uuid.uuid4().hex[:10]}"
+            logger.info(
+                "Sent interactive WhatsApp buttons (sandbox mock)",
+                tenant_id=tenant_id,
+                to_phone=to_phone,
+                button_count=len(clean_buttons),
+            )
+            return {
+                "success": True,
+                "message_id": msg_id,
+                "to": to_phone,
+                "status": "sent",
+                "buttons": clean_buttons,
+                "is_mock": True,
+            }
+
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.post(
+                f"{self.graph_api_url}/{target_phone_id}/messages",
+                headers={"Authorization": f"Bearer {effective_token}"},
+                json={
+                    "messaging_product": "whatsapp",
+                    "to": to_phone,
+                    "type": "interactive",
+                    "interactive": {
+                        "type": "button",
+                        "body": {"text": body_text[:1024]},
+                        "action": {"buttons": clean_buttons},
+                    },
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return {
+                "success": True,
+                "message_id": data.get("messages", [{}])[0].get("id", "wamid.btn.live"),
+                "to": to_phone,
+                "status": "sent",
+                "buttons": clean_buttons,
+                "is_mock": False,
+            }
+
     def parse_and_classify_inbound_message(self, message_text: str) -> ParsedWhatsAppIntent:
         """Classify inbound WhatsApp text into confirmed financial, ambiguous financial, or lead inquiry."""
         lower = message_text.lower().strip()

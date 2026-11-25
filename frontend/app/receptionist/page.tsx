@@ -4,7 +4,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import { Navbar } from "@/components/shared/Navbar";
 import { Sidebar } from "@/components/shared/Sidebar";
 import { StatCard } from "@/components/dashboard/StatCard";
-import { apiRequest } from "@/lib/api";
+import { apiFetchResponse, apiRequest } from "@/lib/api";
 import { getActiveTenant, getAuthToken, setActiveTenant } from "@/lib/auth";
 import {
   PhoneCall,
@@ -25,6 +25,11 @@ import {
   ExternalLink,
   KeyRound,
   PhoneIncoming,
+  Globe,
+  Upload,
+  Search,
+  Trash2,
+  BellRing,
 } from "lucide-react";
 
 interface CallForwardingGuide {
@@ -73,7 +78,28 @@ interface ReceptionistCallLog {
   summary: string | null;
   transcript: string | null;
   recording_url: string | null;
+  sentiment?: string | null;
+  lead_tier?: string | null;
+  lead_score?: number | null;
+  reminder_sent_at?: string | null;
   created_at: string;
+}
+
+interface KnowledgeDocumentItem {
+  id: string;
+  title: string;
+  source_type: string;
+  source_url: string | null;
+  chunk_count: number;
+  char_count: number;
+  created_at: string | null;
+}
+
+interface KnowledgeSearchMatch {
+  chunk_id: string;
+  document_title: string;
+  content: string;
+  score: number;
 }
 
 interface CallsSummary {
@@ -131,6 +157,16 @@ export default function OfficeReceptionistPage() {
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+  // 1-Click RAG Knowledge Base states
+  const [knowledgeDocs, setKnowledgeDocs] = useState<KnowledgeDocumentItem[]>([]);
+  const [crawlUrl, setCrawlUrl] = useState("");
+  const [indexingUrl, setIndexingUrl] = useState(false);
+  const [uploadingPdf, setUploadingPdf] = useState(false);
+  const [ragQuery, setRagQuery] = useState("");
+  const [searchingRag, setSearchingRag] = useState(false);
+  const [ragMatches, setRagMatches] = useState<KnowledgeSearchMatch[]>([]);
+  const [remindingCallId, setRemindingCallId] = useState<string | null>(null);
+
   const hydrateFormFromConfig = useCallback((cfg: ReceptionistConfig, fallbackTenantName?: string) => {
     setBusinessName(cfg.business_name || fallbackTenantName || "");
     setOperatingHours(cfg.operating_hours || "Mon-Fri 9:00 AM - 6:00 PM");
@@ -165,10 +201,14 @@ export default function OfficeReceptionistPage() {
       }
     }
 
-    const [cfgRes, callsRes] = await Promise.all([
+    const [cfgRes, callsRes, docsRes] = await Promise.all([
       apiRequest("/api/v1/receptionist/config"),
       apiRequest("/api/v1/receptionist/calls?limit=100"),
+      apiRequest<KnowledgeDocumentItem[]>("/api/v1/knowledge/documents"),
     ]);
+    if (docsRes.success && Array.isArray(docsRes.data)) {
+      setKnowledgeDocs(docsRes.data);
+    }
 
     setPaymentApproved(Boolean(cfgRes.payment_approved));
     setHasSubscription(Boolean(cfgRes.has_subscription));
@@ -218,6 +258,100 @@ export default function OfficeReceptionistPage() {
       setTimeout(() => setCopiedKey(null), 2000);
     } catch {
       setStatusMessage(`Copied value: ${text}`);
+    }
+  };
+
+  const handleIngestUrl = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!crawlUrl.trim()) return;
+    setIndexingUrl(true);
+    setErrorMessage(null);
+    try {
+      const res = await apiRequest<KnowledgeDocumentItem>("/api/v1/knowledge/ingest/url", {
+        method: "POST",
+        body: JSON.stringify({ url: crawlUrl.trim() }),
+      });
+      if (res.success && res.data) {
+        setCrawlUrl("");
+        setStatusMessage(`Indexed "${res.data.title}" (${res.data.chunk_count} RAG chunks) cleanly.`);
+        await loadReceptionistData();
+      } else {
+        setErrorMessage(res.error?.message || "Failed to index website URL.");
+      }
+    } finally {
+      setIndexingUrl(false);
+    }
+  };
+
+  const handleUploadPdf = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploadingPdf(true);
+    setErrorMessage(null);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("title", file.name);
+      const rawRes = await apiFetchResponse("/api/v1/knowledge/ingest/pdf", {
+        method: "POST",
+        body: formData,
+      });
+      const parsed = await rawRes.json();
+      if (rawRes.ok && parsed?.success && parsed?.data) {
+        setStatusMessage(
+          `PDF "${parsed.data.title}" indexed into ${parsed.data.chunk_count} vector chunks.`
+        );
+        await loadReceptionistData();
+      } else {
+        setErrorMessage(parsed?.error?.message || parsed?.detail || "Failed to index PDF file.");
+      }
+    } catch (err: any) {
+      setErrorMessage(err?.message || "PDF upload failed.");
+    } finally {
+      e.target.value = "";
+      setUploadingPdf(false);
+    }
+  };
+
+  const handleDeleteKnowledgeDoc = async (docId: string) => {
+    const res = await apiRequest(`/api/v1/knowledge/documents/${docId}`, { method: "DELETE" });
+    if (res.success) {
+      setKnowledgeDocs((prev) => prev.filter((d) => d.id !== docId));
+    }
+  };
+
+  const handleSearchRag = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!ragQuery.trim()) return;
+    setSearchingRag(true);
+    try {
+      const res = await apiRequest<KnowledgeSearchMatch[]>("/api/v1/knowledge/search", {
+        method: "POST",
+        body: JSON.stringify({ query: ragQuery.trim(), top_k: 3 }),
+      });
+      if (res.success && Array.isArray(res.data)) {
+        setRagMatches(res.data);
+      }
+    } finally {
+      setSearchingRag(false);
+    }
+  };
+
+  const handleTriggerReminder = async (callLogId: string) => {
+    setRemindingCallId(callLogId);
+    setErrorMessage(null);
+    try {
+      const res = await apiRequest(`/api/v1/receptionist/appointments/${callLogId}/trigger-reminder`, {
+        method: "POST",
+      });
+      if (res.success) {
+        setStatusMessage("WhatsApp Confirm/Reschedule reminder sent to attendee.");
+        await loadReceptionistData();
+      } else {
+        setErrorMessage(res.error?.message || "Could not dispatch WhatsApp reminder.");
+      }
+    } finally {
+      setRemindingCallId(null);
     }
   };
 
@@ -858,8 +992,122 @@ export default function OfficeReceptionistPage() {
               </form>
             </div>
 
-            {/* Right Column: Call Logs, Booked Appointments & Test Simulator */}
+            {/* Right Column: 1-Click RAG Knowledge Base, Call Logs, Booked Appointments & Test Simulator */}
             <div className="xl:col-span-7 space-y-4">
+              {/* 1-Click RAG Knowledge Base */}
+              <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <h3 className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
+                      <FileText className="h-4 w-4 text-emerald-600" />
+                      1-Click RAG Knowledge Base (Retell AI &amp; WhatsApp)
+                    </h3>
+                    <p className="text-xs text-slate-500">
+                      Paste your business URL or upload PDF brochures/menus so AI answers with exact facts.
+                    </p>
+                  </div>
+                  <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 text-[10px] font-bold text-emerald-800">
+                    {knowledgeDocs.length} Indexed
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5">
+                  <form onSubmit={handleIngestUrl} className="md:col-span-2 flex gap-2">
+                    <div className="relative flex-1">
+                      <Globe className="h-3.5 w-3.5 text-slate-400 absolute left-3 top-2.5" />
+                      <input
+                        type="url"
+                        value={crawlUrl}
+                        onChange={(e) => setCrawlUrl(e.target.value)}
+                        placeholder="https://yourbusiness.com/services"
+                        className="w-full rounded-lg border border-slate-300 pl-8 pr-3 py-2 text-xs text-slate-900 focus:border-emerald-500 focus:outline-none"
+                      />
+                    </div>
+                    <button
+                      type="submit"
+                      disabled={indexingUrl || !crawlUrl.trim()}
+                      className="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-500 disabled:opacity-50 transition shrink-0"
+                    >
+                      {indexingUrl ? "Indexing..." : "Index URL"}
+                    </button>
+                  </form>
+
+                  <label className="flex items-center justify-center gap-1.5 rounded-lg border border-dashed border-slate-300 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-700 hover:border-emerald-500 cursor-pointer transition">
+                    <Upload className="h-3.5 w-3.5 text-emerald-600" />
+                    <span>{uploadingPdf ? "Uploading PDF..." : "Upload PDF"}</span>
+                    <input
+                      type="file"
+                      accept="application/pdf,.pdf"
+                      onChange={handleUploadPdf}
+                      disabled={uploadingPdf}
+                      className="hidden"
+                    />
+                  </label>
+                </div>
+
+                {knowledgeDocs.length > 0 && (
+                  <div className="space-y-1.5 max-h-36 overflow-y-auto">
+                    {knowledgeDocs.map((doc) => (
+                      <div
+                        key={doc.id}
+                        className="flex items-center justify-between rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-xs"
+                      >
+                        <div className="min-w-0 pr-2">
+                          <span className="font-semibold text-slate-900 truncate block">{doc.title}</span>
+                          <span className="text-[10px] text-slate-500 uppercase">
+                            {doc.source_type} • {doc.chunk_count} chunks
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteKnowledgeDoc(doc.id)}
+                          className="text-slate-400 hover:text-red-600 p-1"
+                          title="Delete document"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <form onSubmit={handleSearchRag} className="flex gap-2">
+                  <div className="relative flex-1">
+                    <Search className="h-3.5 w-3.5 text-slate-400 absolute left-3 top-2.5" />
+                    <input
+                      type="text"
+                      value={ragQuery}
+                      onChange={(e) => setRagQuery(e.target.value)}
+                      placeholder="Test AI knowledge retrieval (e.g. pricing or consultation hours)..."
+                      className="w-full rounded-lg border border-slate-200 bg-slate-50 pl-8 pr-3 py-1.5 text-xs text-slate-900 focus:border-emerald-500 focus:outline-none"
+                    />
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={searchingRag || !ragQuery.trim()}
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                  >
+                    {searchingRag ? "Searching..." : "Test Search"}
+                  </button>
+                </form>
+
+                {ragMatches.length > 0 && (
+                  <div className="space-y-1.5">
+                    {ragMatches.map((m) => (
+                      <div
+                        key={m.chunk_id}
+                        className="rounded-lg border border-emerald-200 bg-emerald-50/70 p-2.5 text-[11px] text-slate-700"
+                      >
+                        <div className="font-bold text-emerald-900 mb-0.5">
+                          {m.document_title} (Score: {(m.score * 100).toFixed(0)}%)
+                        </div>
+                        <p className="line-clamp-2">{m.content}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
               {/* Interactive Test Call Simulator */}
               <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-3">
                 <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
@@ -1003,11 +1251,46 @@ export default function OfficeReceptionistPage() {
                             </div>
 
                             <div className="flex flex-wrap items-center gap-1.5">
-                              {log.booking_status === "booked" && (
+                              {log.lead_tier && (
+                                <span
+                                  className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${
+                                    log.lead_tier === "hot"
+                                      ? "bg-rose-100 text-rose-800 border border-rose-200"
+                                      : log.lead_tier === "warm"
+                                      ? "bg-amber-100 text-amber-800 border border-amber-200"
+                                      : "bg-slate-200 text-slate-700"
+                                  }`}
+                                >
+                                  {log.lead_tier} ({log.lead_score ?? 0})
+                                </span>
+                              )}
+                              {log.sentiment && (
+                                <span className="rounded-full bg-slate-100 border border-slate-200 px-2 py-0.5 text-[10px] font-semibold capitalize text-slate-700">
+                                  {log.sentiment}
+                                </span>
+                              )}
+                              {(log.booking_status === "booked" || log.booking_status === "confirmed") && (
                                 <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 border border-emerald-200 px-2.5 py-0.5 text-[10px] font-bold text-emerald-800">
                                   <CalendarCheck2 className="h-3 w-3" />
-                                  Booked
+                                  {log.booking_status === "confirmed" ? "Confirmed" : "Booked"}
                                 </span>
+                              )}
+                              {log.booking_status === "booked" && (
+                                <button
+                                  type="button"
+                                  disabled={remindingCallId === log.id}
+                                  onClick={() => handleTriggerReminder(log.id)}
+                                  className="inline-flex items-center gap-1 rounded-full border border-emerald-300 bg-white px-2.5 py-0.5 text-[10px] font-semibold text-emerald-700 hover:bg-emerald-50 disabled:opacity-50"
+                                >
+                                  <BellRing className="h-3 w-3" />
+                                  <span>
+                                    {remindingCallId === log.id
+                                      ? "Sending..."
+                                      : log.reminder_sent_at
+                                      ? "Resend Reminder"
+                                      : "No-Show Reminder"}
+                                  </span>
+                                </button>
                               )}
                               {log.transferred_to_human && (
                                 <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 border border-amber-200 px-2.5 py-0.5 text-[10px] font-bold text-amber-800">

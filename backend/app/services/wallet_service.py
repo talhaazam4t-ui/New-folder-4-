@@ -582,7 +582,7 @@ class WalletService:
                 title="7-Day Free Trial Ended — Upgrade to Continue",
                 message=(
                     "Your 7-day free trial has ended without an active payment. "
-                    "Complete checkout on /billing (PayFast/Safepay PKR, Payoneer/Stripe USD, or Bank Transfer) to reactivate automations."
+                    "Complete checkout on /billing (Lemon Squeezy, PayFast/Safepay PKR, Stripe USD, or Bank Transfer) to reactivate automations."
                 ),
                 channel="in_app",
             )

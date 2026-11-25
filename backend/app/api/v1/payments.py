@@ -13,7 +13,7 @@ from app.core.tenant_context import TenantContext
 from app.database.models.automation import Approval
 from app.database.models.billing import Invoice, Payment
 from app.database.models.service import ServiceSubscription
-from app.database.models.tenant import Tenant
+from app.database.models.tenant import Profile, Tenant
 from app.database.supabase import get_db
 from app.dependencies import require_permission
 from app.integrations.payment.base import get_payment_provider
@@ -87,7 +87,7 @@ async def get_company_bank_details():
 
 @router.get("/rails")
 async def get_supported_payment_rails():
-    """Retrieve local Faysal Bank (PKR) and international Payoneer (USD) payment details."""
+    """Retrieve Lemon Squeezy global checkout rails, PKR/USD gateways, and Faysal Bank transfer details."""
     return {"success": True, "data": get_payment_rails_info()}
 
 
@@ -337,15 +337,25 @@ async def activate_free_trial(
     return {"success": True, "data": data, "message": "7-Day Free Trial activated with 100 credits"}
 
 
+@router.get("/subscription")
+async def get_lemon_squeezy_subscription(
+    context: TenantContext = Depends(require_permission("payments.read")),
+    session: AsyncSession = Depends(get_db),
+):
+    """Retrieve the active Lemon Squeezy subscription state for the tenant."""
+    sub = await billing_service.get_tenant_lemon_subscription(session, context.tenant_id)
+    return {"success": True, "data": sub}
+
+
 @router.post("/checkout")
 async def create_multi_currency_checkout(
     request: CheckoutCreateRequest,
     context: TenantContext = Depends(require_permission("payments.create")),
     session: AsyncSession = Depends(get_db),
 ):
-    """Initiate PKR (PayFast/Safepay/Faysal Bank) or USD (Stripe/Payoneer) checkout."""
+    """Initiate Lemon Squeezy (Global Cards/Subscriptions), PKR (PayFast/Safepay/Faysal Bank), or Stripe checkout."""
     provider_key = request.provider.strip().lower()
-    if provider_key not in ("payfast", "safepay", "stripe", "payoneer", "bank_transfer", "manual"):
+    if provider_key not in ("lemonsqueezy", "payfast", "safepay", "stripe", "bank_transfer", "manual"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Unsupported checkout provider '{request.provider}'",
@@ -358,11 +368,12 @@ async def create_multi_currency_checkout(
             detail="Checkout purpose must be 'subscription' or 'wallet_topup'",
         )
 
-    default_curr = "PKR" if provider_key in ("payfast", "safepay", "bank_transfer", "manual") else "USD"
+    default_curr = "PKR" if provider_key in ("payfast", "safepay", "bank_transfer", "manual", "lemonsqueezy") else "USD"
     currency = (request.currency or default_curr).upper()[:3]
     amount = float(request.amount or 0.0)
     credits_grant: Optional[float] = None
     description = request.description or "TaloxTech AI Automation Subscription"
+    resolved_plan = (request.plan_name or "").strip().lower() or None
 
     if purpose == "wallet_topup":
         pack = get_credit_pack(request.pack_id)
@@ -394,11 +405,16 @@ async def create_multi_currency_checkout(
                 select(ServiceSubscription).where(ServiceSubscription.tenant_id == context.tenant_id)
             )
             subs = subs_res.scalars().all()
-            usd_total = sum(float(s.price or 0.0) for s in subs if s.status != "canceled") or 149.0
+            if not resolved_plan and subs:
+                resolved_plan = (subs[0].plan_name or "starter").strip().lower()
+            usd_total = sum(float(s.price or 0.0) for s in subs if s.status != "canceled") or 99.0
             amount = round(usd_total * 278.0, 2) if currency == "PKR" else round(usd_total, 2)
 
     if amount <= 0:
         raise HTTPException(status_code=400, detail="Checkout amount must be greater than zero")
+
+    prof_res = await session.execute(select(Profile.email).where(Profile.id == context.user_id))
+    user_email = prof_res.scalar_one_or_none()
 
     provider = get_payment_provider("manual" if provider_key == "bank_transfer" else provider_key)
     intent = await provider.create_payment_intent(
@@ -407,6 +423,10 @@ async def create_multi_currency_checkout(
         currency=currency,
         metadata={
             "tenant_id": str(context.tenant_id),
+            "user_id": str(context.user_id),
+            "email": user_email,
+            "plan_name": resolved_plan or "starter",
+            "variant_id": request.variant_id,
             "purpose": purpose,
             "credits": credits_grant,
             "invoice_id": str(request.invoice_id) if request.invoice_id else None,
@@ -435,6 +455,7 @@ async def create_multi_currency_checkout(
             "payment_id": str(payment.id),
             "provider": provider_key,
             "purpose": purpose,
+            "plan_name": resolved_plan or "starter",
             "reference_id": intent.reference_id,
             "amount": amount,
             "currency": currency,
@@ -449,6 +470,45 @@ async def create_multi_currency_checkout(
     }
 
 
+async def process_lemonsqueezy_webhook_request(
+    request: Request,
+    x_signature: Optional[str],
+    x_event_name: Optional[str],
+    session: AsyncSession,
+) -> dict:
+    """Shared handler verifying Lemon Squeezy `X-Signature` HMAC-SHA256 and updating tenant subscriptions."""
+    body = await request.body()
+    provider = get_payment_provider("lemonsqueezy")
+    if not provider.verify_webhook_signature(body, x_signature or ""):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid Lemon Squeezy X-Signature header",
+        )
+    try:
+        payload = json.loads(body.decode("utf-8")) if body else {}
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Malformed Lemon Squeezy JSON payload")
+
+    event_name = (x_event_name or str((payload.get("meta") or {}).get("event_name") or "")).strip().lower()
+    result = await billing_service.handle_lemonsqueezy_webhook_event(
+        session=session,
+        event_name=event_name,
+        payload=payload,
+    )
+    return {"success": True, **result}
+
+
+@router.post("/webhooks/lemonsqueezy")
+async def lemonsqueezy_v1_webhook(
+    request: Request,
+    x_signature: Optional[str] = Header(None, alias="X-Signature"),
+    x_event_name: Optional[str] = Header(None, alias="X-Event-Name"),
+    session: AsyncSession = Depends(get_db),
+):
+    """Versioned Lemon Squeezy webhook endpoint (`/api/v1/payments/webhooks/lemonsqueezy`)."""
+    return await process_lemonsqueezy_webhook_request(request, x_signature, x_event_name, session)
+
+
 @router.post("/webhooks/{provider_name}")
 async def multi_gateway_payment_webhook(
     provider_name: str,
@@ -456,13 +516,12 @@ async def multi_gateway_payment_webhook(
     stripe_signature: Optional[str] = Header(None, alias="Stripe-Signature"),
     x_payfast_signature: Optional[str] = Header(None, alias="X-PayFast-Signature"),
     x_sfpy_signature: Optional[str] = Header(None, alias="X-SFPY-SIGNATURE"),
-    x_payoneer_signature: Optional[str] = Header(None, alias="X-Payoneer-Signature"),
     x_webhook_signature: Optional[str] = Header(None, alias="X-Webhook-Signature"),
     session: AsyncSession = Depends(get_db),
 ):
-    """Cryptographically verified webhook endpoint for PayFast, Safepay, Stripe, and Payoneer."""
+    """Cryptographically verified webhook endpoint for PayFast, Safepay, and Stripe."""
     normalized = provider_name.strip().lower()
-    if normalized not in ("payfast", "safepay", "stripe", "payoneer"):
+    if normalized not in ("payfast", "safepay", "stripe"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Automated webhooks are not supported for provider '{provider_name}'",
@@ -473,7 +532,6 @@ async def multi_gateway_payment_webhook(
         "stripe": stripe_signature or x_webhook_signature or "",
         "payfast": x_payfast_signature or x_webhook_signature or "",
         "safepay": x_sfpy_signature or x_webhook_signature or "",
-        "payoneer": x_payoneer_signature or x_webhook_signature or "",
     }
     provider = get_payment_provider(normalized)
     if not provider.verify_webhook_signature(body, sig_by_provider[normalized]):

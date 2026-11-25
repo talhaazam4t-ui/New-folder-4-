@@ -61,14 +61,16 @@ class WalletSettingsUpdateRequest(BaseModel):
 
 class CheckoutCreateRequest(BaseModel):
     provider: str = Field(
-        default="payfast",
-        description="payfast | safepay | stripe | payoneer | bank_transfer",
+        default="lemonsqueezy",
+        description="lemonsqueezy | payfast | safepay | stripe | bank_transfer",
     )
     purpose: str = Field(
         default="subscription",
         description="subscription | wallet_topup",
     )
     pack_id: Optional[str] = Field(default=None, max_length=60)
+    plan_name: Optional[str] = Field(default=None, max_length=60)
+    variant_id: Optional[str] = Field(default=None, max_length=80)
     amount: Optional[float] = Field(default=None, gt=0.0)
     currency: Optional[str] = Field(default=None, min_length=3, max_length=3)
     invoice_id: Optional[uuid.UUID] = None

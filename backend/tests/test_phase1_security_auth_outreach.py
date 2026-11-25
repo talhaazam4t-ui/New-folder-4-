@@ -286,8 +286,10 @@ async def test_multichannel_hitl_outreach_tier_quota_and_approve_dispatch(monkey
 
 @pytest.mark.asyncio
 async def test_integrations_checklist_payment_rails_and_analytics_funnel(monkeypatch):
-    """Verify unified handshake checklist, Payoneer/Bank payment rails, and tenant-isolated analytics."""
-    monkeypatch.setattr(settings, "payoneer_account_email", "payouts@teloxtech.stream")
+    """Verify unified handshake checklist, Lemon Squeezy / Bank payment rails, and tenant-isolated analytics."""
+    monkeypatch.setattr(settings, "lemonsqueezy_store_id", "525097")
+    monkeypatch.setattr(settings, "lemonsqueezy_variant_id_starter", "2389098")
+    monkeypatch.setattr(settings, "lemonsqueezy_test_mode", True)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -325,8 +327,9 @@ async def test_integrations_checklist_payment_rails_and_analytics_funnel(monkeyp
 
         rails_res = await client.get("/api/v1/payments/rails", headers=h1)
         assert rails_res.status_code == 200
-        assert rails_res.json()["data"]["payoneer"]["enabled"] is True
-        assert rails_res.json()["data"]["payoneer"]["account_email"] == "payouts@teloxtech.stream"
+        assert "payoneer" not in rails_res.json()["data"]
+        assert rails_res.json()["data"]["lemonsqueezy"]["enabled"] is True
+        assert rails_res.json()["data"]["lemonsqueezy"]["store_id"] == "525097"
 
         ov_res = await client.get(f"/api/v1/tenants/{t1}/overview", headers=h1)
         assert ov_res.status_code == 200

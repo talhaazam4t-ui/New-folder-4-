@@ -9,8 +9,10 @@ from app.api.v1.assistant import router as assistant_router
 from app.api.v1.auth import router as auth_router
 from app.api.v1.business import router as business_router
 from app.api.v1.finance import router as finance_router
+from app.api.v1.inbox import router as inbox_router
 from app.api.v1.integrations import router as integrations_router
 from app.api.v1.internal import router as internal_router
+from app.api.v1.knowledge import router as knowledge_router
 from app.api.v1.marketing import router as marketing_router
 from app.api.v1.notifications import router as notifications_router
 from app.api.v1.payments import router as payments_router
@@ -39,10 +41,12 @@ api_v1_router.include_router(tasks_router)
 api_v1_router.include_router(approvals_router)
 api_v1_router.include_router(agents_router)
 api_v1_router.include_router(integrations_router)
+api_v1_router.include_router(inbox_router)
 api_v1_router.include_router(notifications_router)
 api_v1_router.include_router(analytics_router)
 api_v1_router.include_router(assistant_router)
 api_v1_router.include_router(support_router)
 api_v1_router.include_router(receptionist_router)
+api_v1_router.include_router(knowledge_router)
 api_v1_router.include_router(internal_router)
 api_v1_router.include_router(admin_router)

@@ -145,8 +145,8 @@ export default function BillingPage() {
   const [autoPauseInput, setAutoPauseInput] = useState<boolean>(false);
   const [savingWalletSettings, setSavingWalletSettings] = useState<boolean>(false);
   const [startingTrial, setStartingTrial] = useState<boolean>(false);
-  const [checkoutCurrency, setCheckoutCurrency] = useState<"PKR" | "USD">("PKR");
-  const [checkoutProvider, setCheckoutProvider] = useState<string>("payfast");
+  const [checkoutCurrency, setCheckoutCurrency] = useState<"PKR" | "USD">("USD");
+  const [checkoutProvider, setCheckoutProvider] = useState<string>("lemonsqueezy");
   const [checkoutLoading, setCheckoutLoading] = useState<boolean>(false);
   const [checkoutResult, setCheckoutResult] = useState<CheckoutSessionResult | null>(null);
   const [refundLoadingId, setRefundLoadingId] = useState<string | null>(null);
@@ -361,8 +361,11 @@ export default function BillingPage() {
   const handleStartCheckout = async (
     purpose: "subscription" | "wallet_topup",
     packId?: string,
-    invoiceId?: string
+    invoiceId?: string,
+    planName?: string,
+    overrideProvider?: string
   ) => {
+    const activeProvider = overrideProvider || checkoutProvider;
     setCheckoutLoading(true);
     setActionError(false);
     setCheckoutResult(null);
@@ -370,9 +373,10 @@ export default function BillingPage() {
       const res = await apiRequest<CheckoutSessionResult>("/api/v1/payments/checkout", {
         method: "POST",
         body: JSON.stringify({
-          provider: checkoutProvider,
+          provider: activeProvider,
           purpose,
           pack_id: packId,
+          plan_name: planName,
           invoice_id: invoiceId,
           currency: checkoutCurrency,
         }),
@@ -508,6 +512,34 @@ export default function BillingPage() {
               }`}
             >
               {actionMessage}
+            </div>
+          )}
+
+          {checkoutResult && (
+            <div className="rounded-xl border border-emerald-300 bg-emerald-50 p-4 text-xs space-y-2 shadow-sm">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="font-bold text-emerald-950">
+                  Checkout Ready — {checkoutResult.provider.toUpperCase()} ({checkoutResult.amount}{" "}
+                  {checkoutResult.currency})
+                </span>
+                <span className="font-mono font-semibold text-emerald-800">
+                  Ref: {checkoutResult.reference_id}
+                </span>
+              </div>
+              {checkoutResult.instructions && (
+                <p className="text-emerald-900">{checkoutResult.instructions}</p>
+              )}
+              {checkoutResult.checkout_url && (
+                <a
+                  href={checkoutResult.checkout_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-3.5 py-2 font-semibold text-white hover:bg-slate-800 transition"
+                >
+                  <span>Proceed to {checkoutResult.provider === "lemonsqueezy" ? "Lemon Squeezy" : "Gateway"} Checkout</span>
+                  <ExternalLink className="h-3.5 w-3.5" />
+                </a>
+              )}
             </div>
           )}
 
@@ -698,7 +730,7 @@ export default function BillingPage() {
                   Multi-Currency Checkout &amp; Credit Top-Up Packs
                 </h2>
                 <p className="text-xs text-slate-500">
-                  Pay locally in PKR (PayFast, Safepay, Faysal Bank) or internationally in USD (Payoneer, Stripe).
+                  Pay globally via Lemon Squeezy (Cards / PayPal / Apple Pay) or locally in PKR (PayFast, Safepay, Faysal Bank).
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-2 text-xs">
@@ -707,7 +739,7 @@ export default function BillingPage() {
                     type="button"
                     onClick={() => {
                       setCheckoutCurrency("PKR");
-                      setCheckoutProvider("payfast");
+                      setCheckoutProvider("lemonsqueezy");
                     }}
                     className={`rounded-md px-3 py-1 font-bold transition ${
                       checkoutCurrency === "PKR"
@@ -721,7 +753,7 @@ export default function BillingPage() {
                     type="button"
                     onClick={() => {
                       setCheckoutCurrency("USD");
-                      setCheckoutProvider("payoneer");
+                      setCheckoutProvider("lemonsqueezy");
                     }}
                     className={`rounded-md px-3 py-1 font-bold transition ${
                       checkoutCurrency === "USD"
@@ -740,13 +772,14 @@ export default function BillingPage() {
                 >
                   {checkoutCurrency === "PKR" ? (
                     <>
+                      <option value="lemonsqueezy">Lemon Squeezy (Cards / Apple Pay / Global)</option>
                       <option value="payfast">PayFast Pakistan (Cards / JazzCash / Easypaisa)</option>
                       <option value="safepay">Safepay Pakistan (PKR Gateway)</option>
                       <option value="bank_transfer">Faysal Bank Direct Transfer</option>
                     </>
                   ) : (
                     <>
-                      <option value="payoneer">Payoneer International (USD)</option>
+                      <option value="lemonsqueezy">Lemon Squeezy (Global Cards / PayPal)</option>
                       <option value="stripe">Stripe Checkout (USD Cards)</option>
                     </>
                   )}
@@ -954,16 +987,29 @@ export default function BillingPage() {
                           </button>
                         </div>
                       ) : (
-                        <button
-                          type="button"
-                          onClick={() =>
-                            handleSubscribe(srv.id, srv.name, resolvedPrice, chosenPlan)
-                          }
-                          className="flex items-center gap-1 rounded-lg bg-slate-900 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-slate-800 transition"
-                        >
-                          <span>Subscribe</span>
-                          <ArrowRight className="h-3.5 w-3.5" />
-                        </button>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              handleSubscribe(srv.id, srv.name, resolvedPrice, chosenPlan)
+                            }
+                            className="flex items-center gap-1 rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-800 transition"
+                          >
+                            <span>Subscribe</span>
+                            <ArrowRight className="h-3.5 w-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            disabled={checkoutLoading}
+                            onClick={() =>
+                              handleStartCheckout("subscription", undefined, undefined, chosenPlan, "lemonsqueezy")
+                            }
+                            className="flex items-center gap-1 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-500 disabled:opacity-50 transition"
+                          >
+                            <span>Pay with Lemon Squeezy</span>
+                            <ExternalLink className="h-3 w-3" />
+                          </button>
+                        </div>
                       )}
                     </div>
                   </div>
@@ -1100,12 +1146,25 @@ export default function BillingPage() {
                         </td>
                         <td className="py-3 px-4 text-right">
                           {inv.status === "issued" || inv.status === "overdue" ? (
-                            <button
-                              onClick={() => handlePayInvoice(inv.id)}
-                              className="rounded bg-emerald-600 px-3 py-1 text-xs font-semibold text-white hover:bg-emerald-500 transition"
-                            >
-                              Submit Payment
-                            </button>
+                            <div className="inline-flex flex-wrap justify-end gap-1.5">
+                              <button
+                                type="button"
+                                disabled={checkoutLoading}
+                                onClick={() =>
+                                  handleStartCheckout("subscription", undefined, inv.id, undefined, "lemonsqueezy")
+                                }
+                                className="rounded bg-slate-900 px-2.5 py-1 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-50 transition"
+                              >
+                                Lemon Squeezy
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handlePayInvoice(inv.id)}
+                                className="rounded bg-emerald-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-emerald-500 transition"
+                              >
+                                Bank Transfer
+                              </button>
+                            </div>
                           ) : inv.status === "payment_pending" ? (
                             <span className="text-[11px] text-amber-600 font-semibold">
                               Pending Confirmation

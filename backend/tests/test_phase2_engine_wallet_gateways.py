@@ -299,11 +299,18 @@ async def test_wallet_auto_pause_deductions_and_free_trial_lifecycle(monkeypatch
 
 @pytest.mark.asyncio
 async def test_multi_currency_checkout_webhooks_and_hitl_refunds(monkeypatch):
-    """Verify PayFast/Safepay PKR, Stripe/Payoneer USD checkout + HMAC webhook provisioning + HITL refunds."""
+    """Verify PayFast/Safepay PKR, Lemon Squeezy global checkout + HMAC webhook provisioning + HITL refunds."""
+    monkeypatch.setattr(settings, "app_env", "test")
     monkeypatch.setattr(settings, "payfast_secured_key", "pf_secret_key_test")
     monkeypatch.setattr(settings, "safepay_webhook_secret", "sp_secret_key_test")
-    monkeypatch.setattr(settings, "payoneer_account_email", "payouts@teloxtech.stream")
-    monkeypatch.setattr(settings, "payoneer_webhook_secret", "pynr_secret_key_test")
+    monkeypatch.setattr(settings, "lemonsqueezy_store_id", "525097")
+    monkeypatch.setattr(settings, "lemonsqueezy_variant_id_starter", "2389098")
+    monkeypatch.setattr(
+        settings,
+        "lemonsqueezy_checkout_url_starter",
+        "https://teloxtech.lemonsqueezy.com/checkout/buy/test-starter",
+    )
+    monkeypatch.setattr(settings, "lemonsqueezy_webhook_secret", "ls_secret_key_test")
     monkeypatch.setattr(
         settings,
         "super_admin_emails",
@@ -369,7 +376,7 @@ async def test_multi_currency_checkout_webhooks_and_hitl_refunds(monkeypatch):
         assert replay_wh.status_code == 200
         assert replay_wh.json()["idempotent"] is True
 
-        # 2. Verify Safepay PKR & Payoneer USD checkout + webhook signatures
+        # 2. Verify Safepay PKR & Lemon Squeezy checkout + webhook signatures
         sf_checkout = await client.post(
             "/api/v1/payments/checkout",
             json={"provider": "safepay", "purpose": "subscription", "amount": 41400.0, "currency": "PKR"},
@@ -392,13 +399,15 @@ async def test_multi_currency_checkout_webhooks_and_hitl_refunds(monkeypatch):
         assert sf_wh.status_code == 200
         assert sf_wh.json()["reconciled"] is True
 
-        pynr_checkout = await client.post(
+        ls_checkout = await client.post(
             "/api/v1/payments/checkout",
-            json={"provider": "payoneer", "purpose": "wallet_topup", "pack_id": "pack_growth", "currency": "USD"},
+            json={"provider": "lemonsqueezy", "purpose": "subscription", "plan_name": "starter", "currency": "PKR"},
             headers=tenant_headers,
         )
-        assert pynr_checkout.status_code == 200
-        assert "payouts@teloxtech.stream" in pynr_checkout.json()["data"]["instructions"]
+        assert ls_checkout.status_code == 200
+        ls_url = ls_checkout.json()["data"]["checkout_url"]
+        assert f"checkout[custom][tenant_id]={tenant_id}" in ls_url
+        assert "checkout[custom][user_id]=" in ls_url
 
         # 3. Wallet balance accumulated cleanly: 250 (PayFast) + 500 (Safepay plan grant) = 750
         w_after = await client.get("/api/v1/payments/wallet", headers=tenant_headers)

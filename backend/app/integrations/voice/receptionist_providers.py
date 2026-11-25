@@ -448,6 +448,20 @@ class RetellAIAdapter:
                     "type": "cold_transfer",
                 },
             },
+            {
+                "type": "custom",
+                "name": "search_business_knowledge",
+                "description": "Search the business knowledge base (website services, pricing PDFs, clinic procedures) for exact answers.",
+                "url": f"{base}/api/v1/receptionist/tools/{tenant_id}/knowledge/search",
+                "speak_during_execution": False,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Caller question or topic to look up"},
+                    },
+                    "required": ["query"],
+                },
+            },
         ]
 
     async def create_or_update_agent(

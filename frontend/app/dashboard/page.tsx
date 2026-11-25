@@ -66,12 +66,11 @@ interface OverviewPayload {
       account_number: string;
       iban: string;
     };
-    payoneer: {
+    lemonsqueezy?: {
       enabled: boolean;
+      test_mode: boolean;
+      store_id: string | null;
       status: string;
-      account_email: string;
-      receiving_details: string;
-      currency: string;
     };
   };
   current_package: string;
@@ -177,6 +176,31 @@ export default function ClientDashboardPage() {
   const [notifySuccessMsg, setNotifySuccessMsg] = useState<string | null>(null);
   const [notifyErrorMsg, setNotifyErrorMsg] = useState<string | null>(null);
   const [trialStarting, setTrialStarting] = useState(false);
+  const [weeklyRoi, setWeeklyRoi] = useState<{
+    calls_handled: number;
+    appointments_booked: number;
+    noshows_recovered: number;
+    hot_leads: number;
+    estimated_revenue_saved: number;
+    estimated_hours_saved: number;
+  } | null>(null);
+  const [sendingRoi, setSendingRoi] = useState(false);
+
+  const handleSendWeeklyRoi = async () => {
+    setSendingRoi(true);
+    setNotifyErrorMsg(null);
+    setNotifySuccessMsg(null);
+    try {
+      const res = await apiRequest("/api/v1/analytics/weekly-roi/send", { method: "POST" });
+      if (res.success) {
+        setNotifySuccessMsg("Weekly AI ROI Report sent to owner Email & WhatsApp!");
+      } else {
+        setNotifyErrorMsg(res.error?.message || "Failed to send Weekly ROI Report.");
+      }
+    } finally {
+      setSendingRoi(false);
+    }
+  };
 
   const handleStartTrialFromDashboard = async () => {
     setTrialStarting(true);
@@ -209,7 +233,13 @@ export default function ClientDashboardPage() {
     setOverviewError(null);
     setLoading(true);
     try {
-      const res = await apiRequest<OverviewPayload>(`/api/v1/tenants/${tenant.id}/overview`);
+      const [res, roiRes] = await Promise.all([
+        apiRequest<OverviewPayload>(`/api/v1/tenants/${tenant.id}/overview`),
+        apiRequest<any>("/api/v1/analytics/weekly-roi"),
+      ]);
+      if (roiRes?.success && roiRes.data) {
+        setWeeklyRoi(roiRes.data);
+      }
       if (res.data) {
         setOverview(res.data);
         if (typeof window !== "undefined" && Array.isArray(res.data.enabled_modules)) {
@@ -541,31 +571,36 @@ export default function ClientDashboardPage() {
               </div>
             </div>
 
-            {/* International Payoneer (USD) Receiving Rail */}
-            {overview?.payment_rails?.payoneer && (
+            {/* Global Card / PayPal Subscriptions via Lemon Squeezy */}
+            {overview?.payment_rails?.lemonsqueezy && (
               <div className="rounded-xl border border-slate-800 bg-slate-900/70 p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
                 <div className="space-y-0.5">
                   <div className="flex items-center gap-2">
-                    <span className="font-bold text-white">International Payoneer (USD)</span>
+                    <span className="font-bold text-white">Global Cards &amp; Subscriptions (Lemon Squeezy)</span>
                     <span
                       className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase border ${
-                        overview.payment_rails.payoneer.enabled
+                        overview.payment_rails.lemonsqueezy.enabled
                           ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/30"
                           : "bg-amber-500/20 text-amber-300 border-amber-500/30"
                       }`}
                     >
-                      {overview.payment_rails.payoneer.enabled ? "Active" : "Account Approval Pending"}
+                      {overview.payment_rails.lemonsqueezy.test_mode
+                        ? "Test Mode Active"
+                        : overview.payment_rails.lemonsqueezy.enabled
+                        ? "Active"
+                        : "Setup Needed"}
                     </span>
                   </div>
                   <p className="text-[11px] text-slate-400">
-                    {overview.payment_rails.payoneer.receiving_details}
+                    Pay your monthly SaaS subscription securely via Visa, Mastercard, Apple Pay, or PayPal on /billing.
                   </p>
                 </div>
-                {overview.payment_rails.payoneer.enabled && (
-                  <span className="font-mono text-xs font-semibold text-emerald-400 shrink-0">
-                    {overview.payment_rails.payoneer.account_email}
-                  </span>
-                )}
+                <a
+                  href="/billing"
+                  className="rounded-lg bg-emerald-500 px-3 py-1.5 text-xs font-bold text-slate-950 hover:bg-emerald-400 shrink-0 transition"
+                >
+                  Open Billing Checkout →
+                </a>
               </div>
             )}
 
@@ -1055,6 +1090,56 @@ export default function ClientDashboardPage() {
                   </div>
                 )}
               </div>
+
+              {/* Weekly ROI Summary Card (Calls, No-Show Recovery & Revenue Protected) */}
+              {weeklyRoi && (
+                <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm space-y-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div>
+                      <h3 className="text-base font-bold text-slate-900">
+                        Weekly AI ROI &amp; Call Intelligence Report
+                      </h3>
+                      <p className="text-xs text-slate-500">
+                        Automated Monday summary across voice calls, qualified Hot leads, and recovered no-shows.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={sendingRoi}
+                      onClick={handleSendWeeklyRoi}
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-3.5 py-2 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-50 transition self-start sm:self-auto"
+                    >
+                      <Send className="h-3.5 w-3.5 text-emerald-400" />
+                      <span>{sendingRoi ? "Sending Report..." : "Send Weekly Report (Email + WhatsApp)"}</span>
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 text-xs">
+                    <div className="rounded-lg bg-slate-50 border border-slate-100 p-3">
+                      <p className="text-[11px] text-slate-500">Calls Handled</p>
+                      <p className="text-lg font-extrabold text-slate-900">{weeklyRoi.calls_handled}</p>
+                    </div>
+                    <div className="rounded-lg bg-slate-50 border border-slate-100 p-3">
+                      <p className="text-[11px] text-slate-500">Hot Leads Scored</p>
+                      <p className="text-lg font-extrabold text-rose-600">{weeklyRoi.hot_leads}</p>
+                    </div>
+                    <div className="rounded-lg bg-slate-50 border border-slate-100 p-3">
+                      <p className="text-[11px] text-slate-500">Bookings</p>
+                      <p className="text-lg font-extrabold text-emerald-700">{weeklyRoi.appointments_booked}</p>
+                    </div>
+                    <div className="rounded-lg bg-slate-50 border border-slate-100 p-3">
+                      <p className="text-[11px] text-slate-500">Confirmed / Recovered</p>
+                      <p className="text-lg font-extrabold text-blue-700">{weeklyRoi.noshows_recovered}</p>
+                    </div>
+                    <div className="rounded-lg bg-emerald-50 border border-emerald-200 p-3">
+                      <p className="text-[11px] text-emerald-800 font-semibold">Est. Revenue Protected</p>
+                      <p className="text-lg font-extrabold text-emerald-900">
+                        ${weeklyRoi.estimated_revenue_saved.toLocaleString()}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {/* Bottom Section: Reports & Business Results + Recent Activity Feed */}
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

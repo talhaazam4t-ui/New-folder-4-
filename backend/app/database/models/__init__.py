@@ -19,13 +19,19 @@ from app.database.models.automation import (
     UsageRecord,
 )
 from app.database.models.base import Base, TimestampMixin
-from app.database.models.billing import Invoice, Payment, TenantWallet, UsageLedger
+from app.database.models.billing import Invoice, Payment, Subscription, TenantWallet, UsageLedger
 from app.database.models.business import BusinessMetric, BusinessRecord
 from app.database.models.finance import (
     FinancialAccount,
     FinancialAuditLog,
     FinancialTransaction,
     RentSchedule,
+)
+from app.database.models.knowledge import (
+    KnowledgeChunk,
+    KnowledgeDocument,
+    OmnichannelSession,
+    WhatsAppMessage,
 )
 from app.database.models.marketing import Lead, MarketingCampaign, MarketingMetric
 from app.database.models.receptionist import (
@@ -47,6 +53,7 @@ __all__ = [
     "ServiceSubscription",
     "Payment",
     "Invoice",
+    "Subscription",
     "TenantWallet",
     "UsageLedger",
     "BusinessRecord",
@@ -74,4 +81,8 @@ __all__ = [
     "PlatformVoiceCredential",
     "ReceptionistConfig",
     "ReceptionistCallLog",
+    "KnowledgeDocument",
+    "KnowledgeChunk",
+    "OmnichannelSession",
+    "WhatsAppMessage",
 ]

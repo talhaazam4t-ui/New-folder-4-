@@ -119,6 +119,12 @@ export function Sidebar({
       visible: hasAny(["office_receptionist", "whatsapp_concierge", "appointments"]),
     },
     {
+      label: "Live CRM Inbox",
+      href: "/inbox",
+      icon: MessageSquare,
+      visible: hasAny(["whatsapp_concierge", "office_receptionist", "lead_crm", "multi_agent_orchestration"]),
+    },
+    {
       label: "Outreach & Approvals",
       href: "/agents",
       icon: Bot,

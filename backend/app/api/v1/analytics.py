@@ -12,6 +12,7 @@ from app.database.models.automation import AnalyticsEvent, Approval, AuditLog, U
 from app.database.supabase import get_db
 from app.dependencies import require_permission
 from app.services.business_service import business_service
+from app.services.call_intelligence_service import call_intelligence_service
 from app.services.marketing_service import marketing_service
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
@@ -207,3 +208,32 @@ async def list_tenant_audit_logs(
         for row in res.scalars().all()
     ]
     return {"success": True, "data": logs}
+
+
+@router.get("/weekly-roi")
+async def get_weekly_roi_summary(
+    days: int = Query(7, ge=1, le=90),
+    context: TenantContext = Depends(require_permission("tenant.read")),
+    session: AsyncSession = Depends(get_db),
+):
+    """Return 7-day AI Receptionist, Call Scoring, No-Show Recovery & WhatsApp ROI metrics."""
+    report = await call_intelligence_service.build_weekly_roi_report(
+        session=session,
+        tenant_id=context.tenant_id,
+        days=days,
+    )
+    return {"success": True, "data": report}
+
+
+@router.post("/weekly-roi/send")
+async def send_weekly_roi_summary_now(
+    context: TenantContext = Depends(require_permission("notifications.send")),
+    session: AsyncSession = Depends(get_db),
+):
+    """Generate and deliver Weekly ROI Summary immediately via Email (Resend) & WhatsApp."""
+    res = await call_intelligence_service.send_weekly_roi_report(
+        session=session,
+        tenant_id=context.tenant_id,
+        actor_id=context.user_id,
+    )
+    return {"success": True, "data": res, "message": "Weekly ROI Summary dispatched"}

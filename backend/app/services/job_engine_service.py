@@ -43,6 +43,21 @@ class JobEngineService:
         self.register_handler("post_payment_provision", self._handle_post_payment_provision)
         self.register_handler("outreach_autopilot_run", self._handle_outreach_autopilot_run)
         self.register_handler("webhook_dispatch", self._handle_webhook_dispatch)
+        self.register_handler("appointment_reminder", self._handle_appointment_reminder)
+
+    async def _handle_appointment_reminder(self, session: AsyncSession, job: ScheduledJob) -> Any:
+        if not job.tenant_id:
+            return {"skipped": "missing_tenant_id"}
+        call_log_id_raw = (job.payload or {}).get("call_log_id")
+        if not call_log_id_raw:
+            return {"skipped": "missing_call_log_id"}
+        from app.services.noshow_recovery_service import noshow_recovery_service
+
+        return await noshow_recovery_service.dispatch_appointment_reminder(
+            session=session,
+            tenant_id=job.tenant_id,
+            call_log_id=uuid.UUID(str(call_log_id_raw)),
+        )
 
     async def _handle_expire_trials(self, session: AsyncSession, job: ScheduledJob) -> Any:
         return await wallet_service.expire_elapsed_trials(session)

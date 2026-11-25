@@ -17,6 +17,7 @@ from app.config import settings
 from app.core.tenant_context import TenantContext
 from app.database.supabase import get_db
 from app.dependencies import require_permission
+from app.services.call_intelligence_service import call_intelligence_service
 from app.services.job_engine_service import job_engine_service
 from app.services.outreach_autopilot_service import outreach_autopilot_service
 from app.services.wallet_service import wallet_service
@@ -64,6 +65,7 @@ async def trigger_internal_cron_tick(
     expired_approvals_count = await background_task_worker.expire_stale_approvals(session)
     expired_trials_res = await wallet_service.expire_elapsed_trials(session)
     autopilot_res = await outreach_autopilot_service.run_scheduled_autopilot_tick(session)
+    weekly_roi_res = await call_intelligence_service.run_monday_weekly_roi_tick(session)
 
     return {
         "success": True,
@@ -74,6 +76,7 @@ async def trigger_internal_cron_tick(
             "expired_approvals": expired_approvals_count,
             "trial_expiration": expired_trials_res,
             "outreach_autopilot": autopilot_res,
+            "weekly_roi": weekly_roi_res,
         },
         "message": "Native asyncio scheduler tick completed cleanly",
     }

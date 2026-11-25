@@ -251,6 +251,8 @@ class ReceptionistService:
         }
 
     def _to_call_dict(self, row: ReceptionistCallLog) -> Dict[str, Any]:
+        meta = dict(row.metadata_ or {})
+        intel = meta.get("call_intelligence") or {}
         return {
             "id": str(row.id),
             "tenant_id": str(row.tenant_id),
@@ -268,6 +270,10 @@ class ReceptionistService:
             "summary": row.summary,
             "transcript": row.transcript,
             "recording_url": row.recording_url,
+            "sentiment": intel.get("sentiment"),
+            "lead_tier": intel.get("lead_tier"),
+            "lead_score": intel.get("lead_score"),
+            "reminder_sent_at": meta.get("reminder_sent_at"),
             "created_at": row.created_at.isoformat() if row.created_at else datetime.now(timezone.utc).isoformat(),
         }
 
@@ -664,6 +670,11 @@ class ReceptionistService:
             channel="in_app",
         )
         await session.commit()
+        await session.refresh(call_log)
+
+        from app.services.noshow_recovery_service import noshow_recovery_service
+
+        await noshow_recovery_service.schedule_appointment_reminder(session, tenant_id, call_log)
         return booking
 
     async def handle_retell_webhook(
@@ -758,6 +769,11 @@ class ReceptionistService:
                 metadata={"duration_seconds": duration_sec, "status": status_val},
                 enforce_pause=False,
             )
+
+        if status_val in ("completed", "transferred"):
+            from app.services.call_intelligence_service import call_intelligence_service
+
+            await call_intelligence_service.analyze_call_and_score_lead(session, cfg.tenant_id, log)
 
         return {"processed": True, "call_log_id": str(log.id), "tenant_id": str(cfg.tenant_id)}
 
@@ -925,6 +941,11 @@ class ReceptionistService:
             enforce_pause=False,
         )
 
+        from app.services.call_intelligence_service import call_intelligence_service
+
+        await call_intelligence_service.analyze_call_and_score_lead(session, tenant_id, log)
+        await session.refresh(log)
+
         return self._to_call_dict(log)
 
     async def list_calls_and_summary(
@@ -941,7 +962,9 @@ class ReceptionistService:
         )
         rows = list(res.scalars().all())
         total_calls = len(rows)
-        booked_calls = [r for r in rows if r.booking_status == "booked"]
+        booked_calls = [
+            r for r in rows if r.booking_status in ("booked", "confirmed", "reschedule_requested")
+        ]
         transfers = sum(1 for r in rows if r.transferred_to_human)
         avg_duration = round(sum(int(r.duration_seconds or 0) for r in rows) / total_calls, 1) if total_calls else 0.0
         return {

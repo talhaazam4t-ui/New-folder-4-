@@ -1,11 +1,11 @@
-"""Multi-Currency Payment Provider Abstraction Layer (PKR + USD).
+"""Multi-Currency Payment Provider Abstraction Layer.
 
 Supports:
-1. ManualPaymentProvider (Faysal Bank Direct PKR Transfer)
-2. StripeProvider (USD Checkout Sessions + HMAC-SHA256 `t=...,v1=...` webhooks)
-3. PayFastPakistanProvider (PKR Hosted Checkout + HMAC-SHA256 webhooks)
-4. SafepayProvider (PKR Safepay Order Init + `X-SFPY-SIGNATURE` HMAC webhooks)
-5. PayoneerProvider (USD Payoneer Receiving Account + HMAC webhooks)
+1. LemonSqueezyProvider (Primary Global Merchant-of-Record Checkout + X-Signature HMAC-SHA256 webhooks; payouts routed in Lemon Squeezy Settings > Payouts)
+2. PayFastPakistanProvider (PKR Hosted Checkout + HMAC-SHA256 webhooks)
+3. SafepayProvider (PKR Safepay Order Init + `X-SFPY-SIGNATURE` HMAC webhooks)
+4. StripeProvider (USD Checkout Sessions + HMAC-SHA256 `t=...,v1=...` webhooks)
+5. ManualPaymentProvider (Faysal Bank Direct PKR Transfer)
 """
 
 import hashlib
@@ -13,7 +13,7 @@ import hmac
 import urllib.parse
 import uuid
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import httpx
 from app.config import settings
@@ -70,6 +70,192 @@ class PaymentProvider(ABC):
     ) -> bool:
         """Cryptographically verify incoming provider webhook payload."""
         pass
+
+
+class LemonSqueezyProvider(PaymentProvider):
+    """Lemon Squeezy Merchant-of-Record Checkout & `X-Signature` HMAC-SHA256 Webhook Adapter."""
+
+    @staticmethod
+    def resolve_tier_variant(
+        plan_name: Optional[str] = None,
+        variant_override: Optional[str] = None,
+    ) -> Tuple[str, Optional[str], Optional[str]]:
+        tier = (plan_name or "starter").strip().lower()
+        if "ent" in tier:
+            tier = "enterprise"
+        elif "grow" in tier or "pro" in tier:
+            tier = "growth"
+        else:
+            tier = "starter"
+
+        variant_map = {
+            "starter": (
+                (settings.lemonsqueezy_variant_id_starter or "").strip() or None,
+                (settings.lemonsqueezy_checkout_url_starter or "").strip() or None,
+            ),
+            "growth": (
+                (settings.lemonsqueezy_variant_id_growth or "").strip() or None,
+                (settings.lemonsqueezy_checkout_url_growth or "").strip() or None,
+            ),
+            "enterprise": (
+                (settings.lemonsqueezy_variant_id_enterprise or "").strip() or None,
+                (settings.lemonsqueezy_checkout_url_enterprise or "").strip() or None,
+            ),
+        }
+        default_variant, buy_url = variant_map[tier]
+        chosen_variant = (variant_override or "").strip() or default_variant
+        return tier, chosen_variant, buy_url
+
+    @staticmethod
+    def append_custom_checkout_params(
+        base_url: str,
+        tenant_id: str,
+        user_id: Optional[str],
+        plan_name: str,
+        purpose: str,
+        credits: Optional[float] = None,
+        email: Optional[str] = None,
+    ) -> str:
+        params = [
+            f"checkout[custom][tenant_id]={urllib.parse.quote(str(tenant_id))}",
+            f"checkout[custom][user_id]={urllib.parse.quote(str(user_id or ''))}",
+            f"checkout[custom][plan_name]={urllib.parse.quote(str(plan_name))}",
+            f"checkout[custom][purpose]={urllib.parse.quote(str(purpose))}",
+        ]
+        if credits is not None:
+            params.append(f"checkout[custom][credits]={urllib.parse.quote(str(credits))}")
+        if email:
+            params.append(f"checkout[email]={urllib.parse.quote(str(email))}")
+        sep = "&" if "?" in base_url else "?"
+        return f"{base_url}{sep}{'&'.join(params)}"
+
+    async def create_payment_intent(
+        self,
+        tenant_id: str,
+        amount: float,
+        currency: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> PaymentIntentResult:
+        meta = dict(metadata or {})
+        user_id = str(meta.get("user_id") or "")
+        purpose = str(meta.get("purpose") or "subscription")
+        credits_val = meta.get("credits")
+        email = str(meta.get("email") or "").strip() or None
+        tier, variant_id, configured_buy_url = self.resolve_tier_variant(
+            plan_name=meta.get("plan_name"),
+            variant_override=meta.get("variant_id"),
+        )
+        ref_id = f"LS-{tenant_id[:8].upper()}-{uuid.uuid4().hex[:6].upper()}"
+        api_key = (settings.lemonsqueezy_api_key or "").strip()
+        store_id = (settings.lemonsqueezy_store_id or "").strip()
+
+        custom_payload: Dict[str, str] = {
+            "tenant_id": str(tenant_id),
+            "user_id": user_id,
+            "plan_name": tier,
+            "purpose": purpose,
+            "provider_reference": ref_id,
+        }
+        if credits_val is not None:
+            custom_payload["credits"] = str(credits_val)
+        if meta.get("invoice_id"):
+            custom_payload["invoice_id"] = str(meta["invoice_id"])
+        if meta.get("subscription_id"):
+            custom_payload["subscription_id"] = str(meta["subscription_id"])
+
+        # Prefer dynamic Lemon Squeezy Checkouts REST API when live credentials + variant exist
+        if api_key and store_id and variant_id and settings.app_env != "test":
+            checkout_data: Dict[str, Any] = {"custom": custom_payload}
+            if email:
+                checkout_data["email"] = email
+
+            body: Dict[str, Any] = {
+                "data": {
+                    "type": "checkouts",
+                    "attributes": {
+                        "checkout_data": checkout_data,
+                        "product_options": {
+                            "redirect_url": f"{settings.frontend_url}/billing?checkout=success&provider=lemonsqueezy&ref={ref_id}",
+                        },
+                    },
+                    "relationships": {
+                        "store": {"data": {"type": "stores", "id": str(store_id)}},
+                        "variant": {"data": {"type": "variants", "id": str(variant_id)}},
+                    },
+                }
+            }
+            if settings.lemonsqueezy_test_mode:
+                body["data"]["attributes"]["test_mode"] = True
+
+            try:
+                async with httpx.AsyncClient(timeout=15.0) as client:
+                    resp = await client.post(
+                        "https://api.lemonsqueezy.com/v1/checkouts",
+                        json=body,
+                        headers={
+                            "Authorization": f"Bearer {api_key}",
+                            "Accept": "application/vnd.api+json",
+                            "Content-Type": "application/vnd.api+json",
+                        },
+                    )
+                    if resp.status_code in (200, 201):
+                        data_obj = resp.json().get("data") or {}
+                        attrs = data_obj.get("attributes") or {}
+                        live_url = str(attrs.get("url") or "")
+                        if live_url:
+                            return PaymentIntentResult(
+                                success=True,
+                                provider="lemonsqueezy",
+                                reference_id=str(data_obj.get("id") or ref_id),
+                                amount=float(amount),
+                                currency=currency.upper()[:3],
+                                status="pending",
+                                checkout_url=live_url,
+                                instructions=(
+                                    f"Complete Lemon Squeezy {'Test Mode ' if settings.lemonsqueezy_test_mode else ''}"
+                                    f"subscription checkout ({tier.title()} tier). Workspace activates automatically on webhook confirmation."
+                                ),
+                                is_mock=False,
+                            )
+            except Exception:
+                pass
+
+        # Hosted Buy URL fallback with explicit checkout[custom][tenant_id] & checkout[custom][user_id]
+        base_buy = (
+            configured_buy_url
+            or f"https://teloxtech.lemonsqueezy.com/checkout/buy/{variant_id or tier}"
+        )
+        checkout_url = self.append_custom_checkout_params(
+            base_url=base_buy,
+            tenant_id=str(tenant_id),
+            user_id=user_id,
+            plan_name=tier,
+            purpose=purpose,
+            credits=credits_val,
+            email=email,
+        )
+        return PaymentIntentResult(
+            success=True,
+            provider="lemonsqueezy",
+            reference_id=ref_id,
+            amount=float(amount),
+            currency=currency.upper()[:3],
+            status="pending",
+            checkout_url=checkout_url,
+            instructions=(
+                f"Lemon Squeezy hosted checkout ready for {tier.title()} tier "
+                f"(workspace ID embedded in checkout metadata)."
+            ),
+            is_mock=not bool(api_key and variant_id),
+        )
+
+    def verify_webhook_signature(
+        self,
+        payload: bytes,
+        signature: str,
+    ) -> bool:
+        secret = (settings.lemonsqueezy_webhook_secret or settings.payment_webhook_secret or "").strip()
+        return _verify_hex_hmac(secret, payload, signature)
 
 
 class ManualPaymentProvider(PaymentProvider):
@@ -332,48 +518,6 @@ class SafepayProvider(PaymentProvider):
         return _verify_hex_hmac(secret, payload, signature)
 
 
-class PayoneerProvider(PaymentProvider):
-    """Payoneer International USD Adapter."""
-
-    async def create_payment_intent(
-        self,
-        tenant_id: str,
-        amount: float,
-        currency: str,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> PaymentIntentResult:
-        payoneer_email = (settings.payoneer_account_email or "").strip()
-        is_live = bool(payoneer_email and payoneer_email.lower() != "mock")
-        ref_id = f"PYNR-{tenant_id[:8].upper()}-{uuid.uuid4().hex[:6].upper()}"
-        details = (settings.payoneer_receiving_details or "").strip()
-
-        return PaymentIntentResult(
-            success=True,
-            provider="payoneer",
-            reference_id=ref_id,
-            amount=float(amount),
-            currency=currency.upper()[:3] or "USD",
-            status="pending",
-            instructions=(
-                details
-                or (
-                    f"Send ${float(amount):,.2f} USD via Payoneer to {payoneer_email} with Memo '{ref_id}'."
-                    if is_live
-                    else f"Payoneer USD reference '{ref_id}' generated. Payoneer account approval pending — add PAYONEER_ACCOUNT_EMAIL on Render once approved."
-                )
-            ),
-            is_mock=not is_live,
-        )
-
-    def verify_webhook_signature(
-        self,
-        payload: bytes,
-        signature: str,
-    ) -> bool:
-        secret = (settings.payoneer_webhook_secret or settings.payment_webhook_secret or "").strip()
-        return _verify_hex_hmac(secret, payload, signature)
-
-
 # Preserve backwards-compatible symbol name
 MockStripeProvider = StripeProvider
 
@@ -381,12 +525,12 @@ MockStripeProvider = StripeProvider
 def get_payment_provider(provider_type: str = "manual") -> PaymentProvider:
     """Factory resolving configured payment provider."""
     normalized = (provider_type or "manual").strip().lower()
+    if normalized in ("lemonsqueezy", "lemon_squeezy"):
+        return LemonSqueezyProvider()
     if normalized == "stripe":
         return StripeProvider()
     if normalized == "payfast":
         return PayFastPakistanProvider()
     if normalized == "safepay":
         return SafepayProvider()
-    if normalized == "payoneer":
-        return PayoneerProvider()
     return ManualPaymentProvider()

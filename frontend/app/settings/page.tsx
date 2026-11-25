@@ -297,7 +297,7 @@ export default function SettingsPage() {
                   Unified Integrations &amp; Browser-Auth Checklist
                 </h2>
                 <p className="text-xs text-slate-400 mt-0.5">
-                  Where external login/2FA is required (Google, Meta, Retell/Cal.com, LinkedIn, Payoneer), follow each card&apos;s quick setup checklist.
+                  Where external login/2FA is required (Google, Meta, Retell/Cal.com, LinkedIn, Lemon Squeezy), follow each card&apos;s quick setup checklist.
                 </p>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
@@ -308,7 +308,7 @@ export default function SettingsPage() {
                       : ck.status === "needs_oauth" ||
                         ck.status === "sandbox_token" ||
                         ck.status === "draft" ||
-                        ck.status === "bank_ready_payoneer_pending"
+                        ck.status === "bank_ready"
                       ? "bg-amber-950 text-amber-300 border-amber-700"
                       : "bg-slate-800 text-slate-300 border-slate-700";
 
@@ -321,8 +321,8 @@ export default function SettingsPage() {
                       ? "OAuth Login Needed"
                       : ck.status === "sandbox_token"
                       ? "Sandbox / Token"
-                      : ck.status === "bank_ready_payoneer_pending"
-                      ? "Bank Active • Payoneer Pending"
+                      : ck.status === "bank_ready"
+                      ? "Bank Ready"
                       : ck.status === "planned_phase4"
                       ? "Phase 4 Meta Webhook"
                       : "Setup Needed";
