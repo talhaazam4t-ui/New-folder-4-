@@ -1261,7 +1261,18 @@ class BillingService:
             )
             return {"event_name": clean_event, **rec}
 
-        if clean_event not in ("subscription_created", "subscription_updated", "subscription_cancelled"):
+        allowed_ls_events = (
+            "subscription_created",
+            "subscription_updated",
+            "subscription_cancelled",
+            "subscription_payment_failed",
+            "subscription_payment_success",
+            "subscription_payment_recovered",
+            "subscription_expired",
+            "subscription_paused",
+            "subscription_resumed",
+        )
+        if clean_event not in allowed_ls_events:
             return {
                 "reconciled": False,
                 "event_name": clean_event,
@@ -1279,6 +1290,14 @@ class BillingService:
         raw_status = str(attrs.get("status") or "").strip().lower()
         if clean_event == "subscription_cancelled":
             sub_status = "cancelled"
+        elif clean_event == "subscription_payment_failed":
+            sub_status = raw_status if raw_status in ("past_due", "unpaid") else "past_due"
+        elif clean_event == "subscription_expired":
+            sub_status = "expired"
+        elif clean_event == "subscription_paused":
+            sub_status = "paused"
+        elif clean_event in ("subscription_payment_success", "subscription_payment_recovered", "subscription_resumed"):
+            sub_status = "active"
         elif raw_status:
             sub_status = raw_status
         else:
@@ -1340,6 +1359,7 @@ class BillingService:
 
         now_utc = datetime.now(timezone.utc)
         is_entitled = sub_status in ("active", "on_trial")
+        is_payment_failure = clean_event == "subscription_payment_failed" or sub_status in ("past_due", "unpaid")
         curr_settings = dict(tenant.settings or {})
         curr_settings["subscription_provider"] = "lemon_squeezy"
         curr_settings["subscription_status"] = sub_status
@@ -1347,18 +1367,27 @@ class BillingService:
         if customer_id:
             curr_settings["lemon_squeezy_customer_id"] = customer_id
 
+        from app.automation.budget_manager import budget_manager
+
         if is_entitled:
             curr_settings["payment_approved"] = True
             curr_settings["automation_approved_by_owner"] = True
             curr_settings["trial_active"] = sub_status == "on_trial"
             curr_settings["trial_expired"] = False
             curr_settings["payment_approved_at"] = now_utc.isoformat()
-            if tenant.status in ("pending_approval", "unpaid"):
+            if tenant.status in ("pending_approval", "unpaid", "suspended"):
                 tenant.status = "active"
-        elif sub_status in ("cancelled", "expired", "unpaid", "paused"):
+            budget_manager.get_or_create_record(str(tenant_uuid)).suspended = False
+        elif is_payment_failure:
             curr_settings["payment_approved"] = False
             curr_settings["automation_approved_by_owner"] = False
-            if sub_status in ("expired", "unpaid"):
+            curr_settings["suspended_reason"] = f"lemonsqueezy_{clean_event}"
+            tenant.status = "suspended"
+            budget_manager.get_or_create_record(str(tenant_uuid)).suspended = True
+        elif sub_status in ("cancelled", "expired", "paused"):
+            curr_settings["payment_approved"] = False
+            curr_settings["automation_approved_by_owner"] = False
+            if sub_status == "expired":
                 tenant.status = "pending_approval"
 
         tenant.settings = curr_settings
@@ -1373,6 +1402,8 @@ class BillingService:
                 srv_sub.plan_name = tier
                 if renews_at:
                     srv_sub.expires_at = renews_at
+            elif is_payment_failure or sub_status == "paused":
+                srv_sub.status = "paused"
             elif sub_status in ("cancelled", "expired"):
                 srv_sub.status = "canceled"
 
@@ -1388,11 +1419,21 @@ class BillingService:
                     "provider_subscription_id": sub_id_str,
                     "tier": tier,
                     "status": sub_status,
+                    "tenant_status": tenant.status,
                 },
             )
         )
         await session.commit()
         await session.refresh(sub_row)
+
+        if is_entitled:
+            from app.services.tier_quota_service import tier_quota_service
+
+            await tier_quota_service.set_tenant_tier(
+                session=session,
+                tenant_id=tenant_uuid,
+                new_tier=tier,
+            )
 
         if clean_event == "subscription_created" and is_entitled:
             from app.services.wallet_service import PLAN_ACTIVATION_BONUS_CREDITS, wallet_service

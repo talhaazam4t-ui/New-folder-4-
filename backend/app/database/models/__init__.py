@@ -27,6 +27,7 @@ from app.database.models.finance import (
     FinancialTransaction,
     RentSchedule,
 )
+from app.database.models.governance import TenantTierQuota
 from app.database.models.knowledge import (
     KnowledgeChunk,
     KnowledgeDocument,
@@ -107,4 +108,5 @@ __all__ = [
     "HunterFollowup",
     "HunterConversation",
     "HunterModuleSetting",
+    "TenantTierQuota",
 ]

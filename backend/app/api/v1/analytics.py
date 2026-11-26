@@ -5,6 +5,7 @@ from typing import Any, Dict, Optional
 import uuid
 
 from app.automation.budget_manager import budget_manager
+from app.core.provider_circuit_breaker import provider_circuit_breaker
 from app.core.rate_limit import limiter
 from app.core.tenant_context import TenantContext
 from app.database.models.agent import AgentExecution
@@ -14,6 +15,7 @@ from app.dependencies import require_permission
 from app.services.business_service import business_service
 from app.services.call_intelligence_service import call_intelligence_service
 from app.services.marketing_service import marketing_service
+from app.services.tier_quota_service import tier_quota_service
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
@@ -237,3 +239,68 @@ async def send_weekly_roi_summary_now(
         actor_id=context.user_id,
     )
     return {"success": True, "data": res, "message": "Weekly ROI Summary dispatched"}
+
+
+class TierQuotaMeterRequest(BaseModel):
+    tokens_delta: int = Field(default=0, ge=0, le=5000000)
+    api_calls_delta: int = Field(default=0, ge=0, le=500000)
+    voice_minutes_delta: float = Field(default=0.0, ge=0.0, le=50000.0)
+
+
+class TierQuotaUpgradeRequest(BaseModel):
+    tier: str = Field(description="starter | growth | enterprise")
+
+
+@router.get("/tier-quota")
+async def get_tenant_tier_quota_status(
+    context: TenantContext = Depends(require_permission("tenant.read")),
+    session: AsyncSession = Depends(get_db),
+):
+    """Return the active tenant's subscription tier usage counters, 80% warning & 100% hard-lock status."""
+    row = await tier_quota_service.get_or_create_quota(session, context.tenant_id)
+    await session.commit()
+    return {"success": True, "data": tier_quota_service.serialize_quota(row)}
+
+
+@router.post("/tier-quota/meter")
+async def meter_tenant_tier_usage(
+    request: TierQuotaMeterRequest,
+    context: TenantContext = Depends(require_permission("tenant.read")),
+    session: AsyncSession = Depends(get_db),
+):
+    """Record token, API call, or voice minute consumption with 80% low-balance alert and 100% hard-lock."""
+    data = await tier_quota_service.record_usage(
+        session=session,
+        tenant_id=context.tenant_id,
+        tokens_delta=request.tokens_delta,
+        api_calls_delta=request.api_calls_delta,
+        voice_minutes_delta=request.voice_minutes_delta,
+        enforce_lock_before=True,
+        actor_id=context.user_id,
+    )
+    return {"success": True, "data": data}
+
+
+@router.post("/tier-quota/upgrade")
+async def upgrade_tenant_subscription_tier(
+    request: TierQuotaUpgradeRequest,
+    context: TenantContext = Depends(require_permission("subscriptions.update")),
+    session: AsyncSession = Depends(get_db),
+):
+    """Update the tenant's subscription tier (`starter`, `growth`, `enterprise`) and unlock hard-locks."""
+    data = await tier_quota_service.set_tenant_tier(
+        session=session,
+        tenant_id=context.tenant_id,
+        new_tier=request.tier,
+        actor_id=context.user_id,
+    )
+    return {"success": True, "data": data, "message": f"Tier updated to '{data['tier']}'"}
+
+
+@router.get("/circuit-breakers")
+async def get_provider_circuit_breakers_status(
+    context: TenantContext = Depends(require_permission("tenant.read")),
+):
+    """Return external provider circuit breaker status across Free LLMs, Paid DeepSeek, Retell AI & Telnyx."""
+    return {"success": True, "data": provider_circuit_breaker.snapshot()}
+

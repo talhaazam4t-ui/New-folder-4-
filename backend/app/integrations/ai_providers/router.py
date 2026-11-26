@@ -21,6 +21,7 @@ from typing import Any, Dict, Optional
 import httpx
 from app.config import settings
 from app.core.logging import logger
+from app.core.provider_circuit_breaker import provider_circuit_breaker
 from app.core.security import sanitize_ai_prompt
 from pydantic import BaseModel
 
@@ -48,6 +49,9 @@ class AIExecutionResult(BaseModel):
 MODEL_PRICING = {
     "llama-3.3-70b-versatile": {"input": 0.0, "output": 0.0},
     "llama-3.1-8b-instant": {"input": 0.0, "output": 0.0},
+    "gemini-2.5-flash-lite": {"input": 0.0, "output": 0.0},
+    "gemini-2.0-flash": {"input": 0.0, "output": 0.0},
+    "meta-llama/llama-3.3-70b-instruct:free": {"input": 0.0, "output": 0.0},
     "deepseek-chat": {"input": 0.00014, "output": 0.00028},
     "deepseek-reasoner": {"input": 0.00055, "output": 0.00219},
     "mock": {"input": 0.0, "output": 0.0},
@@ -254,11 +258,96 @@ def _resolve_deepseek_api_key() -> str:
         cleaned = _clean_api_key_value(raw)
         if (
             cleaned
-            and not cleaned.startswith("gsk_")
+            and not cleaned.startswith(("gsk_", "sk-or-", "AIza"))
             and cleaned not in ("mock", "your-openrouter-api-key", "your-deepseek-api-key")
         ):
             return cleaned
     return ""
+
+
+def _resolve_gemini_api_key() -> str:
+    """Locate a valid Free-Tier Google Gemini API key."""
+    candidates = [
+        settings.gemini_api_key,
+        os.environ.get("GEMINI_API_KEY"),
+        os.environ.get("GOOGLE_GEMINI_API_KEY"),
+        settings.ai_api_key if _clean_api_key_value(settings.ai_api_key).startswith("AIza") else None,
+    ]
+    for raw in candidates:
+        cleaned = _clean_api_key_value(raw)
+        if (
+            cleaned
+            and len(cleaned) >= 16
+            and cleaned not in ("mock", "your-gemini-api-key")
+            and not cleaned.lower().startswith("your-")
+        ):
+            return cleaned
+    return ""
+
+
+def _resolve_openrouter_api_key() -> str:
+    """Locate a valid OpenRouter API key for free-tier `:free` model routing."""
+    candidates = [
+        os.environ.get("OPENROUTER_API_KEY"),
+        settings.ai_api_key if _clean_api_key_value(settings.ai_api_key).startswith("sk-or-") else None,
+    ]
+    for raw in candidates:
+        cleaned = _clean_api_key_value(raw)
+        if (
+            cleaned
+            and len(cleaned) >= 16
+            and cleaned not in ("mock", "your-openrouter-api-key")
+            and not cleaned.lower().startswith("your-")
+        ):
+            return cleaned
+    return ""
+
+
+async def _call_gemini_free_chat(
+    api_key: str,
+    model_name: str,
+    task_type: str,
+    clean_system: str,
+    clean_prompt: str,
+    temperature: float,
+    max_tokens: int,
+) -> AIExecutionResult:
+    """Execute a chat completion against Google Gemini Free Tier REST API."""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
+    payload: Dict[str, Any] = {
+        "systemInstruction": {"parts": [{"text": clean_system}]},
+        "contents": [{"role": "user", "parts": [{"text": clean_prompt}]}],
+        "generationConfig": {
+            "temperature": temperature,
+            "maxOutputTokens": max_tokens,
+        },
+    }
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(url, params={"key": api_key}, json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+        candidates = data.get("candidates") or []
+        if not candidates:
+            raise ValueError(f"Gemini ({model_name}) returned empty candidates")
+        parts = ((candidates[0].get("content") or {}).get("parts")) or []
+        content = "".join(str(p.get("text") or "") for p in parts).strip()
+        if not content:
+            raise ValueError(f"Gemini ({model_name}) returned empty content")
+        usage = data.get("usageMetadata") or {}
+        prompt_tokens = int(usage.get("promptTokenCount") or max(10, len(clean_prompt) // 4))
+        completion_tokens = int(usage.get("candidatesTokenCount") or max(10, len(content) // 4))
+        return AIExecutionResult(
+            success=True,
+            model=model_name,
+            task_type=task_type,
+            content=content,
+            tokens_prompt=prompt_tokens,
+            tokens_completion=completion_tokens,
+            total_tokens=prompt_tokens + completion_tokens,
+            estimated_cost=0.0,
+            is_mock=False,
+            raw_response=data,
+        )
 
 
 async def route_and_execute_ai_task(
@@ -269,24 +358,27 @@ async def route_and_execute_ai_task(
     temperature: float = 0.2,
     max_tokens: int = 1500,
 ) -> AIExecutionResult:
-    """Sanitize, route, and execute an AI task with 3-tier priority cascade:
-    1. Priority 1 (Primary - Free): Groq API (`GROQ_API_KEY`, `llama-3.3-70b-versatile` -> `llama-3.1-8b-instant`)
-    2. Priority 2 (Paid Fallback): DeepSeek API (`DEEPSEEK_API_KEY`, `deepseek-chat` / `deepseek-reasoner`)
-    3. Priority 3 (Final Safety Net): Built-in resilient local AI engine (`_execute_mock_ai_task`)
+    """Sanitize, route, and execute an AI task with STRICT FREE-FIRST priority cascade:
+    1. Priority 1 (FREE): Groq Free API (`GROQ_SECOND_API_KEY` / `GROQ_API_KEY`, rotating all `gsk_` keys)
+    2. Priority 2 (FREE): Google Gemini Free Tier (`GEMINI_API_KEY`, `gemini-2.5-flash-lite`)
+    3. Priority 3 (FREE): OpenRouter Free Models (`OPENROUTER_API_KEY`, `meta-llama/llama-3.3-70b-instruct:free`)
+    4. Priority 4 (PAID FALLBACK — Only if all free keys are missing/exhausted/circuit-open): DeepSeek API (`DEEPSEEK_API_KEY`)
+    5. Priority 5 (Final Safety Net): Built-in resilient local AI engine (`_execute_mock_ai_task`)
     """
-    # 1. Sanitize prompt for data privacy & compliance
     clean_prompt = sanitize_ai_prompt(prompt)
     clean_system = sanitize_ai_prompt(system_instruction or "You are an AI assistant in Talox Tech Stream.")
-
-    # 2. Select baseline model tier
     target_model = select_model_for_task(task_type)
-    diag_notes = []
+    diag_notes: list[str] = []
 
-    # --- PRIORITY 1: Groq API (Free Primary Provider — tries GROQ_SECOND_API_KEY first, rotates all Groq keys) ---
+    # --- PRIORITY 1 (FREE): Groq API ---
     groq_keys = _resolve_groq_api_keys()
     if not groq_keys:
         diag_notes.append("no_groq_key")
-    if groq_keys and settings.app_env != "test":
+    elif not provider_circuit_breaker.allow_request("groq"):
+        diag_notes.append("groq_circuit_open")
+    elif settings.app_env != "test":
+        groq_failed_all = True
+        last_groq_err = "groq_failed"
         for key_idx, groq_key in enumerate(groq_keys, start=1):
             groq_candidates = list(dict.fromkeys([
                 *_DISCOVERED_GROQ_MODELS,
@@ -300,13 +392,13 @@ async def route_and_execute_ai_task(
                 idx += 1
                 try:
                     logger.info(
-                        "Routing AI task to Groq (Priority 1)",
+                        "Routing AI task to Groq Free Tier (Priority 1)",
                         task_type=task_type,
                         model=groq_model,
                         key_slot=key_idx,
                         tenant_id=tenant_id,
                     )
-                    return await _call_openai_compatible_chat(
+                    res = await _call_openai_compatible_chat(
                         base_url=settings.groq_base_url,
                         api_key=groq_key,
                         model_name=groq_model,
@@ -316,6 +408,8 @@ async def route_and_execute_ai_task(
                         temperature=temperature,
                         max_tokens=max_tokens,
                     )
+                    provider_circuit_breaker.record_success("groq")
+                    return res
                 except httpx.HTTPStatusError as groq_http_exc:
                     code_val = groq_http_exc.response.status_code
                     err_detail = ""
@@ -324,19 +418,11 @@ async def route_and_execute_ai_task(
                         err_detail = str((err_json.get("error") or {}).get("code") or (err_json.get("error") or {}).get("message") or "")[:36]
                     except Exception:
                         pass
+                    last_groq_err = f"groq_k{key_idx}_{groq_model}_http_{code_val}"
                     diag_notes.append(
-                        f"groq_k{key_idx}_{groq_model}_http_{code_val}{f'({err_detail})' if err_detail else ''}"
-                    )
-                    logger.warning(
-                        "Groq model HTTP error; trying next fallback",
-                        model=groq_model,
-                        key_slot=key_idx,
-                        status_code=code_val,
-                        detail=err_detail,
-                        task_type=task_type,
+                        f"{last_groq_err}{f'({err_detail})' if err_detail else ''}"
                     )
                     if code_val in (401, 403):
-                        # Key is invalid/revoked; skip straight to next Groq key
                         break
                     if code_val in (400, 404) and not discovered_for_key:
                         discovered_for_key = True
@@ -345,28 +431,89 @@ async def route_and_execute_ai_task(
                             if lm not in groq_candidates:
                                 groq_candidates.append(lm)
                 except Exception as groq_exc:
-                    diag_notes.append(f"groq_k{key_idx}_{groq_model}_err_{type(groq_exc).__name__}")
-                    logger.warning(
-                        "Groq model execution failed; trying next fallback",
-                        model=groq_model,
-                        key_slot=key_idx,
-                        task_type=task_type,
-                        error=str(groq_exc),
-                    )
+                    last_groq_err = f"groq_k{key_idx}_{groq_model}_err_{type(groq_exc).__name__}"
+                    diag_notes.append(last_groq_err)
+        if groq_failed_all:
+            provider_circuit_breaker.record_failure("groq", last_groq_err)
 
-    # --- PRIORITY 2: DeepSeek API (Paid Fallback Provider) ---
+    # --- PRIORITY 2 (FREE): Google Gemini Free Tier ---
+    gemini_key = _resolve_gemini_api_key()
+    if not gemini_key:
+        diag_notes.append("no_gemini_key")
+    elif not provider_circuit_breaker.allow_request("gemini"):
+        diag_notes.append("gemini_circuit_open")
+    elif settings.app_env != "test":
+        gemini_model = settings.gemini_model or "gemini-2.5-flash-lite"
+        try:
+            logger.info(
+                "Routing AI task to Gemini Free Tier (Priority 2)",
+                task_type=task_type,
+                model=gemini_model,
+                tenant_id=tenant_id,
+            )
+            res = await _call_gemini_free_chat(
+                api_key=gemini_key,
+                model_name=gemini_model,
+                task_type=task_type,
+                clean_system=clean_system,
+                clean_prompt=clean_prompt,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            provider_circuit_breaker.record_success("gemini")
+            return res
+        except Exception as gem_exc:
+            err_note = f"gemini_{gemini_model}_err_{type(gem_exc).__name__}"
+            diag_notes.append(err_note)
+            provider_circuit_breaker.record_failure("gemini", err_note)
+
+    # --- PRIORITY 3 (FREE): OpenRouter Free Models ---
+    openrouter_key = _resolve_openrouter_api_key()
+    if not openrouter_key:
+        diag_notes.append("no_openrouter_key")
+    elif not provider_circuit_breaker.allow_request("openrouter"):
+        diag_notes.append("openrouter_circuit_open")
+    elif settings.app_env != "test":
+        or_free_model = "meta-llama/llama-3.3-70b-instruct:free"
+        try:
+            logger.info(
+                "Routing AI task to OpenRouter Free Tier (Priority 3)",
+                task_type=task_type,
+                model=or_free_model,
+                tenant_id=tenant_id,
+            )
+            res = await _call_openai_compatible_chat(
+                base_url=settings.openrouter_base_url,
+                api_key=openrouter_key,
+                model_name=or_free_model,
+                task_type=task_type,
+                clean_system=clean_system,
+                clean_prompt=clean_prompt,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            provider_circuit_breaker.record_success("openrouter")
+            return res
+        except Exception as or_exc:
+            err_note = f"openrouter_free_err_{type(or_exc).__name__}"
+            diag_notes.append(err_note)
+            provider_circuit_breaker.record_failure("openrouter", err_note)
+
+    # --- PRIORITY 4 (PAID FALLBACK): DeepSeek API (Only when all Free Providers above fail or are unconfigured) ---
     resolved_deepseek_key = _resolve_deepseek_api_key()
     if not resolved_deepseek_key:
         diag_notes.append("no_ds_key")
-    if resolved_deepseek_key and settings.ai_provider != "mock" and settings.app_env != "test":
+    elif not provider_circuit_breaker.allow_request("deepseek"):
+        diag_notes.append("deepseek_circuit_open")
+    elif settings.ai_provider != "mock" and settings.app_env != "test":
         try:
             logger.info(
-                "Routing AI task to DeepSeek (Priority 2 Fallback)",
+                "Routing AI task to Paid DeepSeek API (Priority 4 Fallback after Free Providers)",
                 task_type=task_type,
                 model=target_model,
                 tenant_id=tenant_id,
             )
-            return await _call_openai_compatible_chat(
+            res = await _call_openai_compatible_chat(
                 base_url=settings.deepseek_base_url,
                 api_key=resolved_deepseek_key,
                 model_name=target_model,
@@ -376,24 +523,18 @@ async def route_and_execute_ai_task(
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
+            provider_circuit_breaker.record_success("deepseek")
+            return res
         except httpx.HTTPStatusError as ds_http_exc:
-            diag_notes.append(f"ds_{target_model}_http_{ds_http_exc.response.status_code}")
-            logger.warning(
-                "DeepSeek API HTTP error; routing to Priority 3 local safety net",
-                status_code=ds_http_exc.response.status_code,
-                task_type=task_type,
-                model=target_model,
-            )
+            err_note = f"ds_{target_model}_http_{ds_http_exc.response.status_code}"
+            diag_notes.append(err_note)
+            provider_circuit_breaker.record_failure("deepseek", err_note)
         except Exception as ds_exc:
-            diag_notes.append(f"ds_{target_model}_err_{type(ds_exc).__name__}")
-            logger.warning(
-                "DeepSeek API fallback failed; routing to Priority 3 local safety net",
-                error=str(ds_exc),
-                task_type=task_type,
-                model=target_model,
-            )
+            err_note = f"ds_{target_model}_err_{type(ds_exc).__name__}"
+            diag_notes.append(err_note)
+            provider_circuit_breaker.record_failure("deepseek", err_note)
 
-    # --- PRIORITY 3: Final Safety Net (Resilient Local AI Engine) ---
+    # --- PRIORITY 5: Final Safety Net (Resilient Local AI Engine) ---
     fallback_res = _execute_mock_ai_task(task_type, target_model, clean_prompt)
     if diag_notes:
         fallback_res.error_message = ",".join(diag_notes)
