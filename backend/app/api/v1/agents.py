@@ -23,6 +23,7 @@ from app.schemas.agent import (
     TenantAgentConfigRequest,
 )
 from app.schemas.task import TaskExecutionResponse
+from app.services.agency_operations_service import agency_operations_service
 from app.services.auth_service import auth_service
 from app.services.central_orchestrator_service import central_orchestrator_service
 from app.services.outreach_autopilot_service import outreach_autopilot_service
@@ -381,4 +382,126 @@ async def admin_toggle_tenant_service_module(
         "data": cfg,
         "message": f"Service '{request.service_slug}' {'enabled' if request.enabled else 'disabled'} for tenant",
     }
+
+
+# ------------------------------------------------------------------------------
+# PHASE 3: Content Repurposing Agent & Automated Freelancing Pipeline
+# ------------------------------------------------------------------------------
+
+
+class ContentRepurposeRequest(BaseModel):
+    campaign_id: Optional[uuid.UUID] = None
+    source_title: Optional[str] = Field(default=None, max_length=255)
+    core_message: Optional[str] = Field(default=None, max_length=4000)
+
+
+class FreelanceOrderCreateRequest(BaseModel):
+    client_name: str = Field(min_length=2, max_length=200)
+    project_title: str = Field(min_length=3, max_length=255)
+    category: str = Field(default="seo_audit", description="seo_audit | content_pack | bookkeeping_setup")
+    budget_usd: float = Field(default=250.0, ge=0.0, le=100000.0)
+    requirements: str = Field(min_length=5, max_length=4000)
+
+
+@router.post("/repurpose-content", status_code=status.HTTP_201_CREATED)
+@limiter.limit(f"{settings.rate_limit_agent_rpm}/minute")
+async def repurpose_campaign_into_omnichannel_bundle(
+    request: Request,
+    payload: ContentRepurposeRequest,
+    context: TenantContext = Depends(require_permission("marketing.content.generate")),
+    session: AsyncSession = Depends(get_db),
+):
+    """Run the Content Repurposing Agent (LinkedIn Post + Blog Summary + Newsletter) with QC & HITL."""
+    bundle = await agency_operations_service.repurpose_campaign_content(
+        session=session,
+        tenant_id=context.tenant_id,
+        campaign_id=payload.campaign_id,
+        source_title=payload.source_title,
+        core_message=payload.core_message,
+        actor_id=context.user_id,
+    )
+    return {
+        "success": True,
+        "data": bundle,
+        "message": "Campaign repurposed into LinkedIn, Blog & Newsletter bundle and queued for HITL approval",
+    }
+
+
+@router.get("/repurpose-content")
+async def list_repurposed_content_bundles(
+    context: TenantContext = Depends(require_permission("tenant.read")),
+    session: AsyncSession = Depends(get_db),
+):
+    """List repurposed content bundles for the active tenant."""
+    items = await agency_operations_service.list_repurposed_bundles(session, context.tenant_id)
+    return {"success": True, "data": items}
+
+
+@router.post("/freelance/orders", status_code=status.HTTP_201_CREATED)
+async def create_freelance_pipeline_order(
+    payload: FreelanceOrderCreateRequest,
+    context: TenantContext = Depends(require_permission("agents.execute")),
+    session: AsyncSession = Depends(get_db),
+):
+    """Scan/create a freelance demand order and assign a specialized workforce agent."""
+    order = await agency_operations_service.create_or_scan_freelance_order(
+        session=session,
+        tenant_id=context.tenant_id,
+        client_name=payload.client_name,
+        project_title=payload.project_title,
+        category=payload.category,
+        budget_usd=payload.budget_usd,
+        requirements=payload.requirements,
+        actor_id=context.user_id,
+    )
+    return {"success": True, "data": order, "message": "Freelance order scanned and assigned"}
+
+
+@router.get("/freelance/orders")
+async def list_freelance_pipeline_orders(
+    context: TenantContext = Depends(require_permission("tenant.read")),
+    session: AsyncSession = Depends(get_db),
+):
+    """List all freelance pipeline orders for the active tenant."""
+    items = await agency_operations_service.list_freelance_orders(session, context.tenant_id)
+    return {"success": True, "data": items}
+
+
+@router.post("/freelance/orders/{order_id}/execute")
+@limiter.limit(f"{settings.rate_limit_agent_rpm}/minute")
+async def execute_freelance_order_workforce_agent(
+    request: Request,
+    order_id: uuid.UUID,
+    context: TenantContext = Depends(require_permission("agents.execute")),
+    session: AsyncSession = Depends(get_db),
+):
+    """Execute the assigned workforce agent (`seo_audit`, `content_pack`, `bookkeeping_setup`), run QC, and route to HITL."""
+    order = await agency_operations_service.execute_freelance_order_workforce(
+        session=session,
+        tenant_id=context.tenant_id,
+        order_id=order_id,
+        actor_id=context.user_id,
+    )
+    return {
+        "success": True,
+        "data": order,
+        "message": f"Workforce agent '{order['assigned_workforce_agent']}' drafted deliverable and queued HITL review",
+    }
+
+
+@router.post("/freelance/orders/{order_id}/approve-deliver")
+async def approve_and_deliver_freelance_pipeline_order(
+    order_id: uuid.UUID,
+    context: TenantContext = Depends(require_permission("approvals.review")),
+    session: AsyncSession = Depends(get_db),
+):
+    """Approve a pending HITL freelance deliverable and auto-deliver to the client."""
+    order = await agency_operations_service.approve_and_deliver_freelance_order(
+        session=session,
+        tenant_id=context.tenant_id,
+        order_id=order_id,
+        reviewer_id=context.user_id,
+    )
+    return {"success": True, "data": order, "message": "Freelance order approved and auto-delivered"}
+
 

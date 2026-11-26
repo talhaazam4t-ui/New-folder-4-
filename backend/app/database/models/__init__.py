@@ -27,7 +27,13 @@ from app.database.models.finance import (
     FinancialTransaction,
     RentSchedule,
 )
-from app.database.models.governance import AgentSkill, TenantEpisodicMemory, TenantTierQuota
+from app.database.models.governance import (
+    AgentSkill,
+    FreelanceOrder,
+    RepurposedContentBundle,
+    TenantEpisodicMemory,
+    TenantTierQuota,
+)
 from app.database.models.knowledge import (
     KnowledgeChunk,
     KnowledgeDocument,
@@ -111,4 +117,6 @@ __all__ = [
     "TenantTierQuota",
     "AgentSkill",
     "TenantEpisodicMemory",
+    "RepurposedContentBundle",
+    "FreelanceOrder",
 ]

@@ -95,3 +95,66 @@ class TenantEpisodicMemory(Base):
         nullable=False,
     )
 
+
+class RepurposedContentBundle(Base, TimestampMixin):
+    """Phase 3 Content Repurposing Agent output bundle (LinkedIn, Blog Summary, Newsletter)."""
+
+    __tablename__ = "repurposed_content_bundles"
+
+    id: Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(),
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    source_campaign_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        GUID(),
+        ForeignKey("marketing_campaigns.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    source_title: Mapped[str] = mapped_column(String(255), nullable=False)
+    core_message: Mapped[str] = mapped_column(Text, nullable=False)
+    linkedin_post: Mapped[str] = mapped_column(Text, nullable=False)
+    blog_summary: Mapped[str] = mapped_column(Text, nullable=False)
+    newsletter_draft: Mapped[str] = mapped_column(Text, nullable=False)
+    qc_report: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="pending_hitl", nullable=False)
+    approval_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        GUID(),
+        ForeignKey("approvals.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+
+class FreelanceOrder(Base, TimestampMixin):
+    """Phase 3 Automated Freelancing Pipeline order & HITL deliverable record."""
+
+    __tablename__ = "freelance_orders"
+
+    id: Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(),
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    client_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    project_title: Mapped[str] = mapped_column(String(255), nullable=False)
+    category: Mapped[str] = mapped_column(String(64), default="seo_audit", nullable=False)
+    budget_usd: Mapped[float] = mapped_column(Numeric(12, 2), default=250.00, nullable=False)
+    requirements: Mapped[str] = mapped_column(Text, nullable=False)
+    assigned_workforce_agent: Mapped[str] = mapped_column(
+        String(100), default="seo_auditor_agent", nullable=False
+    )
+    deliverable_draft: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    qc_report: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    status: Mapped[str] = mapped_column(String(36), default="scanned", nullable=False, index=True)
+    approval_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        GUID(),
+        ForeignKey("approvals.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    delivered_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
