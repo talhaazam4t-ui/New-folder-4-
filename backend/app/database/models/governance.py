@@ -8,7 +8,7 @@ from app.core.exceptions import TaloxException
 from app.database.models.automation import AuditLog
 from app.database.models.base import Base, TimestampMixin
 from app.database.models.tenant import GUID
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, event
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text, event
 from sqlalchemy.orm import Mapped, mapped_column
 
 
@@ -51,3 +51,47 @@ def _prevent_audit_log_update(mapper, connection, target):
         code="IMMUTABLE_AUDIT_LOG",
         status_code=403,
     )
+
+
+class AgentSkill(Base, TimestampMixin):
+    """Database-driven skill registry ingested dynamically by the Central Orchestrator."""
+
+    __tablename__ = "agent_skills"
+
+    id: Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=uuid.uuid4)
+    slug: Mapped[str] = mapped_column(String(100), unique=True, nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    service_slug: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    tool_schema: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    default_model_tier: Mapped[str] = mapped_column(String(32), default="fast_free", nullable=False)
+    token_budget: Mapped[int] = mapped_column(Integer, default=1500, nullable=False)
+    max_words: Mapped[int] = mapped_column(Integer, default=130, nullable=False)
+    requires_hitl: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+
+class TenantEpisodicMemory(Base):
+    """Per-tenant persistent episodic memory queried before agent actions."""
+
+    __tablename__ = "tenant_episodic_memories"
+
+    id: Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(),
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    memory_type: Mapped[str] = mapped_column(String(64), default="interaction", nullable=False, index=True)
+    skill_slug: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    context_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    outcome_score: Mapped[float] = mapped_column(Numeric(5, 2), default=0.00, nullable=False)
+    metadata_: Mapped[dict] = mapped_column("metadata", JSON, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
