@@ -266,6 +266,28 @@ export default function LeadHunterPage() {
     }
   };
 
+  const handleRunAgent = async (leadId: string) => {
+    setBusyLeadId(leadId);
+    setBanner(null);
+    try {
+      const res = await apiRequest<any>(`/api/v1/lead-hunter/leads/${leadId}/run-agent`, { method: "POST" });
+      if (res.success) {
+        const svc = res.data?.recommended_service || "office-receptionist";
+        const finding = res.data?.diagnostic_finding || "Saved personalized HITL outreach draft.";
+        setBanner({
+          type: "ok",
+          text: `AI Agent Recommended [${svc}]: ${finding}`,
+        });
+        await loadWorkspace();
+        setActiveTab("demos");
+      } else {
+        setBanner({ type: "err", text: res.error?.message || "Failed to run AI Diagnostic Agent." });
+      }
+    } finally {
+      setBusyLeadId(null);
+    }
+  };
+
   const handlePromoteHot = async (leadId: string) => {
     setBusyLeadId(leadId);
     try {
@@ -610,6 +632,7 @@ export default function LeadHunterPage() {
               onImportApolloCsv={handleImportApolloCsv}
               onSaveManualOwner={handleSaveManualOwner}
               onGenerateDemo={handleGenerateDemo}
+              onRunAgent={handleRunAgent}
               onPromoteHot={handlePromoteHot}
               onJumpToCallList={() => setActiveTab("call_list")}
             />
@@ -621,6 +644,7 @@ export default function LeadHunterPage() {
               busyLeadId={busyLeadId}
               onOutcome={handleCallOutcome}
               onGenerateDemo={handleGenerateDemo}
+              onRunAgent={handleRunAgent}
               onAcknowledgeHandover={handleAcknowledgeHandover}
             />
           )}

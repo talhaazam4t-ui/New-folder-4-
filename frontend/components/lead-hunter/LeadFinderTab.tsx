@@ -55,6 +55,7 @@ interface Props {
     }
   ) => Promise<void>;
   onGenerateDemo: (leadId: string) => void;
+  onRunAgent?: (leadId: string) => void;
   onPromoteHot: (leadId: string) => void;
   onJumpToCallList: () => void;
 }
@@ -74,6 +75,7 @@ export function LeadFinderTab({
   onImportApolloCsv,
   onSaveManualOwner,
   onGenerateDemo,
+  onRunAgent,
   onPromoteHot,
   onJumpToCallList,
 }: Props) {
@@ -529,6 +531,17 @@ export function LeadFinderTab({
                             className="rounded border border-slate-700 bg-slate-950 hover:border-blue-500 px-2 py-1 text-[10px] font-semibold text-blue-300"
                           >
                             API Enrich
+                          </button>
+                        )}
+                        {onRunAgent && (
+                          <button
+                            type="button"
+                            disabled={busyLeadId === lead.id}
+                            onClick={() => onRunAgent(lead.id)}
+                            className="inline-flex items-center gap-1 rounded bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 px-2 py-1 text-[10px] font-bold text-white"
+                          >
+                            <Bot className="h-3 w-3" />
+                            <span>{busyLeadId === lead.id ? "Running..." : "Run AI Agent"}</span>
                           </button>
                         )}
                         <button

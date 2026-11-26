@@ -3,11 +3,14 @@
 import uuid
 from typing import Optional
 
+from app.config import settings
 from app.core.exceptions import ResourceNotFoundError
+from app.core.rate_limit import limiter
 from app.core.tenant_context import TenantContext
 from app.database.models.lead_hunter import HunterLead
 from app.database.supabase import get_db
 from app.dependencies import require_permission
+from app.services.lead_hunter_agent import lead_hunter_agent
 from app.services.lead_hunter_control_service import lead_hunter_control_service
 from app.services.lead_hunter_demo_service import lead_hunter_demo_service
 from app.services.lead_hunter_discovery_service import (
@@ -22,7 +25,7 @@ from app.services.lead_hunter_outreach_service import (
     KANBAN_STAGES,
     lead_hunter_outreach_service,
 )
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -387,6 +390,28 @@ async def generate_english_demo_for_lead(
         actor_id=context.user_id,
     )
     return {"success": True, "data": demo, "message": "English AI Receptionist demo saved to Draft"}
+
+
+@router.post("/leads/{lead_id}/run-agent", status_code=status.HTTP_201_CREATED)
+@limiter.limit(f"{settings.rate_limit_agent_rpm}/minute")
+async def run_lead_hunter_diagnostic_agent(
+    request: Request,
+    lead_id: uuid.UUID,
+    context: TenantContext = Depends(require_permission("marketing.content.generate")),
+    session: AsyncSession = Depends(get_db),
+):
+    """Run the bounded 5-step AI Diagnostic & Outreach Agent and save a HITL draft (never auto-sends)."""
+    result = await lead_hunter_agent.run_for_lead(
+        session=session,
+        tenant_id=context.tenant_id,
+        lead_id=lead_id,
+        actor_id=context.user_id,
+    )
+    return {
+        "success": True,
+        "data": result,
+        "message": "AI Diagnostic Agent completed and saved HITL outreach draft for approval",
+    }
 
 
 @router.patch("/demos/{demo_id}")

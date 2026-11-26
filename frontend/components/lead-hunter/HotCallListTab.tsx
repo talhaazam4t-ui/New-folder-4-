@@ -9,6 +9,7 @@ interface Props {
   busyLeadId: string | null;
   onOutcome: (leadId: string, outcome: string, dealValueUsd?: number) => void;
   onGenerateDemo: (leadId: string) => void;
+  onRunAgent?: (leadId: string) => void;
   onAcknowledgeHandover: (leadId: string) => void;
 }
 
@@ -31,6 +32,7 @@ export function HotCallListTab({
   busyLeadId,
   onOutcome,
   onGenerateDemo,
+  onRunAgent,
   onAcknowledgeHandover,
 }: Props) {
   const [expandedScriptId, setExpandedScriptId] = useState<string | null>(null);
@@ -154,14 +156,27 @@ export function HotCallListTab({
                   >
                     {showScript ? "Hide Call & Email Script" : "Show Tailored Cold Call & Email Script"}
                   </button>
-                  <button
-                    type="button"
-                    disabled={busyLeadId === lead.id}
-                    onClick={() => onGenerateDemo(lead.id)}
-                    className="inline-flex items-center gap-1 rounded bg-slate-800 hover:bg-blue-600 px-2.5 py-1 text-[11px] font-semibold text-white"
-                  >
-                    <Sparkles className="h-3 w-3" /> Generate Demo
-                  </button>
+                  <div className="flex items-center gap-1.5">
+                    {onRunAgent && (
+                      <button
+                        type="button"
+                        disabled={busyLeadId === lead.id}
+                        onClick={() => onRunAgent(lead.id)}
+                        className="inline-flex items-center gap-1 rounded bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 px-2.5 py-1 text-[11px] font-bold text-white"
+                      >
+                        <Sparkles className="h-3 w-3" />
+                        <span>{busyLeadId === lead.id ? "Running..." : "Run AI Agent"}</span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      disabled={busyLeadId === lead.id}
+                      onClick={() => onGenerateDemo(lead.id)}
+                      className="inline-flex items-center gap-1 rounded bg-slate-800 hover:bg-blue-600 px-2.5 py-1 text-[11px] font-semibold text-white"
+                    >
+                      <Sparkles className="h-3 w-3" /> Generate Demo
+                    </button>
+                  </div>
                 </div>
 
                 {showScript && (

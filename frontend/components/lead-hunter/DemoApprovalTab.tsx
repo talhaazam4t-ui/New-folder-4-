@@ -183,11 +183,23 @@ export function DemoApprovalTab({
                     </div>
                   )}
                   <div>
-                    <h3 className="text-base font-extrabold text-white">{active.lead?.business_name}</h3>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3 className="text-base font-extrabold text-white">{active.lead?.business_name}</h3>
+                      {active.business_snapshot?.recommended_service && (
+                        <span className="rounded-full border border-indigo-500/40 bg-indigo-950/60 px-2.5 py-0.5 text-[10px] font-bold uppercase text-indigo-300">
+                          Recommended: {active.business_snapshot.recommended_service}
+                        </span>
+                      )}
+                    </div>
                     <p className="text-xs text-slate-400">
                       {active.business_snapshot?.usd_pricing || "$299/month | $499 setup (USD)"} • Hours:{" "}
                       {active.business_snapshot?.working_hours || "Business Hours"}
                     </p>
+                    {active.business_snapshot?.diagnostic_finding && (
+                      <p className="text-[11px] text-indigo-300 mt-1">
+                        {active.business_snapshot.diagnostic_finding}
+                      </p>
+                    )}
                   </div>
                 </div>
 
