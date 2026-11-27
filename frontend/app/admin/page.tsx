@@ -3,6 +3,7 @@
 import React, { useEffect, useState } from "react";
 import { AdminNavbar } from "@/components/admin/AdminNavbar";
 import { AdminSidebar } from "@/components/admin/AdminSidebar";
+import { AdminEnterpriseGovernancePanel } from "@/components/admin/AdminEnterpriseGovernancePanel";
 import { StatCard } from "@/components/dashboard/StatCard";
 import { apiRequest } from "@/lib/api";
 import { getAuthToken, isSuperAdminUser } from "@/lib/auth";
@@ -30,7 +31,7 @@ import {
   X,
 } from "lucide-react";
 
-type AdminTab = "platform" | "agents" | "leads" | "integrations" | "monitoring";
+type AdminTab = "platform" | "agents" | "leads" | "integrations" | "monitoring" | "governance";
 
 const AVAILABLE_INDUSTRIES = [
   "Financing",
@@ -392,6 +393,8 @@ export default function AdminDashboardPage() {
             ?.scrollIntoView({ behavior: "smooth", block: "start" });
         }, 60);
       }
+    } else if (itemId === "governance") {
+      setActiveTab("governance");
     } else {
       setActiveTab("monitoring");
     }
@@ -864,6 +867,7 @@ export default function AdminDashboardPage() {
               { id: "leads", label: "3. Lead Gen & Outreach", icon: Megaphone },
               { id: "integrations", label: "4. Integration Management", icon: Link2 },
               { id: "monitoring", label: "5. Monitoring & Audit Logs", icon: Activity },
+              { id: "governance", label: "6. Enterprise, Quotas & Skills", icon: Sparkles },
             ].map((t) => {
               const Icon = t.icon;
               return (
@@ -1164,6 +1168,18 @@ export default function AdminDashboardPage() {
                                       </span>
                                     </button>
                                   )}
+                                <button
+                                  onClick={() => {
+                                    setSelectedTenantId(t.id);
+                                    setActiveTab("governance");
+                                    setSidebarItem("governance");
+                                  }}
+                                  className="inline-flex items-center gap-1 rounded bg-purple-600/20 text-purple-300 border border-purple-500/30 px-2.5 py-1 text-xs font-semibold hover:bg-purple-600/30 transition"
+                                  title="Toggle 7 services per tenant, manage 80%/100% tier quotas, and run Enterprise audits"
+                                >
+                                  <Layers className="h-3 w-3" />
+                                  <span>Modules &amp; Quota</span>
+                                </button>
                                 {t.status === "pending_approval" ? (
                                   <button
                                     onClick={() => handleUpdateTenantStatus(t.id, "active")}
@@ -2673,6 +2689,18 @@ export default function AdminDashboardPage() {
                 </div>
               </div>
             </div>
+          )}
+
+          {/* TAB 6: PHASES 1-5 ENTERPRISE GOVERNANCE, PER-CLIENT SERVICE TOGGLES, QUOTAS & SKILLS */}
+          {activeTab === "governance" && (
+            <AdminEnterpriseGovernancePanel
+              selectedTenantId={selectedTenantId}
+              selectedTenantName={selectedTenant?.name || "Selected Workspace"}
+              tenants={tenants}
+              onSelectClient={handleSelectClient}
+              onStatusMessage={showStatus}
+              onRefreshParent={fetchOperationsData}
+            />
           )}
         </main>
       </div>

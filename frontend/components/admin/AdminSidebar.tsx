@@ -77,6 +77,7 @@ export function AdminSidebar({
     { id: "voice_settings", label: "Voice AI Settings", icon: PhoneCall },
     { id: "approvals", label: "Approval Center", icon: CheckCheck },
     { id: "monitoring", label: "System Health & Logs", icon: Activity },
+    { id: "governance", label: "Enterprise & Quotas", icon: Terminal },
   ];
 
   const handleAdminLogout = () => {

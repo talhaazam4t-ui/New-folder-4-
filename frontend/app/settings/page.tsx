@@ -4,6 +4,7 @@ import React, { useEffect, useState } from "react";
 import { Navbar } from "../../components/shared/Navbar";
 import { Sidebar } from "../../components/shared/Sidebar";
 import { SupportRequestModal } from "../../components/shared/SupportRequestModal";
+import { WhitelabelAndApiPanel } from "../../components/settings/WhitelabelAndApiPanel";
 import { apiRequest } from "../../lib/api";
 import {
   clearSession,
@@ -523,6 +524,18 @@ export default function SettingsPage() {
               )}
             </div>
           </div>
+
+          {/* Phase 5: Multi-Tenant White-Label Branding & Metered Developer API Keys */}
+          <WhitelabelAndApiPanel
+            onStatusMessage={(msg) => {
+              setErrorMessage(null);
+              setStatusMessage(msg);
+            }}
+            onErrorMessage={(msg) => {
+              setStatusMessage(null);
+              setErrorMessage(msg);
+            }}
+          />
 
           {/* Notification Center */}
           <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
