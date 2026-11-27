@@ -158,3 +158,54 @@ class FreelanceOrder(Base, TimestampMixin):
     delivered_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class ContractComplianceAudit(Base, TimestampMixin):
+    """Phase 4 Automated Contract Compliance Agent SLA & milestone audit record."""
+
+    __tablename__ = "contract_compliance_audits"
+
+    id: Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(),
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    contract_title: Mapped[str] = mapped_column(String(255), nullable=False)
+    counterparty: Mapped[str] = mapped_column(String(200), nullable=False)
+    contract_text: Mapped[str] = mapped_column(Text, nullable=False)
+    sla_terms: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    breach_flags: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    risk_level: Mapped[str] = mapped_column(String(24), default="low", nullable=False, index=True)
+    milestone_status: Mapped[str] = mapped_column(String(48), default="on_track", nullable=False)
+    ai_summary: Mapped[str] = mapped_column(Text, nullable=False)
+    approval_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        GUID(),
+        ForeignKey("approvals.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+
+class ClientKycOnboarding(Base, TimestampMixin):
+    """Phase 4 Zero-Touch B2B Client KYC & Auto-Provisioning record."""
+
+    __tablename__ = "client_kyc_onboardings"
+
+    id: Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(),
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    company_legal_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    registration_number: Mapped[str] = mapped_column(String(120), nullable=False)
+    tax_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    jurisdiction: Mapped[str] = mapped_column(String(120), nullable=False)
+    contact_email: Mapped[str] = mapped_column(String(255), nullable=False)
+    requested_services: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    kyc_status: Mapped[str] = mapped_column(String(36), default="verified_provisioned", nullable=False)
+    provisioned_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    metadata_: Mapped[dict] = mapped_column("metadata", JSON, default=dict, nullable=False)
+
+
+

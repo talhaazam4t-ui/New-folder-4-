@@ -29,6 +29,8 @@ from app.database.models.finance import (
 )
 from app.database.models.governance import (
     AgentSkill,
+    ClientKycOnboarding,
+    ContractComplianceAudit,
     FreelanceOrder,
     RepurposedContentBundle,
     TenantEpisodicMemory,
@@ -119,4 +121,6 @@ __all__ = [
     "TenantEpisodicMemory",
     "RepurposedContentBundle",
     "FreelanceOrder",
+    "ContractComplianceAudit",
+    "ClientKycOnboarding",
 ]
