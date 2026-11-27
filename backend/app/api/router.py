@@ -6,6 +6,7 @@ from app.api.v1.agents import router as agents_router
 from app.api.v1.analytics import router as analytics_router
 from app.api.v1.approvals import router as approvals_router
 from app.api.v1.assistant import router as assistant_router
+from app.api.v1.audits import router as audits_router
 from app.api.v1.auth import router as auth_router
 from app.api.v1.business import router as business_router
 from app.api.v1.enterprise import router as enterprise_router
@@ -53,6 +54,7 @@ api_v1_router.include_router(support_router)
 api_v1_router.include_router(receptionist_router)
 api_v1_router.include_router(knowledge_router)
 api_v1_router.include_router(growth_upsells_router)
+api_v1_router.include_router(audits_router)
 api_v1_router.include_router(lead_hunter_router)
 api_v1_router.include_router(enterprise_router)
 api_v1_router.include_router(whitelabel_api_router)

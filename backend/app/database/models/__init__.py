@@ -8,6 +8,7 @@ from app.database.models.agent import (
     AgentTask,
     TenantAgent,
 )
+from app.database.models.audit import WebsiteAudit
 from app.database.models.automation import (
     AnalyticsEvent,
     Approval,
@@ -127,4 +128,5 @@ __all__ = [
     "ClientKycOnboarding",
     "TenantWhitelabelConfig",
     "TenantApiKey",
+    "WebsiteAudit",
 ]
