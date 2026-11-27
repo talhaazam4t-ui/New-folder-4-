@@ -216,6 +216,13 @@ export default function AgentsPage() {
   const [running, setRunning] = useState(false);
   const [isAdminView, setIsAdminView] = useState(false);
 
+  // Phase 2 Dynamic Skills, Episodic Memories & QC Self-Reflection state
+  const [dynamicSkills, setDynamicSkills] = useState<any[]>([]);
+  const [selectedSkillSlug, setSelectedSkillSlug] = useState<string>("");
+  const [episodicMemories, setEpisodicMemories] = useState<any[]>([]);
+  const [dynamicQcResult, setDynamicQcResult] = useState<any | null>(null);
+  const [runningDynamicSkill, setRunningDynamicSkill] = useState(false);
+
   // Daily Global Outreach & Gmail Draft Autopilot state
   const [apEnabled, setApEnabled] = useState(false);
   const [apNiches, setApNiches] = useState<string[]>(PRESET_NICHES);
@@ -291,12 +298,21 @@ export default function AgentsPage() {
       if (!tId) return;
 
       const reqHeaders = { "X-Tenant-ID": tId };
-      const [agentsRes, approvalsRes, execsRes, autopilotRes] = await Promise.all([
+      const [agentsRes, approvalsRes, execsRes, autopilotRes, regRes, memRes] = await Promise.all([
         apiRequest("/api/v1/agents", { headers: reqHeaders }),
         apiRequest("/api/v1/approvals?status=pending", { headers: reqHeaders }),
         apiRequest("/api/v1/agents/executions?limit=25", { headers: reqHeaders }),
         apiRequest("/api/v1/agents/outreach-autopilot", { headers: reqHeaders }),
+        apiRequest("/api/v1/agents/registry", { headers: reqHeaders }),
+        apiRequest("/api/v1/agents/memories?limit=6", { headers: reqHeaders }),
       ]);
+
+      if (regRes?.data?.skills && Array.isArray(regRes.data.skills)) {
+        setDynamicSkills(regRes.data.skills);
+      }
+      if (Array.isArray(memRes?.data)) {
+        setEpisodicMemories(memRes.data);
+      }
 
       if (Array.isArray(agentsRes)) setAgents(agentsRes);
       else if (agentsRes.data) setAgents(agentsRes.data);
@@ -727,6 +743,36 @@ export default function AgentsPage() {
       loadAgentWorkspace();
     } else {
       setErrorMessage(res.error?.message || "Agent orchestration failed.");
+    }
+  };
+
+  const handleRunDynamicSkill = async () => {
+    if (!objective.trim()) return;
+    setRunningDynamicSkill(true);
+    setStatusMessage(null);
+    setErrorMessage(null);
+    setDynamicQcResult(null);
+    try {
+      const res = await apiRequest("/api/v1/agents/orchestrate-dynamic", {
+        method: "POST",
+        headers: selectedTenantId ? { "X-Tenant-ID": selectedTenantId } : undefined,
+        body: JSON.stringify({
+          objective,
+          skill_slug: selectedSkillSlug || null,
+        }),
+      });
+      if (res.success && res.data) {
+        setDynamicQcResult(res.data);
+        setFinalOutput(res.data.final_output || null);
+        setStatusMessage(
+          `Dynamic Skill "${res.data.selected_skill?.name}" executed with Episodic Memory & QC Self-Reflection (${res.data.tokens_consumed || 0} tokens).`
+        );
+        loadAgentWorkspace();
+      } else {
+        setErrorMessage(res.error?.message || "Dynamic skill orchestration failed.");
+      }
+    } finally {
+      setRunningDynamicSkill(false);
     }
   };
 
@@ -1530,9 +1576,24 @@ export default function AgentsPage() {
           {/* Interactive Orchestrator Console + Pending Approvals */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <div className="bg-slate-900 border border-slate-800 rounded-xl p-6">
-              <h2 className="text-lg font-semibold text-white mb-4">Run Multi-Agent Orchestrator</h2>
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+                <h2 className="text-lg font-semibold text-white">
+                  Run Multi-Agent Orchestrator (Live DB Grounded)
+                </h2>
+                <span
+                  className={`px-2.5 py-0.5 rounded-full text-[11px] font-semibold border ${
+                    apGmailStatus?.connected
+                      ? "bg-emerald-950/80 border-emerald-700 text-emerald-300"
+                      : "bg-amber-950/80 border-amber-700 text-amber-300"
+                  }`}
+                >
+                  {apGmailStatus?.connected
+                    ? "● LIVE EXTERNAL DELIVERY READY"
+                    : "● SANDBOX DRAFT MODE (Connect Gmail/WhatsApp in /settings)"}
+                </span>
+              </div>
               <form onSubmit={handleOrchestrate} className="space-y-4">
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                   <div>
                     <label className="block text-xs text-slate-400 mb-1">Target Agent</label>
                     <select
@@ -1543,6 +1604,21 @@ export default function AgentsPage() {
                       {agents.map((a) => (
                         <option key={a.name} value={a.name}>
                           {a.name} ({a.category})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-slate-400 mb-1">DB-Driven Skill (Phase 2)</label>
+                    <select
+                      value={selectedSkillSlug}
+                      onChange={(e) => setSelectedSkillSlug(e.target.value)}
+                      className="w-full rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-sm text-white"
+                    >
+                      <option value="">Auto-Select Best Skill</option>
+                      {dynamicSkills.map((sk) => (
+                        <option key={sk.slug} value={sk.slug}>
+                          {sk.name} (≤{sk.max_words}w)
                         </option>
                       ))}
                     </select>
@@ -1571,14 +1647,64 @@ export default function AgentsPage() {
                     className="w-full rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-sm text-white"
                   />
                 </div>
-                <button
-                  type="submit"
-                  disabled={running}
-                  className="w-full py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-medium transition"
-                >
-                  {running ? "Orchestrating Bounded Pipeline..." : "Execute Agent Pipeline"}
-                </button>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <button
+                    type="submit"
+                    disabled={running || runningDynamicSkill}
+                    className="w-full py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-medium transition"
+                  >
+                    {running ? "Orchestrating 4-Stage Pipeline..." : "Execute 4-Stage Agent Pipeline"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleRunDynamicSkill}
+                    disabled={running || runningDynamicSkill || !objective.trim()}
+                    className="w-full py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-sm font-semibold transition"
+                  >
+                    {runningDynamicSkill
+                      ? "Running Skill + QC Reflection..."
+                      : "Run Phase 2 Skill + QC Reflection"}
+                  </button>
+                </div>
               </form>
+
+              {dynamicQcResult && (
+                <div className="mt-4 p-3.5 rounded-lg bg-slate-950 border border-emerald-800/60 text-xs space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="font-semibold text-emerald-300">
+                      Skill: {dynamicQcResult.selected_skill?.name} ({dynamicQcResult.selected_skill?.service_slug})
+                    </span>
+                    <span className="font-mono text-[11px] text-slate-400">
+                      QC Words: {dynamicQcResult.qc_report?.word_count_after}/
+                      {dynamicQcResult.qc_report?.max_words_limit} • HITL: {dynamicQcResult.hitl_status}
+                    </span>
+                  </div>
+                  <p className="text-slate-200 whitespace-pre-wrap">{dynamicQcResult.final_output}</p>
+                </div>
+              )}
+
+              {episodicMemories.length > 0 && (
+                <div className="mt-4 pt-3 border-t border-slate-800 space-y-1.5">
+                  <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                    Proactive Episodic Memory ({episodicMemories.length} Recent Learnings Injected)
+                  </div>
+                  <div className="max-h-32 overflow-y-auto space-y-1">
+                    {episodicMemories.map((m) => (
+                      <div
+                        key={m.id}
+                        className="rounded bg-slate-950 border border-slate-800/80 px-2.5 py-1.5 text-[11px] text-slate-300 flex items-center justify-between gap-2"
+                      >
+                        <span className="truncate">
+                          <strong className="text-indigo-300">[{m.memory_type}]</strong> {m.summary}
+                        </span>
+                        <span className="shrink-0 font-mono text-[10px] text-emerald-400">
+                          {m.outcome_score}%
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {stages.length > 0 && (
                 <div className="mt-6 space-y-3 border-t border-slate-800 pt-4">

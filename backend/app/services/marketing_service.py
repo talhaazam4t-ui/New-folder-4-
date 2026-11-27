@@ -706,24 +706,35 @@ class MarketingService:
                     or "business"
                 )
                 osm_query = f"{base_keyword} {target_loc}".strip()
+                fallback_queries = [
+                    osm_query,
+                    f"{industry_search_map.get(norm_ind, 'clinic')} {loc_tag}".strip(),
+                    f"company {loc_tag}".strip(),
+                ]
                 osm_headers = {
                     "User-Agent": "TaloxTech-LeadFinder/1.0 (+https://teloxtech.stream)",
                     "Accept-Language": "en",
                 }
+                raw_places: list = []
                 async with httpx.AsyncClient(timeout=15.0) as http_client:
-                    osm_resp = await http_client.get(
-                        "https://nominatim.openstreetmap.org/search",
-                        params={
-                            "q": osm_query,
-                            "format": "jsonv2",
-                            "extratags": 1,
-                            "addressdetails": 1,
-                            "limit": min(max(request.limit * 2, 15), 40),
-                        },
-                        headers=osm_headers,
-                    )
-                if osm_resp.status_code == 200:
-                    raw_places = osm_resp.json() or []
+                    for q_try in fallback_queries:
+                        osm_resp = await http_client.get(
+                            "https://nominatim.openstreetmap.org/search",
+                            params={
+                                "q": q_try,
+                                "format": "jsonv2",
+                                "extratags": 1,
+                                "addressdetails": 1,
+                                "limit": min(max(request.limit * 2, 15), 40),
+                            },
+                            headers=osm_headers,
+                        )
+                        if osm_resp.status_code == 200:
+                            found = osm_resp.json() or []
+                            if found:
+                                raw_places = found
+                                break
+                if raw_places:
                     osm_candidates: List[_LeadCandidate] = []
                     for item in raw_places:
                         name_val = (item.get("name") or "").strip()
@@ -775,7 +786,12 @@ class MarketingService:
             except Exception as osm_exc:
                 logger.warning("OpenStreetMap Nominatim free directory lookup failed", error=str(osm_exc))
 
-        if not candidates and data_source not in ("google_places_api", "openstreetmap_live"):
+        # PRODUCTION RULE: Never insert synthetic/fake leads in production or staging!
+        if (
+            not candidates
+            and data_source not in ("google_places_api", "openstreetmap_live")
+            and settings.app_env not in ("production", "staging")
+        ):
             data_source = "synthetic_demo"
             if norm_ind == "Financing":
                 candidates = [
