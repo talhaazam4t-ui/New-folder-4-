@@ -340,6 +340,17 @@ def _build_default_config(tenant: Tenant, booking_url_hint: Optional[str] = None
     except (TypeError, ValueError):
         rotation_index = 0
 
+    is_platform_brand = "talox" in (tenant.slug or "").lower() or "telox" in (tenant.slug or "").lower()
+    raw_stored_booking = str(stored.get("booking_url") or "").strip()
+    if raw_stored_booking == DEFAULT_BOOKING_URL and not is_platform_brand and not booking_url_hint:
+        effective_booking_url = ""
+    else:
+        effective_booking_url = (
+            raw_stored_booking
+            or (booking_url_hint or "").strip()
+            or (DEFAULT_BOOKING_URL if is_platform_brand else "")
+        )
+
     return {
         "enabled": bool(stored.get("enabled", False)),
         "niches": niches,
@@ -349,7 +360,7 @@ def _build_default_config(tenant: Tenant, booking_url_hint: Optional[str] = None
         "daily_draft_limit": daily_limit,
         "service_offer": str(stored.get("service_offer") or DEFAULT_SERVICE_OFFER).strip() or DEFAULT_SERVICE_OFFER,
         "sender_name": str(stored.get("sender_name") or tenant.name or "Teloxtech AI Automation").strip(),
-        "booking_url": str(stored.get("booking_url") or booking_url_hint or DEFAULT_BOOKING_URL).strip(),
+        "booking_url": effective_booking_url,
         "run_hour_utc": run_hour_utc,
         "rotation_index": rotation_index,
         "last_run_at": stored.get("last_run_at"),

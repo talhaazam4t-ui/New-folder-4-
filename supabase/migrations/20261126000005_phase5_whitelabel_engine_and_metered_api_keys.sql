@@ -84,3 +84,9 @@ BEGIN
             WITH CHECK (public.is_tenant_member(tenant_id) OR public.is_super_admin());
     END IF;
 END $$;
+
+-- Allow 'awaiting_payment' in receptionist_configs_status_check
+ALTER TABLE public.receptionist_configs DROP CONSTRAINT IF EXISTS receptionist_configs_status_check;
+ALTER TABLE public.receptionist_configs ADD CONSTRAINT receptionist_configs_status_check
+    CHECK (provisioning_status IN ('pending_onboarding', 'awaiting_payment', 'provisioning', 'active', 'sandbox_ready', 'error'));
+

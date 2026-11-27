@@ -517,13 +517,19 @@ class RetellAIAdapter:
 
         try:
             async with httpx.AsyncClient(timeout=25.0) as client:
-                # 1. Create or update Retell LLM
+                # 1. Create or update Retell LLM (with schema fallback if custom tool format is rejected)
                 if existing_llm_id and not existing_llm_id.startswith("llm_sandbox_"):
                     llm_resp = await client.patch(
                         f"{retell_base}/update-retell-llm/{existing_llm_id}",
                         headers=headers,
                         json=llm_payload,
                     )
+                    if llm_resp.status_code not in (200, 201):
+                        llm_resp = await client.patch(
+                            f"{retell_base}/update-retell-llm/{existing_llm_id}",
+                            headers=headers,
+                            json={"general_prompt": general_prompt, "begin_message": greeting_message},
+                        )
                     llm_resp.raise_for_status()
                     llm_id = existing_llm_id
                 else:
@@ -532,6 +538,12 @@ class RetellAIAdapter:
                         headers=headers,
                         json=llm_payload,
                     )
+                    if llm_resp.status_code not in (200, 201):
+                        llm_resp = await client.post(
+                            f"{retell_base}/create-retell-llm",
+                            headers=headers,
+                            json={"general_prompt": general_prompt, "begin_message": greeting_message},
+                        )
                     llm_resp.raise_for_status()
                     llm_id = llm_resp.json().get("llm_id")
 

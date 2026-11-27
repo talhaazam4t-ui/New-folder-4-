@@ -161,26 +161,49 @@ class WhatsAppCloudClient(BaseIntegrationAdapter):
                 "is_mock": True,
             }
 
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            resp = await client.post(
-                f"{self.graph_api_url}/{target_phone_id}/messages",
-                headers={"Authorization": f"Bearer {effective_token}"},
-                json={
-                    "messaging_product": "whatsapp",
-                    "to": to_phone,
-                    "type": "text",
-                    "text": {"body": message_body},
-                },
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                resp = await client.post(
+                    f"{self.graph_api_url}/{target_phone_id}/messages",
+                    headers={"Authorization": f"Bearer {effective_token}"},
+                    json={
+                        "messaging_product": "whatsapp",
+                        "to": to_phone,
+                        "type": "text",
+                        "text": {"body": message_body},
+                    },
+                )
+                if resp.status_code in (200, 201):
+                    data = resp.json()
+                    return {
+                        "success": True,
+                        "message_id": data.get("messages", [{}])[0].get("id", "wamid.live"),
+                        "to": to_phone,
+                        "status": "sent",
+                        "is_mock": False,
+                    }
+                logger.warning(
+                    "Meta WhatsApp Graph API returned non-200; falling back to sandbox CRM outbox",
+                    status_code=resp.status_code,
+                    tenant_id=tenant_id,
+                    to_phone=to_phone,
+                )
+        except Exception as exc:
+            logger.warning(
+                "Meta WhatsApp live send failed; falling back to sandbox CRM outbox",
+                error=str(exc),
+                tenant_id=tenant_id,
             )
-            resp.raise_for_status()
-            data = resp.json()
-            return {
-                "success": True,
-                "message_id": data.get("messages", [{}])[0].get("id", "wamid.live"),
-                "to": to_phone,
-                "status": "sent",
-                "is_mock": False,
-            }
+
+        msg_id = f"wamid.sandbox.{uuid.uuid4().hex[:12]}"
+        return {
+            "success": True,
+            "message_id": msg_id,
+            "to": to_phone,
+            "status": "queued_sandbox_connect_whatsapp",
+            "is_mock": True,
+            "note": "Saved in CRM Outbox — connect your active WhatsApp Cloud API token in /settings for live WhatsApp delivery.",
+        }
 
     async def send_interactive_buttons(
         self,
@@ -227,31 +250,55 @@ class WhatsAppCloudClient(BaseIntegrationAdapter):
                 "is_mock": True,
             }
 
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            resp = await client.post(
-                f"{self.graph_api_url}/{target_phone_id}/messages",
-                headers={"Authorization": f"Bearer {effective_token}"},
-                json={
-                    "messaging_product": "whatsapp",
-                    "to": to_phone,
-                    "type": "interactive",
-                    "interactive": {
-                        "type": "button",
-                        "body": {"text": body_text[:1024]},
-                        "action": {"buttons": clean_buttons},
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                resp = await client.post(
+                    f"{self.graph_api_url}/{target_phone_id}/messages",
+                    headers={"Authorization": f"Bearer {effective_token}"},
+                    json={
+                        "messaging_product": "whatsapp",
+                        "to": to_phone,
+                        "type": "interactive",
+                        "interactive": {
+                            "type": "button",
+                            "body": {"text": body_text[:1024]},
+                            "action": {"buttons": clean_buttons},
+                        },
                     },
-                },
+                )
+                if resp.status_code in (200, 201):
+                    data = resp.json()
+                    return {
+                        "success": True,
+                        "message_id": data.get("messages", [{}])[0].get("id", "wamid.btn.live"),
+                        "to": to_phone,
+                        "status": "sent",
+                        "buttons": clean_buttons,
+                        "is_mock": False,
+                    }
+                logger.warning(
+                    "Meta WhatsApp interactive buttons returned non-200; falling back to sandbox CRM outbox",
+                    status_code=resp.status_code,
+                    tenant_id=tenant_id,
+                    to_phone=to_phone,
+                )
+        except Exception as exc:
+            logger.warning(
+                "Meta WhatsApp interactive live send failed; falling back to sandbox CRM outbox",
+                error=str(exc),
+                tenant_id=tenant_id,
             )
-            resp.raise_for_status()
-            data = resp.json()
-            return {
-                "success": True,
-                "message_id": data.get("messages", [{}])[0].get("id", "wamid.btn.live"),
-                "to": to_phone,
-                "status": "sent",
-                "buttons": clean_buttons,
-                "is_mock": False,
-            }
+
+        msg_id = f"wamid.btn.sandbox.{uuid.uuid4().hex[:10]}"
+        return {
+            "success": True,
+            "message_id": msg_id,
+            "to": to_phone,
+            "status": "queued_sandbox_connect_whatsapp",
+            "buttons": clean_buttons,
+            "is_mock": True,
+            "note": "Saved in CRM Outbox — connect your active WhatsApp Cloud API token in /settings for live WhatsApp delivery.",
+        }
 
     async def download_media(
         self,

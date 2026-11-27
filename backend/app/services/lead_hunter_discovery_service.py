@@ -484,42 +484,58 @@ class LeadHunterDiscoveryService:
 
             # Fallback to Nominatim if Overpass returned zero or was unavailable
             if not parsed_rows:
-                try:
-                    nom_resp = await client.get(
-                        "https://nominatim.openstreetmap.org/search",
-                        params={
-                            "q": f"{category} in {city}, {country}",
-                            "format": "jsonv2",
-                            "addressdetails": 1,
-                            "extratags": 1,
-                            "limit": min(25, max_results * 3),
-                        },
-                        headers=headers,
-                    )
-                    if nom_resp.status_code == 200:
-                        any_network_success = True
-                        for item in list(nom_resp.json() or []):
-                            extratags = item.get("extratags") or {}
-                            raw_name = item.get("name") or str(item.get("display_name") or "").split(",")[0]
-                            name = str(raw_name).strip()
-                            if not name:
-                                continue
-                            website = extratags.get("website") or extratags.get("contact:website")
-                            if website and not str(website).startswith(("http://", "https://")):
-                                website = f"https://{website}"
-                            parsed_rows.append(
-                                {
-                                    "osm_ref": f"nom_{item.get('osm_id') or item.get('place_id')}",
-                                    "name": name,
-                                    "address": str(item.get("display_name") or f"{city}, {country}")[:250],
-                                    "phone": _clean_phone(extratags.get("phone") or extratags.get("contact:phone")),
-                                    "website": website,
-                                    "email": extratags.get("email") or extratags.get("contact:email"),
-                                    "opening_hours": extratags.get("opening_hours"),
-                                }
-                            )
-                except Exception as exc:
-                    logger.debug("Nominatim backup search failed", error=str(exc))
+                short_cat = category.split("/")[0].strip().lower()
+                nominatim_queries = [
+                    f"{category} {city}",
+                    f"{short_cat} {city}",
+                    f"{category} in {city}, {country}",
+                    f"clinic {city}" if "clinic" in short_cat or "dental" in short_cat else f"company {city}",
+                ]
+                seen_nom_names = set()
+                for nom_q in nominatim_queries:
+                    try:
+                        nom_resp = await client.get(
+                            "https://nominatim.openstreetmap.org/search",
+                            params={
+                                "q": nom_q,
+                                "format": "jsonv2",
+                                "addressdetails": 1,
+                                "extratags": 1,
+                                "limit": min(25, max_results * 3),
+                            },
+                            headers=headers,
+                        )
+                        if nom_resp.status_code == 200:
+                            any_network_success = True
+                            for item in list(nom_resp.json() or []):
+                                extratags = item.get("extratags") or {}
+                                raw_name = item.get("name") or str(item.get("display_name") or "").split(",")[0]
+                                name = str(raw_name).strip()
+                                if not name or name.lower() in seen_nom_names:
+                                    continue
+                                seen_nom_names.add(name.lower())
+                                website = extratags.get("website") or extratags.get("contact:website") or extratags.get("url")
+                                if website and not str(website).startswith(("http://", "https://")):
+                                    website = f"https://{website}"
+                                parsed_rows.append(
+                                    {
+                                        "osm_ref": f"nom_{item.get('osm_id') or item.get('place_id')}",
+                                        "name": name,
+                                        "address": str(item.get("display_name") or f"{city}, {country}")[:250],
+                                        "phone": _clean_phone(
+                                            extratags.get("phone")
+                                            or extratags.get("contact:phone")
+                                            or extratags.get("mobile")
+                                        ),
+                                        "website": website,
+                                        "email": extratags.get("email") or extratags.get("contact:email"),
+                                        "opening_hours": extratags.get("opening_hours"),
+                                    }
+                                )
+                            if parsed_rows:
+                                break
+                    except Exception as exc:
+                        logger.debug("Nominatim backup search failed", query=nom_q, error=str(exc))
 
         if not parsed_rows and not any_network_success:
             raise TaloxException(

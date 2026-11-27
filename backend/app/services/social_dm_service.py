@@ -288,7 +288,9 @@ class SocialDmService:
         booking_link = (
             chosen_rule.booking_url
             or (recep_cfg.calcom_booking_url if recep_cfg else None)
-            or settings.calcom_default_booking_url
+            or getattr(settings, "calcom_default_booking_url", None)
+            or getattr(settings, "calcom_booking_url", None)
+            or "https://cal.com/talha-azam-jhhqzd/30min"
         )
 
         rag_matches = await rag_service.search_knowledge(session, tenant_id, clean_text, top_k=2)

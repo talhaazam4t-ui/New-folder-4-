@@ -846,6 +846,18 @@ class ReceptionistService:
         await wallet_service.assert_wallet_active(session, tenant_id, estimated_credits=5.0)
 
         call_id = f"sim_call_{uuid.uuid4().hex[:10]}"
+        from app.integrations.ai_providers.router import route_and_execute_ai_task
+        from app.services.rag_service import rag_service
+
+        rag_hits = await rag_service.search_knowledge(
+            session, tenant_id, request.notes or cfg.business_name or "services pricing hours", top_k=2
+        )
+        rag_context = (
+            "\n".join(h.get("content", "")[:240] for h in rag_hits)
+            if rag_hits
+            else (cfg.faqs_knowledge_base or "Professional services and consultations.")[:300]
+        )
+
         if request.scenario == "emergency_transfer":
             log = ReceptionistCallLog(
                 tenant_id=tenant_id,
@@ -871,6 +883,21 @@ class ReceptionistService:
             )
             session.add(log)
         elif request.scenario == "faq_inquiry":
+            ai_faq = await route_and_execute_ai_task(
+                task_type="whatsapp_reply",
+                prompt=(
+                    f"You are the AI Voice Receptionist for {cfg.business_name} (Hours: {cfg.operating_hours}).\n"
+                    f"Knowledge Base: {rag_context}\n"
+                    f"Caller ({request.caller_name}) asks: '{request.notes or 'What are your hours and main services?'}'\n"
+                    "Reply in 2 natural spoken sentences."
+                ),
+                tenant_id=str(tenant_id),
+            )
+            ai_spoken = (
+                ai_faq.content.strip()
+                if (ai_faq.success and ai_faq.content and "[Mock AI]" not in ai_faq.content)
+                else f"{cfg.business_name} is open {cfg.operating_hours}. {rag_context[:180]}"
+            )
             log = ReceptionistCallLog(
                 tenant_id=tenant_id,
                 config_id=cfg.id,
@@ -882,17 +909,17 @@ class ReceptionistService:
                 status="completed",
                 booking_status="none",
                 transferred_to_human=False,
-                summary=f"Answered business hours ({cfg.operating_hours}) and FAQ inquiry for {request.caller_name}.",
+                summary=f"Answered business hours ({cfg.operating_hours}) and RAG FAQ inquiry for {request.caller_name}.",
                 transcript=(
                     f"AI: {cfg.greeting_message}\n"
-                    f"Caller: What are your business hours and services?\n"
-                    f"AI: {cfg.business_name} is open {cfg.operating_hours}. {(cfg.faqs_knowledge_base or '')[:220]}"
+                    f"Caller: {request.notes or 'What are your business hours and services?'}\n"
+                    f"AI: {ai_spoken}"
                 ),
-                metadata_={"simulated": True, "scenario": request.scenario},
+                metadata_={"simulated": True, "scenario": request.scenario, "llm_model": ai_faq.model},
             )
             session.add(log)
         else:
-            # Appointment booking via Cal.com adapter
+            # Appointment booking via Cal.com adapter + RAG-grounded AI greeting
             slot_dt = (datetime.now(timezone.utc) + timedelta(days=1)).replace(
                 hour=14, minute=0, second=0, microsecond=0
             )
@@ -906,6 +933,21 @@ class ReceptionistService:
                     notes=request.notes or "Scheduled during AI Voice Receptionist call",
                     call_id=call_id,
                 ),
+            )
+            ai_book = await route_and_execute_ai_task(
+                task_type="whatsapp_reply",
+                prompt=(
+                    f"You are the AI Voice Receptionist for {cfg.business_name}. "
+                    f"Confirm to caller {request.caller_name} that their appointment is booked for tomorrow at 2:00 PM UTC "
+                    f"(Reference: {booking['booking_uid']}) and mention one helpful detail from: {rag_context[:180]}. "
+                    "Keep it to 2 natural spoken sentences."
+                ),
+                tenant_id=str(tenant_id),
+            )
+            ai_confirm_line = (
+                ai_book.content.strip()
+                if (ai_book.success and ai_book.content and "[Mock AI]" not in ai_book.content)
+                else f"Confirmed! Your appointment with {cfg.business_name} is booked for tomorrow at 2:00 PM UTC (Ref: {booking['booking_uid']})."
             )
             log_res = await session.execute(
                 select(ReceptionistCallLog).where(
@@ -921,12 +963,17 @@ class ReceptionistService:
             )
             log.transcript = (
                 f"AI: {cfg.greeting_message}\n"
-                f"Caller: Hi, I'd like to schedule an appointment for tomorrow afternoon.\n"
-                f"AI: Let me check our Cal.com calendar — 2:00 PM UTC is open. Shall I book it for you?\n"
+                f"Caller: Hi, I'd like to schedule an appointment for tomorrow afternoon. {request.notes or ''}\n"
+                f"AI: Let me check our {cfg.business_name} calendar — 2:00 PM UTC is open. Shall I book it for you?\n"
                 f"Caller: Yes, please! My name is {request.caller_name}.\n"
-                f"AI: Confirmed! Your appointment is booked (Ref: {booking['booking_uid']})."
+                f"AI: {ai_confirm_line}"
             )
-            log.metadata_ = {"simulated": True, "scenario": "appointment_booking", "booking": booking}
+            log.metadata_ = {
+                "simulated": True,
+                "scenario": "appointment_booking",
+                "booking": booking,
+                "llm_model": ai_book.model,
+            }
 
         await session.commit()
         await session.refresh(log)
