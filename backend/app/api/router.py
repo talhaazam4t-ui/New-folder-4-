@@ -26,6 +26,7 @@ from app.api.v1.support import router as support_router
 from app.api.v1.tasks import router as tasks_router
 from app.api.v1.tenants import router as tenants_router
 from app.api.v1.users import router as users_router
+from app.api.v1.whitelabel_api import router as whitelabel_api_router
 from fastapi import APIRouter
 
 api_v1_router = APIRouter(prefix="/api/v1")
@@ -54,5 +55,6 @@ api_v1_router.include_router(knowledge_router)
 api_v1_router.include_router(growth_upsells_router)
 api_v1_router.include_router(lead_hunter_router)
 api_v1_router.include_router(enterprise_router)
+api_v1_router.include_router(whitelabel_api_router)
 api_v1_router.include_router(internal_router)
 api_v1_router.include_router(admin_router)

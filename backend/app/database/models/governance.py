@@ -208,4 +208,59 @@ class ClientKycOnboarding(Base, TimestampMixin):
     metadata_: Mapped[dict] = mapped_column("metadata", JSON, default=dict, nullable=False)
 
 
+class TenantWhitelabelConfig(Base, TimestampMixin):
+    """Phase 5 Multi-Tenant White-Label branding, theme colors, custom domain, and reseller flags."""
+
+    __tablename__ = "tenant_whitelabel_configs"
+
+    id: Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(),
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    brand_name: Mapped[str] = mapped_column(String(255), default="Talox Tech Stream", nullable=False)
+    logo_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    favicon_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    primary_color: Mapped[str] = mapped_column(String(32), default="#2563EB", nullable=False)
+    accent_color: Mapped[str] = mapped_column(String(32), default="#10B981", nullable=False)
+    custom_domain: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, unique=True, index=True)
+    support_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    hide_powered_by: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    agency_reseller_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    metadata_: Mapped[dict] = mapped_column("metadata", JSON, default=dict, nullable=False)
+
+
+class TenantApiKey(Base, TimestampMixin):
+    """Phase 5 Scoped Developer API Keys (SHA-256 hashed) for Metered API-as-a-Service."""
+
+    __tablename__ = "tenant_api_keys"
+
+    id: Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(),
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
+    key_prefix: Mapped[str] = mapped_column(String(32), nullable=False)
+    key_hash: Mapped[str] = mapped_column(String(128), nullable=False, unique=True, index=True)
+    scopes: Mapped[list] = mapped_column(
+        JSON,
+        default=lambda: ["agents:invoke", "leads:read", "finance:read", "compliance:audit"],
+        nullable=False,
+    )
+    rate_limit_per_minute: Mapped[int] = mapped_column(Integer, default=60, nullable=False)
+    total_calls: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    total_tokens_metered: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_by: Mapped[Optional[uuid.UUID]] = mapped_column(GUID(), nullable=True)
+
+
+
 

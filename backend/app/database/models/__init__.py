@@ -33,8 +33,10 @@ from app.database.models.governance import (
     ContractComplianceAudit,
     FreelanceOrder,
     RepurposedContentBundle,
+    TenantApiKey,
     TenantEpisodicMemory,
     TenantTierQuota,
+    TenantWhitelabelConfig,
 )
 from app.database.models.knowledge import (
     KnowledgeChunk,
@@ -123,4 +125,6 @@ __all__ = [
     "FreelanceOrder",
     "ContractComplianceAudit",
     "ClientKycOnboarding",
+    "TenantWhitelabelConfig",
+    "TenantApiKey",
 ]
