@@ -176,7 +176,8 @@ class AssistantService:
             except Exception as exc:
                 logger.warning("Explicit AI API key call failed, continuing to server provider/fallback", error=str(exc))
 
-        # 2. Primary Server Provider: Exclusive DeepSeek AI (via DeepSeek API / route_and_execute_ai_task)
+        # 2. Primary Server Provider: DeepSeek AI or Centralized Free-First Router (Groq/Gemini)
+        routed_model_used: Optional[str] = None
         if has_live_deepseek and deepseek_key:
             try:
                 ds_result, ds_http_error = await self._call_deepseek_chat_with_status(
@@ -184,8 +185,10 @@ class AssistantService:
                     messages=request.messages,
                     model=target_model if "deepseek" in target_model else "deepseek-chat",
                 )
-                if not ds_result and not ds_http_error:
-                    # Secondary check via centralized router when no upstream HTTP error occurred
+                if ds_result:
+                    routed_model_used = f"{target_model} (Live DeepSeek API)"
+                elif ds_http_error or not ds_result:
+                    # Seamless fallback to Centralized Free-First router (Groq -> Gemini -> OpenRouter)
                     conversation_prompt = "\n".join(
                         f"{m.role.upper()}: {m.content}" for m in request.messages[-8:]
                     )
@@ -197,6 +200,7 @@ class AssistantService:
                     )
                     if routed.success and not routed.is_mock and routed.content:
                         ds_result = routed.content
+                        routed_model_used = f"{routed.model} (Live Free-First AI Router)"
 
                 if ds_result:
                     reply_text, action_url, action_label, service_slug, service_name = (
@@ -209,7 +213,7 @@ class AssistantService:
                     return AssistantChatResponse(
                         success=True,
                         reply=reply_text,
-                        model_used=f"{target_model} (Live DeepSeek API)",
+                        model_used=routed_model_used or f"{target_model} (Live AI)",
                         action_url=action_url,
                         action_label=action_label,
                         service_slug=service_slug,
@@ -217,9 +221,9 @@ class AssistantService:
                         captured_lead=captured_lead,
                     )
             except Exception as exc:
-                logger.warning("DeepSeek assistant API call failed, falling back to local concierge", error=str(exc))
+                logger.warning("DeepSeek assistant API call failed, continuing to Gemini/fallback", error=str(exc))
 
-        # 3. Optional Server-Configured Gemini API Key (only if explicitly configured without DeepSeek)
+        # 3. Server-Configured Gemini Free-Tier (GEMINI_API_KEY)
         gemini_env_key = os.environ.get("GEMINI_API_KEY") or settings.gemini_api_key
         if gemini_env_key and gemini_env_key.startswith("AIza"):
             try:
@@ -336,7 +340,7 @@ class AssistantService:
             contents.append({"role": role, "parts": [{"text": sanitize_ai_prompt(msg.content)}]})
 
         payload = {
-            "system_instruction": {
+            "systemInstruction": {
                 "parts": [{"text": TELOXTECH_SYSTEM_PROMPT}]
             },
             "contents": contents,
